@@ -1,0 +1,6 @@
+{
+  "name": "MAX Player",
+  "description": "A premium video and music player with lockable private folder, touch gestures, lyrics, and advanced custom equalizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
