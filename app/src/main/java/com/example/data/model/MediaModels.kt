@@ -2,6 +2,7 @@ package com.example.data.model
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import java.util.Locale
 
 data class MediaItem(
     val id: String,
@@ -14,18 +15,29 @@ data class MediaItem(
     val folderName: String = "Internal Storage",
     val isPrivate: Boolean = false,
     val coverUrl: String? = null,
-    val lyrics: List<LyricLine> = emptyList()
+    val lyrics: List<LyricLine> = emptyList(),
+    val resolution: String = "4k", // "8k", "4k", "1080p", "720p"
+    val format: String = "MP4",
+    val isPartialDownload: Boolean = false,
+    val dateAdded: Long = System.currentTimeMillis(),
+    val albumName: String = "Studio Sessions"
 ) {
+    val cleanTitle: String
+        get() = title.replace("__", " ").replace("_", " ").trim()
+
+    val is8K: Boolean
+        get() = resolution.equals("8k", ignoreCase = true)
+
     val formattedDuration: String
         get() {
-            val totalSecs = duration / 1000
+            val totalSecs = (duration / 1000).coerceAtLeast(0L)
             val hours = totalSecs / 3600
             val minutes = (totalSecs % 3600) / 60
             val seconds = totalSecs % 60
             return if (hours > 0) {
-                String.format("%02d:%02d:%02d", hours, minutes, seconds)
+                String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
             } else {
-                String.format("%02d:%02d", minutes, seconds)
+                String.format(Locale.US, "%02d:%02d", minutes, seconds)
             }
         }
 
@@ -33,8 +45,8 @@ data class MediaItem(
         get() {
             if (size <= 0) return "0 B"
             val units = arrayOf("B", "KB", "MB", "GB")
-            val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
-            return String.format("%.1f %s", size / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+            val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.lastIndex)
+            return String.format(Locale.US, "%.2f%s", size / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
         }
 }
 
@@ -42,6 +54,17 @@ data class LyricLine(
     val timestampMs: Long,
     val text: String
 )
+
+data class RecycledMediaItem(
+    val mediaItem: MediaItem,
+    val deletedAt: Long = System.currentTimeMillis()
+) {
+    val daysRemaining: Int
+        get() {
+            val elapsedDays = ((System.currentTimeMillis() - deletedAt) / (1000L * 60 * 60 * 24)).toInt()
+            return (30 - elapsedDays).coerceAtLeast(1)
+        }
+}
 
 @Entity(tableName = "favorites")
 data class FavoriteEntity(
@@ -66,7 +89,7 @@ data class PrivateItemEntity(
 
 @Entity(tableName = "vault_pin")
 data class VaultPinEntity(
-    @PrimaryKey val id: Int = 1, // Only 1 PIN supported
+    @PrimaryKey val id: Int = 1,
     val pinHash: String
 )
 

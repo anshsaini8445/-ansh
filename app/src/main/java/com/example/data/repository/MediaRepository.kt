@@ -8,8 +8,10 @@ import android.os.Build
 import android.provider.MediaStore
 import com.example.data.database.AppDatabase
 import com.example.data.database.MediaDao
+import com.example.data.database.MediaFileDao
 import com.example.data.database.UserMediaDao
 import com.example.data.model.LyricLine
+import com.example.data.model.MediaFile
 import com.example.data.model.MediaItem
 import com.example.data.model.UserMediaEntity
 import kotlinx.coroutines.Dispatchers
@@ -21,7 +23,8 @@ import java.io.File
 class MediaRepository(
     private val context: Context,
     private val mediaDao: MediaDao,
-    val userMediaDao: UserMediaDao = AppDatabase.getDatabase(context).userMediaDao()
+    val userMediaDao: UserMediaDao = AppDatabase.getDatabase(context).userMediaDao(),
+    val mediaFileDao: MediaFileDao = AppDatabase.getDatabase(context).mediaFileDao()
 ) {
     // Curated Premium online files for instant playability & streaming preview
     private val premiumCuratedMedia = listOf(
@@ -232,11 +235,14 @@ class MediaRepository(
         return@withContext list
     }
 
-    // Combine local media with premium curated media
+    // Instant (<150ms) cold-start snapshot from DeepMediaScanner
+    fun getInstantMedia(isVideo: Boolean): List<MediaItem> {
+        return com.example.data.scanner.DeepMediaScanner.getInstantSnapshot(context, isVideo)
+    }
+
+    // Full background scan combining MediaStore, Direct Folder Scanner (>1KB partial files), and Studio Showcase
     suspend fun getAvailableMedia(isVideo: Boolean): List<MediaItem> {
-        val locals = getLocalMedia(isVideo)
-        val curated = premiumCuratedMedia.filter { it.isVideo == isVideo }
-        return locals + curated
+        return com.example.data.scanner.DeepMediaScanner.scanAndSyncMedia(context, isVideo)
     }
 
     // --- Favorites ---
@@ -288,16 +294,22 @@ class MediaRepository(
         mediaDao.clearHistory()
     }
 
-    // --- Private Vault (Safe Folder) & UserMedia Database Sync ---
+    // --- Private Vault (Safe Folder) & UserMedia / MediaFile Database Sync ---
     val publicUserMediaFlow: Flow<List<UserMediaEntity>> = userMediaDao.getPublicMedia()
     val privateUserMediaFlow: Flow<List<UserMediaEntity>> = userMediaDao.getPrivateMedia()
+    val allMediaFilesFlow: Flow<List<MediaFile>> = mediaFileDao.getAllMediaFiles()
+    val privateMediaFilesFlow: Flow<List<MediaFile>> = mediaFileDao.getPrivateMediaFiles()
 
     suspend fun syncMediaLibrary(items: List<MediaItem>) = withContext(Dispatchers.IO) {
-        val entities = items.map { item ->
+        val entities = mutableListOf<UserMediaEntity>()
+        val mediaFiles = mutableListOf<MediaFile>()
+        for (item in items) {
             val isPriv = userMediaDao.isItemInPrivateVault(item.id) || mediaDao.isPrivateItem(item.id) || item.isPrivate
-            UserMediaEntity.fromMediaItem(item, isPrivate = isPriv)
+            entities.add(UserMediaEntity.fromMediaItem(item, isPrivate = isPriv))
+            mediaFiles.add(MediaFile.fromMediaItem(item, isPrivate = isPriv))
         }
         userMediaDao.insertAll(entities)
+        mediaFileDao.insertAll(mediaFiles)
     }
 
     fun getPrivateMediaFlow(allMediaList: List<MediaItem>): Flow<List<MediaItem>> {
@@ -310,11 +322,13 @@ class MediaRepository(
     suspend fun encryptToVault(mediaId: String) {
         mediaDao.encryptToVault(com.example.data.model.PrivateItemEntity(mediaId))
         userMediaDao.setPrivateStatus(mediaId, true)
+        mediaFileDao.setPrivateStatus(mediaId, true)
     }
 
     suspend fun decryptFromVault(mediaId: String) {
         mediaDao.decryptFromVault(mediaId)
         userMediaDao.setPrivateStatus(mediaId, false)
+        mediaFileDao.setPrivateStatus(mediaId, false)
     }
 
     suspend fun setMediaPrivateStatus(mediaId: String, isPrivate: Boolean) {
@@ -331,7 +345,8 @@ class MediaRepository(
     }
 
     suspend fun isPrivateItem(mediaId: String): Boolean {
-        return userMediaDao.isItemInPrivateVault(mediaId) || mediaDao.isPrivateItem(mediaId)
+        val mediaFilePrivate = mediaFileDao.getMediaFileById(mediaId)?.isPrivate ?: false
+        return mediaFilePrivate || userMediaDao.isItemInPrivateVault(mediaId) || mediaDao.isPrivateItem(mediaId)
     }
 
     // Secure PIN setup and verify

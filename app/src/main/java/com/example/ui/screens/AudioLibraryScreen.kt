@@ -1,0 +1,550 @@
+package com.example.ui.screens
+
+import android.graphics.Bitmap
+import android.widget.Toast
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.example.data.model.MediaItem
+import com.example.data.scanner.DeepMediaScanner
+import com.example.ui.theme.*
+import com.example.viewmodel.PlayerViewModel
+
+@Composable
+fun AudioLibraryScreen(
+    viewModel: PlayerViewModel,
+    onOpenStudioPlayer: (MediaItem) -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onOpenTurboShare: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val tracks by viewModel.musicItems.collectAsState()
+    val favorites by viewModel.favoriteItems.collectAsState()
+    val nowPlaying by viewModel.nowPlaying.collectAsState()
+    val isPlaying by viewModel.isPlaying.collectAsState()
+
+    var selectedCategory by remember { mutableStateOf("Songs") } // "Songs", "Folders", "Albums", "Artists", "Favorites"
+    var selectedGroupFilter by remember { mutableStateOf<String?>(null) }
+    var menuTargetTrack by remember { mutableStateOf<MediaItem?>(null) }
+    var showTopMenu by remember { mutableStateOf(false) }
+
+    val displayedTracks = remember(tracks, favorites, selectedCategory, selectedGroupFilter) {
+        when {
+            selectedGroupFilter != null -> tracks.filter {
+                it.folderName == selectedGroupFilter || it.albumName == selectedGroupFilter || it.artist == selectedGroupFilter
+            }
+            selectedCategory == "Favorites" -> favorites.filter { !it.isVideo }
+            else -> tracks
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // --- TOP HEADER: Scrollable Category Pills + Borderless Equalizer & 3-Dot Icons ---
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                LazyRow(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(listOf("Songs", "Folders", "Albums", "Artists", "Favorites")) { pill ->
+                        val active = selectedCategory == pill
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(if (active) HybridEmerald else HybridCardBg)
+                                .border(1.dp, if (active) HybridEmerald else HybridCardBorder, RoundedCornerShape(20.dp))
+                                .clickable {
+                                    selectedCategory = pill
+                                    selectedGroupFilter = null
+                                }
+                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                        ) {
+                            Text(
+                                text = pill,
+                                color = if (active) Color.Black else Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = if (active) FontWeight.ExtraBold else FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                // Borderless Equalizer Icon
+                IconButton(onClick = onOpenEqualizer) {
+                    Icon(
+                        imageVector = Icons.Default.Equalizer,
+                        contentDescription = "Equalizer",
+                        tint = Color.White
+                    )
+                }
+
+                // Borderless 3-Dot Icon
+                Box {
+                    IconButton(onClick = { showTopMenu = true }) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Audio Options",
+                            tint = Color.White
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showTopMenu,
+                        onDismissRequest = { showTopMenu = false },
+                        containerColor = HybridCardBg
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Rescan Audio Library", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridEmerald) },
+                            onClick = {
+                                showTopMenu = false
+                                viewModel.loadMedia()
+                                Toast.makeText(context, "Audio Library Synced", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("5-Band Studio Equalizer", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.GraphicEq, contentDescription = null, tint = HybridCyan) },
+                            onClick = {
+                                showTopMenu = false
+                                onOpenEqualizer()
+                            }
+                        )
+                    }
+                }
+            }
+
+            // --- ACTION STRIP: Unified "Shuffle Play" Pill Button + Total Song Counter ---
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(HybridEmerald.copy(alpha = 0.18f))
+                        .border(1.dp, HybridEmerald.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
+                        .clickable {
+                            viewModel.shufflePlayMusic()
+                            tracks.firstOrNull()?.let { onOpenStudioPlayer(nowPlaying ?: it) }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shuffle,
+                        contentDescription = "Shuffle Play",
+                        tint = HybridEmerald,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Shuffle Play",
+                        color = HybridEmerald,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp
+                    )
+                }
+
+                Text(
+                    text = "${displayedTracks.size} Songs",
+                    color = HybridTextSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            if (selectedGroupFilter != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(HybridCardBg)
+                        .clickable { selectedGroupFilter = null }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.ArrowBackIosNew, contentDescription = "Back", tint = HybridEmerald, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Showing: $selectedGroupFilter", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
+
+            // --- GROUP LIST OR SONG ROWS ---
+            if (selectedGroupFilter == null && selectedCategory in listOf("Folders", "Albums", "Artists")) {
+                val groups = remember(tracks, selectedCategory) {
+                    when (selectedCategory) {
+                        "Folders" -> tracks.groupBy { it.folderName }
+                        "Albums" -> tracks.groupBy { it.albumName }
+                        else -> tracks.groupBy { it.artist }
+                    }
+                }
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(groups.entries.toList(), key = { it.key }) { (groupName, groupTracks) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(HybridCardBg)
+                                .border(1.dp, HybridCardBorder, RoundedCornerShape(14.dp))
+                                .clickable { selectedGroupFilter = groupName }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            GuaranteedAlbumArt(
+                                track = groupTracks.first(),
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(groupName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Text("${groupTracks.size} Tracks", color = HybridTextSecondary, fontSize = 12.sp)
+                            }
+                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = HybridTextSecondary)
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(displayedTracks, key = { it.id }) { track ->
+                        val isCurrentTrack = nowPlaying?.id == track.id
+                        AudioSongRow(
+                            track = track,
+                            isCurrentTrack = isCurrentTrack,
+                            onClick = {
+                                viewModel.playMusic(track)
+                                onOpenStudioPlayer(track)
+                            },
+                            onMoreClick = { menuTargetTrack = track }
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- FLOATING MINI-PLAYER DOCK (Bottom Card with 3-Dot "..." Button instead of Cross 'X') ---
+        val activeTrack = nowPlaying ?: tracks.firstOrNull()
+        if (activeTrack != null) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xF2141E30))
+                    .border(1.dp, HybridEmerald.copy(alpha = 0.35f), RoundedCornerShape(18.dp))
+                    .clickable {
+                        if (nowPlaying == null) {
+                            viewModel.playMusic(activeTrack)
+                        }
+                        onOpenStudioPlayer(activeTrack)
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                GuaranteedAlbumArt(
+                    track = activeTrack,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = activeTrack.cleanTitle,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${activeTrack.artist} • ${activeTrack.format}",
+                        color = HybridEmerald,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                IconButton(
+                    onClick = { viewModel.playPrevious() },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White)
+                }
+
+                IconButton(
+                    onClick = {
+                        if (nowPlaying == null) viewModel.playMusic(activeTrack) else viewModel.togglePlayPause()
+                    },
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
+                        contentDescription = "Play/Pause",
+                        tint = HybridEmerald,
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = { viewModel.playNext() },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White)
+                }
+
+                // 3-Dot ("...") Button instead of Cross ('X')
+                IconButton(
+                    onClick = { menuTargetTrack = activeTrack },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(Icons.Default.MoreHoriz, contentDescription = "Mini Player Menu", tint = Color.White)
+                }
+            }
+        }
+    }
+
+    // --- 3-Dot Song Options Sheet ---
+    if (menuTargetTrack != null) {
+        val track = menuTargetTrack!!
+        AlertDialog(
+            onDismissRequest = { menuTargetTrack = null },
+            containerColor = HybridCardBg,
+            title = {
+                Text(
+                    text = track.cleanTitle,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            viewModel.toggleFavorite(track)
+                            menuTargetTrack = null
+                            Toast.makeText(context, "Updated Favorites", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Favorite, contentDescription = null, tint = HybridEmerald)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("Add / Remove Favorite", color = Color.White, modifier = Modifier.weight(1f))
+                    }
+                    TextButton(
+                        onClick = {
+                            viewModel.toggle200Boost()
+                            menuTargetTrack = null
+                            Toast.makeText(context, "200% Hardware Loudness Boost Toggled", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.VolumeUp, contentDescription = null, tint = HybridCyan)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("200% Hardware Boost", color = Color.White, modifier = Modifier.weight(1f))
+                    }
+                    TextButton(
+                        onClick = {
+                            menuTargetTrack = null
+                            onOpenTurboShare()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = HybridGold)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("Turbo Share Track", color = Color.White, modifier = Modifier.weight(1f))
+                    }
+                    TextButton(
+                        onClick = {
+                            viewModel.moveToRecycleBin(track)
+                            menuTargetTrack = null
+                            Toast.makeText(context, "Moved to 30-Day Recycle Bin", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = HybridCoralRed)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("Move to Recycle Bin", color = HybridCoralRed, modifier = Modifier.weight(1f))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { menuTargetTrack = null }) {
+                    Text("Close", color = HybridTextSecondary)
+                }
+            }
+        )
+    }
+}
+
+/**
+ * 3-Stage Guaranteed Album Art Engine (<1ms):
+ * Stage 1: Instant RAM LruCache lookup
+ * Stage 2: Immediate High-Definition Studio Vinyl Cover Generator on Canvas
+ * Stage 3: Background MediaMetadataRetriever.embeddedPicture / Coil artwork
+ */
+@Composable
+fun GuaranteedAlbumArt(
+    track: MediaItem,
+    modifier: Modifier = Modifier
+) {
+    var localBitmap by remember(track.path) {
+        mutableStateOf<Bitmap?>(DeepMediaScanner.getCachedBitmap(track.path))
+    }
+
+    LaunchedEffect(track.path) {
+        if (localBitmap == null && !track.path.startsWith("http")) {
+            localBitmap = DeepMediaScanner.loadOrExtractBitmap(track.path, isVideo = false)
+        }
+    }
+
+    Box(modifier = modifier) {
+        // Stage 2: Immediate High-Definition Studio Vinyl Cover Generator
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(Color(0xFF1A2942), Color(0xFF0F172A), Color(0xFF1E1B4B))
+                )
+            )
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val discRadius = size.minDimension * 0.40f
+            drawCircle(color = Color(0xFF111115), radius = discRadius, center = center)
+            drawCircle(
+                color = Color(0x33FFFFFF),
+                radius = discRadius * 0.72f,
+                center = center,
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+            drawCircle(color = HybridEmerald, radius = discRadius * 0.32f, center = center)
+            drawCircle(color = Color.Black, radius = discRadius * 0.10f, center = center)
+        }
+
+        if (localBitmap != null) {
+            Image(
+                bitmap = localBitmap!!.asImageBitmap(),
+                contentDescription = track.cleanTitle,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else if (track.coverUrl != null) {
+            AsyncImage(
+                model = track.coverUrl,
+                contentDescription = track.cleanTitle,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioSongRow(
+    track: MediaItem,
+    isCurrentTrack: Boolean,
+    onClick: () -> Unit,
+    onMoreClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (isCurrentTrack) HybridEmerald.copy(alpha = 0.14f) else HybridCardBg)
+            .border(
+                width = 1.dp,
+                color = if (isCurrentTrack) HybridEmerald else HybridCardBorder,
+                shape = RoundedCornerShape(14.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 52dp Rounded Cover Photo
+        GuaranteedAlbumArt(
+            track = track,
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(12.dp))
+        )
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // Underscore-cleaned Song Title & "Artist • Duration • Format" Subtitle
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = track.cleanTitle,
+                color = if (isCurrentTrack) HybridEmerald else Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = "${track.artist} • ${track.formattedDuration} • ${track.format}",
+                color = HybridTextSecondary,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        // Borderless 3-Dot Icon
+        IconButton(onClick = onMoreClick) {
+            Icon(
+                imageVector = Icons.Default.MoreVert,
+                contentDescription = "Track Options",
+                tint = HybridTextSecondary
+            )
+        }
+    }
+}

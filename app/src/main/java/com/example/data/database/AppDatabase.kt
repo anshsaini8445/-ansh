@@ -8,6 +8,7 @@ import com.example.data.model.*
 
 @Database(
     entities = [
+        MediaFile::class,
         UserMediaEntity::class,
         FavoriteEntity::class,
         HistoryEntity::class,
@@ -16,12 +17,13 @@ import com.example.data.model.*
         PlaylistEntity::class,
         PlaylistItemEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun mediaDao(): MediaDao
     abstract fun userMediaDao(): UserMediaDao
+    abstract fun mediaFileDao(): MediaFileDao
 
     companion object {
         @Volatile
@@ -34,8 +36,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "max_player_database"
                 )
-                .fallbackToDestructiveMigration()
-                .build()
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .build()
                 INSTANCE = instance
                 instance
             }

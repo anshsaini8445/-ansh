@@ -1,6 +1,6 @@
 {
-  "name": "MAX Player",
-  "description": "A premium video and music player with lockable private folder, touch gestures, lyrics, and advanced custom equalizer.",
+  "name": "Hybrid Player",
+  "description": "Ultra-fast, zero-ads 8K video and studio audio player with Cleaner Hub, Dual-PIN Privacy Vault, Turbo Share, and 3D Companion.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
