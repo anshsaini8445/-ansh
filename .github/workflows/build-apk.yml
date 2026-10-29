@@ -2,32 +2,59 @@ name: Build Hybrid Player APK
 
 on:
   push:
-    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build-apk:
+    name: Build & Package Hybrid Player APK
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK Licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Decode Debug Keystore & Prepare Env
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          else
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+            cp .env.example .env
+          fi
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Upload Hybrid Player APK Artifact
+      - name: Prepare Clean APK File for Download
+        run: |
+          mkdir -p apk-output
+          cp app/build/outputs/apk/debug/*.apk apk-output/Hybrid-Player.apk
+          ls -lh apk-output/
+
+      - name: Upload Hybrid-Player-APK (ZIP in Actions Tab)
         uses: actions/upload-artifact@v4
         with:
-          name: Hybrid-Player-Debug-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: Hybrid-Player-APK
+          path: apk-output/Hybrid-Player.apk
+          if-no-files-found: error
+          retention-days: 30
