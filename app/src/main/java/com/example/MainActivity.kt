@@ -54,9 +54,17 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: PlayerViewModel by viewModels()
 
+    private val permissionsLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        viewModel.loadMedia()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        com.app.mediaplayer.MediaNotificationHelper.ensureChannel(this)
+        requestNecessaryMediaAndNotificationPermissions()
 
         setContent {
             val activeTheme by viewModel.activeTheme.collectAsState()
@@ -68,6 +76,18 @@ class MainActivity : ComponentActivity() {
             val music by viewModel.musicItems.collectAsState()
             val allMedia by viewModel.allMediaItems.collectAsState()
             val history by viewModel.historyItems.collectAsState()
+            val globalFlagSecure by viewModel.globalFlagSecure.collectAsState()
+
+            LaunchedEffect(globalFlagSecure) {
+                try {
+                    if (globalFlagSecure) {
+                        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    } else {
+                        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    }
+                } catch (_: Exception) {
+                }
+            }
 
             MyApplicationTheme(themeName = activeTheme) {
                 val accentColor = MaterialTheme.colorScheme.primary
@@ -76,6 +96,10 @@ class MainActivity : ComponentActivity() {
                 val navigationStack = remember { mutableStateListOf(ActiveScreen.MainTabs) }
                 val currentScreen = navigationStack.last()
                 var selectedTab by remember { mutableStateOf(MainBottomTab.VIDEO) }
+
+                LaunchedEffect(currentScreen) {
+                    viewModel.setForegroundVideoActive(currentScreen == ActiveScreen.VideoPlayer)
+                }
 
                 var activeVideoItem by remember { mutableStateOf<MediaItem?>(null) }
                 var activeVideoProgress by remember { mutableStateOf(0L) }
@@ -402,4 +426,33 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStop() {
+        super.onStop()
+        viewModel.onAppMinimizedToBackground()
+    }
+
+    private fun requestNecessaryMediaAndNotificationPermissions() {
+        val perms = mutableListOf<String>()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
+            perms.add(android.Manifest.permission.READ_MEDIA_VIDEO)
+            perms.add(android.Manifest.permission.READ_MEDIA_AUDIO)
+        } else {
+            perms.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        val missing = perms.filter {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                this,
+                it
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            try {
+                permissionsLauncher.launch(missing.toTypedArray())
+            } catch (_: Exception) {
+            }
+        }
+    }
 }
+

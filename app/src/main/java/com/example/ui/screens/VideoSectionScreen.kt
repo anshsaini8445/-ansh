@@ -27,11 +27,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
 import com.example.helpers.HybridCleanerHubHelper
@@ -56,6 +58,7 @@ fun VideoSectionScreen(
     val sortNewToOld by viewModel.sortNewToOld.collectAsState()
     val isGridView by viewModel.isVideoGridView.collectAsState()
     val hdrBadges by viewModel.hdrCcBadges.collectAsState()
+    val doubleShakeEnabled by viewModel.doubleShakeEnabled.collectAsState()
 
     var activeSubTab by remember { mutableStateOf("Video") } // "Video" | "Folder" | "Playlist"
     var openedFolderName by remember { mutableStateOf<String?>(null) }
@@ -135,7 +138,7 @@ fun VideoSectionScreen(
                 }
             }
         } else {
-            // Top Header: Left Bold "Hybrid Player", Right Cleaner Bucket Icon + Red Dot + Storage Badge
+            // Top Header: Left Custom Red Glass Play Icon + Bold "Hybrid Player", Right Controls
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -143,47 +146,106 @@ fun VideoSectionScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Hybrid Player",
-                    color = Color.White,
-                    fontSize = 23.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
-
-                // Top-Right Cleaner Bucket Icon with Red Dot & Cleanable Storage Badge
                 Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(HybridCardBg)
-                        .border(1.dp, HybridCardBorder, RoundedCornerShape(20.dp))
-                        .clickable { onOpenCleanerHub() }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                        .testTag("cleaner_bucket_button"),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Box {
-                        Icon(
-                            imageVector = Icons.Default.DeleteSweep,
-                            contentDescription = "Cleaner Bucket",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        // Red notification dot
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(HybridCoralRed)
-                                .align(Alignment.TopEnd)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                        contentDescription = "Hybrid Player App Icon",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    )
                     Text(
-                        text = storageStats.cleanableBadgeText,
-                        color = HybridCoralRed,
-                        fontSize = 12.sp,
+                        text = "Hybrid Player",
+                        color = Color.White,
+                        fontSize = 22.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // BG Audio 2x Shake Vibration Toggle (Active only when video plays in background audio mode)
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(
+                                if (doubleShakeEnabled) HybridEmerald.copy(alpha = 0.16f)
+                                else HybridCardBg
+                            )
+                            .border(
+                                1.dp,
+                                if (doubleShakeEnabled) HybridEmerald else HybridCardBorder,
+                                RoundedCornerShape(20.dp)
+                            )
+                            .clickable {
+                                viewModel.toggleDoubleShakeEnabled()
+                                val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
+                                Toast.makeText(
+                                    context,
+                                    "📳 BG Audio 2x Shake (Next Track): $st",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Vibration,
+                            contentDescription = "BG Audio 2x Shake",
+                            tint = if (doubleShakeEnabled) HybridEmerald else HybridTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (doubleShakeEnabled) "BG Shake ON" else "BG Shake OFF",
+                            color = if (doubleShakeEnabled) HybridEmerald else HybridTextSecondary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+
+                    // Top-Right Cleaner Bucket Icon with Red Dot & Cleanable Storage Badge
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(HybridCardBg)
+                            .border(1.dp, HybridCardBorder, RoundedCornerShape(20.dp))
+                            .clickable { onOpenCleanerHub() }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .testTag("cleaner_bucket_button"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box {
+                            Icon(
+                                imageVector = Icons.Default.DeleteSweep,
+                                contentDescription = "Cleaner Bucket",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            // Red notification dot
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(HybridCoralRed)
+                                    .align(Alignment.TopEnd)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = storageStats.cleanableBadgeText,
+                            color = HybridCoralRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
                 }
             }
         }

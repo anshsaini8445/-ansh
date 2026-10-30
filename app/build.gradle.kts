@@ -1,4 +1,34 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Locale
+import java.util.Properties
+
+val versionPropsFile = rootProject.file("version.properties")
+val versionProps = Properties()
+if (versionPropsFile.exists()) {
+  versionPropsFile.inputStream().use { versionProps.load(it) }
+}
+val verMajor = (versionProps.getProperty("VERSION_MAJOR") ?: "1").toIntOrNull() ?: 1
+val currentPatch = (versionProps.getProperty("VERSION_PATCH") ?: "1").toIntOrNull() ?: 1
+val isBuildTask = gradle.startParameter.taskNames.any {
+  it.contains("assemble", ignoreCase = true) ||
+    it.contains("bundle", ignoreCase = true) ||
+    it.contains("compile", ignoreCase = true)
+}
+val nextPatch = if (isBuildTask) currentPatch + 1 else currentPatch
+if (isBuildTask && versionPropsFile.canWrite()) {
+  versionProps.setProperty("VERSION_MAJOR", verMajor.toString())
+  versionProps.setProperty("VERSION_PATCH", nextPatch.toString())
+  try {
+    versionPropsFile.outputStream().use {
+      versionProps.store(it, "Auto-incremented by Hybrid Player Gradle Build")
+    }
+  } catch (_: Exception) {}
+}
+
+val resolvedVersionCode = (project.findProperty("autoVersionCode")?.toString()?.toIntOrNull())
+  ?: (1000 + currentPatch)
+val resolvedVersionName = (project.findProperty("autoVersionName")?.toString())
+  ?: String.format(Locale.US, "%d.%03d", verMajor, currentPatch)
 
 plugins {
   alias(libs.plugins.android.application)
@@ -17,8 +47,8 @@ android {
     applicationId = "com.aistudio.maxplayer.qyvztp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = resolvedVersionCode
+    versionName = resolvedVersionName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -109,6 +139,12 @@ dependencies {
   implementation(libs.okhttp)
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
+  implementation(libs.androidx.appcompat)
+  implementation(libs.androidx.recyclerview)
+  implementation(libs.google.material)
+  implementation(libs.androidx.media3.exoplayer)
+  implementation(libs.androidx.media3.ui)
+  implementation(libs.androidx.media3.common)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

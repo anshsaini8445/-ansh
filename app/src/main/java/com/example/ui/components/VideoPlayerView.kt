@@ -111,6 +111,28 @@ fun VideoPlayerView(
     var showSubtitleDialog by remember { mutableStateOf(false) }
     var showFilterDialog by remember { mutableStateOf(false) }
     var showQueueDialog by remember { mutableStateOf(false) }
+    var showMediaInfoDialog by remember { mutableStateOf(false) }
+
+    // Sleep Timer (Hidden inside 3-Dot Menu) & Aspect Ratio / Orientation State
+    var videoSleepTimerTotalMinutes by remember { mutableStateOf(0) }
+    var videoSleepRemainingSeconds by remember { mutableStateOf(0) }
+    var aspectRatioMode by remember { mutableStateOf("Original Fit") }
+    var orientationLabel by remember { mutableStateOf("Auto") }
+
+    // Live 1-Second Countdown for Video Sleep Timer
+    LaunchedEffect(videoSleepRemainingSeconds, isPlaying) {
+        if (videoSleepRemainingSeconds > 0 && isPlaying) {
+            delay(1000L)
+            val nextSec = videoSleepRemainingSeconds - 1
+            videoSleepRemainingSeconds = nextSec
+            if (nextSec <= 0) {
+                videoSleepTimerTotalMinutes = 0
+                videoViewRef?.pause()
+                isPlaying = false
+                Toast.makeText(context, "🌙 Video Sleep Timer Reached — Playback Paused", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     val displayTitle = remember(videoTitle, videoPath) {
         if (videoTitle.isNotBlank()) videoTitle else File(videoPath).nameWithoutExtension.ifEmpty { "8K Studio Video" }
@@ -180,7 +202,96 @@ fun VideoPlayerView(
         }
     }
 
+    fun postComposeVideoNotification(playingState: Boolean = isPlaying, posMs: Long = currentPosMs) {
+        com.app.mediaplayer.MediaNotificationHelper.showOrUpdateNotification(
+            context = context,
+            title = displayTitle,
+            subtitle = "Hybrid 8K Video • $visualFilter",
+            mediaPath = videoPath,
+            isVideo = true,
+            isPlaying = playingState,
+            positionMs = posMs.coerceAtLeast(0L),
+            durationMs = totalDurationMs.coerceAtLeast(0L),
+            playbackSpeed = playbackSpeed,
+            contentIntentActivity = com.example.MainActivity::class.java
+        )
+    }
+
+    DisposableEffect(videoPath, allVideos) {
+        val delegate = object : com.app.mediaplayer.MediaNotificationHelper.ControlDelegate {
+            override fun onNotificationPlayPause() {
+                videoViewRef?.let { vv ->
+                    if (vv.isPlaying) {
+                        vv.pause()
+                        isPlaying = false
+                    } else {
+                        vv.start()
+                        isPlaying = true
+                    }
+                    postComposeVideoNotification(isPlaying, vv.currentPosition.toLong())
+                }
+            }
+
+            override fun onNotificationRewind10s() {
+                videoViewRef?.let { vv ->
+                    val target = (vv.currentPosition - 10_000).coerceAtLeast(0)
+                    vv.seekTo(target)
+                    currentPosMs = target.toLong()
+                    postComposeVideoNotification(isPlaying, currentPosMs)
+                }
+            }
+
+            override fun onNotificationFastForward10s() {
+                videoViewRef?.let { vv ->
+                    val dur = vv.duration.coerceAtLeast(1000)
+                    val target = (vv.currentPosition + 10_000).coerceAtMost(dur)
+                    vv.seekTo(target)
+                    currentPosMs = target.toLong()
+                    postComposeVideoNotification(isPlaying, currentPosMs)
+                }
+            }
+
+            override fun onNotificationNext() {
+                if (allVideos.isNotEmpty()) {
+                    val idx = allVideos.indexOfFirst { it.path == videoPath }
+                    val nextIdx = if (idx >= 0) (idx + 1) % allVideos.size else 0
+                    onSelectVideo(allVideos[nextIdx])
+                }
+            }
+
+            override fun onNotificationPrevious() {
+                if (allVideos.isNotEmpty()) {
+                    val idx = allVideos.indexOfFirst { it.path == videoPath }
+                    val prevIdx = if (idx > 0) idx - 1 else allVideos.lastIndex
+                    onSelectVideo(allVideos[prevIdx])
+                }
+            }
+
+            override fun onNotificationSeekTo(positionMs: Long) {
+                videoViewRef?.let { vv ->
+                    vv.seekTo(positionMs.toInt())
+                    currentPosMs = positionMs
+                    postComposeVideoNotification(isPlaying, currentPosMs)
+                }
+            }
+
+            override fun onNotificationStop() {
+                videoViewRef?.pause()
+                isPlaying = false
+                com.app.mediaplayer.MediaNotificationHelper.cancelNotification(context)
+            }
+        }
+        com.app.mediaplayer.MediaNotificationHelper.setControlDelegate(delegate)
+        postComposeVideoNotification(isPlaying, currentPosMs)
+        onDispose {
+            if (com.app.mediaplayer.MediaNotificationHelper.getControlDelegate() === delegate) {
+                com.app.mediaplayer.MediaNotificationHelper.setControlDelegate(null)
+            }
+        }
+    }
+
     // Progress & A-B Repeat Loop Tracker
+    var lastNotifSec by remember { mutableStateOf(-1L) }
     LaunchedEffect(videoViewRef, isPlaying) {
         while (true) {
             videoViewRef?.let { vv ->
@@ -191,6 +302,12 @@ fun VideoPlayerView(
                         currentPosMs = pos
                         totalDurationMs = dur
                         onProgressUpdate(pos)
+
+                        val sec = pos / 1000L
+                        if (sec != lastNotifSec) {
+                            lastNotifSec = sec
+                            postComposeVideoNotification(true, pos)
+                        }
 
                         val ptA = abPointA
                         val ptB = abPointB
@@ -317,8 +434,20 @@ fun VideoPlayerView(
                 .fillMaxSize()
                 .align(Alignment.Center)
                 .graphicsLayer(
-                    scaleX = zoomScale,
-                    scaleY = zoomScale
+                    scaleX = zoomScale * when (aspectRatioMode) {
+                        "Zoom Crop" -> 1.22f
+                        "Stretch 16:9" -> 1.12f
+                        "Cinema 21:9" -> 1.28f
+                        "Classic 4:3" -> 0.86f
+                        else -> 1.0f
+                    },
+                    scaleY = zoomScale * when (aspectRatioMode) {
+                        "Zoom Crop" -> 1.22f
+                        "Stretch 16:9" -> 1.06f
+                        "Cinema 21:9" -> 0.88f
+                        "Classic 4:3" -> 1.04f
+                        else -> 1.0f
+                    }
                 )
         )
 
@@ -394,11 +523,39 @@ fun VideoPlayerView(
             }
         }
 
-        // Custom Gesture HUD Overlay (Brightness 2-100%, Volume 0-200% Boost, Seek, Dynamic Speed)
-        VideoGestureHudOverlay(
-            hudState = gestureHudState,
-            modifier = Modifier.align(Alignment.Center)
+        // --- SCREENSHOT-STYLE VERTICAL PILL HUD FOR BRIGHTNESS (Left Swipe) ---
+        VerticalVolumeBrightnessPillHud(
+            visible = gestureHudState?.mode == LockedGestureMode.VERTICAL_BRIGHTNESS,
+            isVolume = false,
+            percentValue = brightnessPercent,
+            maxValue = 100,
+            accentColor = accentColor,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 28.dp)
         )
+
+        // --- SCREENSHOT-STYLE VERTICAL PILL HUD FOR VOLUME 0-200% (Right Swipe) ---
+        VerticalVolumeBrightnessPillHud(
+            visible = gestureHudState?.mode == LockedGestureMode.VERTICAL_VOLUME,
+            isVolume = true,
+            percentValue = volumePercent,
+            maxValue = 200,
+            accentColor = accentColor,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 28.dp)
+        )
+
+        // Center HUD Overlay for Horizontal Seek & Dynamic Long-Press Speed
+        if (gestureHudState?.mode == LockedGestureMode.HORIZONTAL_SEEK ||
+            gestureHudState?.mode == LockedGestureMode.DYNAMIC_SPEED_SLIDE
+        ) {
+            VideoGestureHudOverlay(
+                hudState = gestureHudState,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
 
         // Gesture / Zoom Pill Readout
         if (gestureHudState == null) {
@@ -483,10 +640,15 @@ fun VideoPlayerView(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        val sleepTag = if (videoSleepRemainingSeconds > 0) {
+                            " • 🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}"
+                        } else ""
                         Text(
-                            text = "8K Hybrid Hardware Engine • $visualFilter • ${String.format(Locale.US, "%.2fx", playbackSpeed)}",
+                            text = "8K Engine • $visualFilter • $aspectRatioMode • ${String.format(Locale.US, "%.2fx", playbackSpeed)}$sleepTag",
                             color = HybridEmerald,
-                            fontSize = 11.sp
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
@@ -920,74 +1082,265 @@ fun VideoPlayerView(
         )
     }
 
-    // --- 3-DOT PRO PLAYER MENU ---
+    // --- 3-DOT PRO PLAYER MENU (Houses Hidden Sleep Timer + All Working Pro Features) ---
     if (showThreeDotSheet) {
         AlertDialog(
             onDismissRequest = { showThreeDotSheet = false },
             containerColor = HybridCardBg,
-            title = { Text("8K Pro Player Tools", color = Color.White, fontWeight = FontWeight.Bold) },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("8K Pro Player & Sleep Timer", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+                    if (videoSleepRemainingSeconds > 0) {
+                        Text(
+                            text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
+                            color = HybridGold,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Playback Speed (0.25x - 8.0x):", color = HybridTextSecondary, fontSize = 12.sp)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf(0.5f, 1.0f, 1.5f, 2.0f, 4.0f).forEach { sp ->
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // 1. HIDDEN SLEEP TIMER SECTION INSIDE 3-DOT MENU
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(HybridCardAlt)
+                            .border(1.dp, if (videoSleepRemainingSeconds > 0) HybridGold else HybridCardBorder, RoundedCornerShape(12.dp))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Bedtime, contentDescription = null, tint = HybridGold, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (videoSleepRemainingSeconds > 0) {
+                                        "Sleep Timer Active (${formatVideoTime(videoSleepRemainingSeconds * 1000L)})"
+                                    } else {
+                                        "Video Sleep Timer (Auto-Pause)"
+                                    },
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            val timerPresets = listOf(0 to "Off", 10 to "10m", 15 to "15m", 30 to "30m", 45 to "45m", 60 to "60m", -1 to "End of Clip")
+                            items(timerPresets) { (mins, label) ->
+                                val selected = (mins == 0 && videoSleepRemainingSeconds == 0) ||
+                                    (mins > 0 && videoSleepTimerTotalMinutes == mins) ||
+                                    (mins == -1 && videoSleepTimerTotalMinutes == -1)
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (selected) HybridGold else Color(0x33FFFFFF))
+                                        .clickable {
+                                            videoSleepTimerTotalMinutes = mins
+                                            videoSleepRemainingSeconds = when {
+                                                mins == 0 -> 0
+                                                mins == -1 -> ((totalDurationMs - currentPosMs) / 1000L).toInt().coerceAtLeast(5)
+                                                else -> mins * 60
+                                            }
+                                            Toast.makeText(
+                                                context,
+                                                if (mins == 0) "Video Sleep Timer Off" else "🌙 Video Sleep Timer set: $label",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = if (selected) Color.Black else Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. PLAYBACK SPEED (0.25x - 4.0x)
+                    Text("Playback Speed (0.25x – 4.0x):", color = HybridTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f)) { sp ->
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(if (playbackSpeed == sp) HybridEmerald else HybridCardAlt)
-                                    .clickable {
-                                        playbackSpeed = sp
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                            try {
-                                                // Speed indicator updated
-                                            } catch (_: Exception) {
-                                            }
-                                        }
-                                    }
+                                    .clickable { playbackSpeed = sp }
                                     .padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
                                 Text(
                                     text = "${sp}x",
                                     color = if (playbackSpeed == sp) Color.Black else Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
+                                    fontSize = 11.sp
                                 )
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TextButton(
-                        onClick = {
-                            showThreeDotSheet = false
-                            showFilterDialog = true
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("8K Visual Enhancer Filter ($visualFilter)", color = Color.White)
+
+                    // 3. ASPECT RATIO & SCREEN FIT
+                    Text("Aspect Ratio & Screen Crop:", color = HybridTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(listOf("Original Fit", "Zoom Crop", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")) { ratio ->
+                            val active = aspectRatioMode == ratio
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (active) HybridCyan else HybridCardAlt)
+                                    .clickable { aspectRatioMode = ratio }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = ratio,
+                                    color = if (active) Color.Black else Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
                     }
-                    TextButton(
-                        onClick = {
-                            showThreeDotSheet = false
-                            showAudioTrackDialog = true
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Switch Audio Track (Hindi/English/Dual)", color = Color.White)
+
+                    // 4. REAL WORKING PRO ACTION TILES
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                val activity = context as? Activity
+                                when (orientationLabel) {
+                                    "Auto" -> {
+                                        orientationLabel = "Landscape"
+                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                    }
+                                    "Landscape" -> {
+                                        orientationLabel = "Portrait"
+                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                    }
+                                    else -> {
+                                        orientationLabel = "Auto"
+                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                                    }
+                                }
+                                Toast.makeText(context, "Orientation: $orientationLabel", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.ScreenRotation, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Rotate: $orientationLabel", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                showThreeDotSheet = false
+                                onProgressUpdate(currentPosMs)
+                                onBackgroundAudioPlay()
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Headphones, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("BG Audio Play", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                        }
                     }
-                    TextButton(
-                        onClick = {
-                            showThreeDotSheet = false
-                            showSubtitleDialog = true
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Subtitle Sync (+/-100ms)", color = Color.White)
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                showThreeDotSheet = false
+                                showFilterDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Text("Filter: $visualFilter", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                showThreeDotSheet = false
+                                showMediaInfoDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Text("Codec & File Info", color = HybridGold, fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                showThreeDotSheet = false
+                                showAudioTrackDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Text("Audio Track", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                showThreeDotSheet = false
+                                showSubtitleDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Text("Subtitles (.SRT)", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                        }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showThreeDotSheet = false }) {
                     Text("Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    // --- REAL MEDIA METADATA & CODEC INSPECTOR DIALOG ---
+    if (showMediaInfoDialog) {
+        val fileObj = remember(videoPath) { File(videoPath) }
+        val sizeMb = remember(fileObj) {
+            if (fileObj.exists()) String.format(Locale.US, "%.2f MB", fileObj.length() / (1024.0 * 1024.0))
+            else "Live Stream"
+        }
+        AlertDialog(
+            onDismissRequest = { showMediaInfoDialog = false },
+            containerColor = HybridCardBg,
+            title = { Text("Real Hardware Codec & File Info", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Title: $displayTitle", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Path: $videoPath", color = HybridTextSecondary, fontSize = 11.sp)
+                    Text("Duration: ${formatVideoTime(totalDurationMs)}", color = HybridEmerald, fontSize = 12.sp)
+                    Text("File Size: $sizeMb", color = HybridCyan, fontSize = 12.sp)
+                    Text("Aspect / Zoom: $aspectRatioMode (${(zoomScale * 100).toInt()}%)", color = Color.White, fontSize = 12.sp)
+                    Text("Volume / Boost: $volumePercent% • Brightness: $brightnessPercent%", color = HybridGold, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMediaInfoDialog = false }) {
+                    Text("Done", color = HybridEmerald, fontWeight = FontWeight.Bold)
                 }
             }
         )

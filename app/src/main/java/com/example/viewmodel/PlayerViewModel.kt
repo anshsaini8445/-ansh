@@ -1,29 +1,55 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.PlaybackParams
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.app.mediaplayer.AudioService
+import com.app.mediaplayer.MediaNotificationHelper
 import com.example.data.database.AppDatabase
-import com.example.data.model.MediaFile
 import com.example.data.model.MediaItem
 import com.example.data.model.PlaylistEntity
 import com.example.data.repository.MediaRepository
 import com.example.helpers.FakeVaultHelper
+import com.example.helpers.IntruderLogEntry
+import com.example.helpers.Music3DThemeEngine
 import com.example.helpers.PermanentDeleteHelper
+import com.example.helpers.SecurityDefenseEngine
+import com.example.helpers.SyncedLyricLine
+import com.example.helpers.SyncedLyricsEngine
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlin.math.sqrt
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class PlayerViewModel(application: Application) : AndroidViewModel(application) {
+class PlayerViewModel(application: Application) :
+    AndroidViewModel(application),
+    MediaNotificationHelper.ControlDelegate,
+    SensorEventListener {
+
+    private var lastNotificationSec: Long = -1L
+    private val prefs = application.getSharedPreferences("HYBRID_PLAYER_PREFS", Context.MODE_PRIVATE)
+    private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val sensorManager = application.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+    private val accelerometer: Sensor? = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
     private val database = AppDatabase.getDatabase(application)
     private val repository = MediaRepository(
@@ -47,7 +73,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _sortCriteria = MutableStateFlow("Date") // "Date", "Name", "Size", "Length"
     val sortCriteria: StateFlow<String> = _sortCriteria.asStateFlow()
 
-    private val _sortNewToOld = MutableStateFlow(true) // true: From new to old, false: From old to new
+    private val _sortNewToOld = MutableStateFlow(true)
     val sortNewToOld: StateFlow<Boolean> = _sortNewToOld.asStateFlow()
 
     private val _isVideoGridView = MutableStateFlow(false)
@@ -79,6 +105,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var hardwareBassBoost: BassBoost? = null
     private var progressJob: Job? = null
     private var sleepTimerJob: Job? = null
+    private var lockoutTimerJob: Job? = null
 
     private val _nowPlaying = MutableStateFlow<MediaItem?>(null)
     val nowPlaying: StateFlow<MediaItem?> = _nowPlaying.asStateFlow()
@@ -98,9 +125,33 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _activePitchPreset = MutableStateFlow("Normal Studio")
     val activePitchPreset: StateFlow<String> = _activePitchPreset.asStateFlow()
 
-    // --- Hardware 200% Volume Boost ---
+    // --- Synced Lyrics State ---
+    private val _syncedLyrics = MutableStateFlow<List<SyncedLyricLine>>(emptyList())
+    val syncedLyrics: StateFlow<List<SyncedLyricLine>> = _syncedLyrics.asStateFlow()
+
+    // --- Hardware 200% Volume Boost & Audio Player Vertical Volume HUD State ---
     private val _is200BoostEnabled = MutableStateFlow(false)
     val is200BoostEnabled: StateFlow<Boolean> = _is200BoostEnabled.asStateFlow()
+
+    private val _audioVolumePercent = MutableStateFlow(readCurrentSystemVolumePercent())
+    val audioVolumePercent: StateFlow<Int> = _audioVolumePercent.asStateFlow()
+
+    // --- Double-Shake (2x Shake to Next Track + Vibration) Engine ---
+    private val _doubleShakeEnabled = MutableStateFlow(
+        prefs.getBoolean("permanent_double_shake_enabled", true)
+    )
+    val doubleShakeEnabled: StateFlow<Boolean> = _doubleShakeEnabled.asStateFlow()
+
+    private val _shakeSensitivity = MutableStateFlow(
+        prefs.getString("double_shake_sensitivity", "Normal") ?: "Normal"
+    )
+    val shakeSensitivity: StateFlow<String> = _shakeSensitivity.asStateFlow()
+
+    private val _isForegroundVideoActive = MutableStateFlow(false)
+    val isForegroundVideoActive: StateFlow<Boolean> = _isForegroundVideoActive.asStateFlow()
+
+    private var firstShakeTimestampMs: Long = 0L
+    private var lastDoubleShakeTriggerMs: Long = 0L
 
     // --- A-B Repeat ---
     private val _abPointAMs = MutableStateFlow<Long?>(null)
@@ -127,9 +178,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _bassBoostEnabled = MutableStateFlow(false)
     val bassBoostEnabled: StateFlow<Boolean> = _bassBoostEnabled.asStateFlow()
 
-    // --- Theme & Personalization Studio ---
-    private val _activeTheme = MutableStateFlow("Hybrid Emerald")
+    // --- Theme & 15+ 3D Animated Music Player Themes ---
+    private val _activeTheme = MutableStateFlow(
+        prefs.getString("saved_app_theme", "Hybrid Emerald") ?: "Hybrid Emerald"
+    )
     val activeTheme: StateFlow<String> = _activeTheme.asStateFlow()
+
+    private val _active3DMusicTheme = MutableStateFlow(
+        prefs.getString("saved_3d_music_theme", Music3DThemeEngine.THEMES_3D.first().name)
+            ?: Music3DThemeEngine.THEMES_3D.first().name
+    )
+    val active3DMusicTheme: StateFlow<String> = _active3DMusicTheme.asStateFlow()
 
     private val _customWallpaperUri = MutableStateFlow<String?>(null)
     val customWallpaperUri: StateFlow<String?> = _customWallpaperUri.asStateFlow()
@@ -160,7 +219,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     )
     val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
 
-    // --- Dual-PIN Private Vault Lock System ---
+    // --- 7-Layer Security Fortress & Dual-PIN Private Vault ---
     private val _vaultPinSet = MutableStateFlow(false)
     val vaultPinSet: StateFlow<Boolean> = _vaultPinSet.asStateFlow()
 
@@ -170,6 +229,31 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _isDecoyVault = MutableStateFlow(false)
     val isDecoyVault: StateFlow<Boolean> = _isDecoyVault.asStateFlow()
 
+    private val _globalFlagSecure = MutableStateFlow(
+        prefs.getBoolean("security_global_flag_secure", false)
+    )
+    val globalFlagSecure: StateFlow<Boolean> = _globalFlagSecure.asStateFlow()
+
+    private val _autoLockOnMinimize = MutableStateFlow(
+        prefs.getBoolean("security_auto_lock_minimize", true)
+    )
+    val autoLockOnMinimize: StateFlow<Boolean> = _autoLockOnMinimize.asStateFlow()
+
+    private val _panicShakeVaultLock = MutableStateFlow(
+        prefs.getBoolean("security_panic_shake_lock", true)
+    )
+    val panicShakeVaultLock: StateFlow<Boolean> = _panicShakeVaultLock.asStateFlow()
+
+    private val _intruderLogs = MutableStateFlow(
+        SecurityDefenseEngine.getIntruderLogs(application)
+    )
+    val intruderLogs: StateFlow<List<IntruderLogEntry>> = _intruderLogs.asStateFlow()
+
+    private val _vaultLockoutSeconds = MutableStateFlow(
+        SecurityDefenseEngine.getLockoutRemainingSeconds(application)
+    )
+    val vaultLockoutSeconds: StateFlow<Int> = _vaultLockoutSeconds.asStateFlow()
+
     // Visualizer spectrum
     private val _visualizerFrequencies = MutableStateFlow(List(16) { 0.1f })
     val visualizerFrequencies: StateFlow<List<Float>> = _visualizerFrequencies.asStateFlow()
@@ -177,6 +261,176 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     init {
         loadMedia()
         checkVaultPinStatus()
+        registerDoubleShakeSensor()
+        if (_vaultLockoutSeconds.value > 0) {
+            startVaultLockoutCountdown()
+        }
+        _musicItems.value.firstOrNull()?.let { firstTrack ->
+            _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), firstTrack)
+        }
+    }
+
+    private fun readCurrentSystemVolumePercent(): Int {
+        return try {
+            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(0)
+            ((cur.toFloat() / max.toFloat()) * 100f).toInt().coerceIn(0, 100)
+        } catch (_: Exception) {
+            75
+        }
+    }
+
+    fun syncSystemAudioVolumeFromHardware(): Int {
+        val sysPct = readCurrentSystemVolumePercent()
+        if (!_is200BoostEnabled.value || sysPct < 100) {
+            _audioVolumePercent.value = sysPct
+        }
+        return _audioVolumePercent.value
+    }
+
+    fun setAudioVolumeWithBoost(newPercent: Int) {
+        val clamped = newPercent.coerceIn(0, 200)
+        _audioVolumePercent.value = clamped
+        try {
+            val maxSys = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val targetSys = ((clamped.coerceAtMost(100) / 100f) * maxSys).toInt()
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetSys, 0)
+        } catch (_: Exception) {
+        }
+        if (clamped > 100) {
+            _is200BoostEnabled.value = true
+            applyLoudnessBoostCustomGain((clamped - 100) * 18)
+        } else {
+            _is200BoostEnabled.value = false
+            applyLoudnessBoostCustomGain(0)
+        }
+    }
+
+    // --- Hardware Accelerometer Double-Shake Registration & Detection ---
+    private fun registerDoubleShakeSensor() {
+        try {
+            if (accelerometer != null) {
+                sensorManager?.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
+        val x = event.values[0]
+        val y = event.values[1]
+        val z = event.values[2]
+
+        val gX = x / SensorManager.GRAVITY_EARTH
+        val gY = y / SensorManager.GRAVITY_EARTH
+        val gZ = z / SensorManager.GRAVITY_EARTH
+        val gForce = sqrt(gX * gX + gY * gY + gZ * gZ)
+
+        val thresholdG = when (_shakeSensitivity.value) {
+            "High" -> 1.85f
+            "Firm" -> 2.55f
+            else -> 2.15f
+        }
+
+        if (gForce > thresholdG) {
+            val now = System.currentTimeMillis()
+            // 1. Check Emergency Panic Shake inside Unlocked Privacy Vault
+            if (_vaultUnlocked.value && _panicShakeVaultLock.value && now - lastDoubleShakeTriggerMs > 900L) {
+                lastDoubleShakeTriggerMs = now
+                triggerDoubleShakeVibration(isSingleTick = false)
+                lockVault()
+                Toast.makeText(
+                    getApplication(),
+                    "🛡️ Panic Shake Triggered: Privacy Vault Locked!",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return
+            }
+
+            // 2. Check Double-Shake to Skip Song (Active in Audio Mode OR Background Video Audio Mode; OFF in Foreground Video)
+            if (!_doubleShakeEnabled.value || _isForegroundVideoActive.value) return
+            if (now - lastDoubleShakeTriggerMs < 1100L) return
+
+            val gap = now - firstShakeTimestampMs
+            if (gap in 160L..950L) {
+                // Confirmed 2nd Shake (Double Shake)!
+                firstShakeTimestampMs = 0L
+                lastDoubleShakeTriggerMs = now
+                executeDoubleShakeNextSong()
+            } else if (gap > 950L) {
+                // 1st Shake detected: store timestamp & give a subtle haptic tick
+                firstShakeTimestampMs = now
+                triggerDoubleShakeVibration(isSingleTick = true)
+            }
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    fun executeDoubleShakeNextSong() {
+        triggerDoubleShakeVibration(isSingleTick = false)
+        playNext()
+        val trackTitle = _nowPlaying.value?.cleanTitle ?: "Next Track"
+        Toast.makeText(
+            getApplication(),
+            "📳 2x Shake Vibration -> Playing: $trackTitle",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    fun triggerDoubleShakeVibration(isSingleTick: Boolean = false) {
+        try {
+            val app = getApplication<Application>()
+            val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = app.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                app.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+            if (vibrator?.hasVibrator() == true) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    if (isSingleTick) {
+                        vibrator.vibrate(VibrationEffect.createOneShot(25L, 140))
+                    } else {
+                        vibrator.vibrate(
+                            VibrationEffect.createWaveform(longArrayOf(0L, 65L, 55L, 95L), intArrayOf(0, 220, 0, 255), -1)
+                        )
+                    }
+                } else {
+                    @Suppress("DEPRECATION")
+                    if (isSingleTick) {
+                        vibrator.vibrate(25L)
+                    } else {
+                        vibrator.vibrate(longArrayOf(0L, 65L, 55L, 95L), -1)
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    fun toggleDoubleShakeEnabled() {
+        setDoubleShakeEnabled(!_doubleShakeEnabled.value)
+    }
+
+    fun setDoubleShakeEnabled(enabled: Boolean) {
+        _doubleShakeEnabled.value = enabled
+        prefs.edit().putBoolean("permanent_double_shake_enabled", enabled).apply()
+        if (enabled) {
+            triggerDoubleShakeVibration(isSingleTick = false)
+        }
+    }
+
+    fun setShakeSensitivity(level: String) {
+        _shakeSensitivity.value = level
+        prefs.edit().putString("double_shake_sensitivity", level).apply()
+        triggerDoubleShakeVibration(isSingleTick = true)
+    }
+
+    fun setForegroundVideoActive(active: Boolean) {
+        _isForegroundVideoActive.value = active
     }
 
     fun loadMedia() {
@@ -186,8 +440,20 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             _videoItems.value = videos
             _musicItems.value = music
             _allMediaItems.value = videos + music
+            if (_syncedLyrics.value.isEmpty()) {
+                val track = _nowPlaying.value ?: music.firstOrNull()
+                if (track != null) {
+                    _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), track)
+                }
+            }
             repository.syncMediaLibrary(videos + music)
         }
+    }
+
+    fun saveCustomLyricsForCurrentTrack(rawLrc: String) {
+        val current = _nowPlaying.value ?: _musicItems.value.firstOrNull() ?: return
+        SyncedLyricsEngine.saveCustomLrcForTrack(getApplication(), current.id, rawLrc)
+        _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), current)
     }
 
     fun setSortOptions(criteria: String, newToOld: Boolean) {
@@ -249,6 +515,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         mediaPlayer?.release()
         _abPointAMs.value = null
         _abPointBMs.value = null
+        _nowPlaying.value = item
+        _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), item)
+
+        // Ensure notification delegate & foreground service start immediately
+        MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
+        AudioService.startServiceSafely(getApplication())
 
         mediaPlayer = MediaPlayer().apply {
             try {
@@ -258,9 +530,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     mp.start()
                     _nowPlaying.value = item
                     _isPlaying.value = true
+                    MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
+                    AudioService.startServiceSafely(getApplication())
                     applySpeedAndPitch()
                     applyLoudnessBoost()
                     applyHardwareEqualizerAndBass()
+                    syncMediaNotification()
                     startProgressTracker()
 
                     viewModelScope.launch {
@@ -268,6 +543,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                         if (progress > 0 && progress < item.duration - 2000) {
                             mp.seekTo(progress.toInt())
                             _playbackPosition.value = progress
+                            syncMediaNotification()
                         }
                     }
                 }
@@ -279,8 +555,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                // Still set nowPlaying so UI studio screen can preview metadata safely
                 _nowPlaying.value = item
+                MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
+                syncMediaNotification()
             }
         }
     }
@@ -307,24 +584,31 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     mp.start()
                     _isPlaying.value = true
+                    MediaNotificationHelper.setControlDelegate(this)
+                    AudioService.startServiceSafely(getApplication())
                     startProgressTracker()
                 }
+                syncMediaNotification()
             } catch (_: Exception) {
             }
         }
     }
 
     fun seekTo(positionMs: Long) {
+        val dur = _nowPlaying.value?.duration?.takeIf { it > 0L }
+            ?: (mediaPlayer?.duration?.toLong()?.coerceAtLeast(1L) ?: 180_000L)
+        val clamped = positionMs.coerceIn(0L, dur)
+        _playbackPosition.value = clamped
         mediaPlayer?.let { mp ->
             try {
-                mp.seekTo(positionMs.toInt())
-                _playbackPosition.value = positionMs
-                viewModelScope.launch {
-                    _nowPlaying.value?.let {
-                        repository.saveProgress(it.id, positionMs)
-                    }
-                }
+                mp.seekTo(clamped.toInt())
             } catch (_: Exception) {
+            }
+        }
+        syncMediaNotification()
+        viewModelScope.launch {
+            _nowPlaying.value?.let {
+                repository.saveProgress(it.id, clamped)
             }
         }
     }
@@ -359,23 +643,27 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun toggle200Boost() {
-        _is200BoostEnabled.value = !_is200BoostEnabled.value
-        applyLoudnessBoost()
+        set200Boost(!_is200BoostEnabled.value)
     }
 
     fun set200Boost(enabled: Boolean) {
         _is200BoostEnabled.value = enabled
+        _audioVolumePercent.value = if (enabled) 200 else readCurrentSystemVolumePercent()
         applyLoudnessBoost()
     }
 
     private fun applyLoudnessBoost() {
+        applyLoudnessBoostCustomGain(if (_is200BoostEnabled.value) 1500 else 0)
+    }
+
+    private fun applyLoudnessBoostCustomGain(gainMb: Int) {
         val sessionId = mediaPlayer?.audioSessionId ?: return
         try {
             if (loudnessEnhancer == null) {
                 loudnessEnhancer = LoudnessEnhancer(sessionId)
             }
-            loudnessEnhancer?.setTargetGain(if (_is200BoostEnabled.value) 1500 else 0)
-            loudnessEnhancer?.enabled = _is200BoostEnabled.value
+            loudnessEnhancer?.setTargetGain(gainMb)
+            loudnessEnhancer?.enabled = gainMb > 0
         } catch (_: Exception) {
         }
     }
@@ -407,7 +695,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun playNext() {
-        val currentList = _musicItems.value
+        val currentList = _musicItems.value.ifEmpty { _videoItems.value }
         if (currentList.isEmpty()) return
         if (_isShuffleMode.value && currentList.size > 1) {
             val others = currentList.filter { it.id != _nowPlaying.value?.id }
@@ -423,7 +711,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun playPrevious() {
-        val currentList = _musicItems.value
+        val currentList = _musicItems.value.ifEmpty { _videoItems.value }
         if (currentList.isEmpty()) return
         val currentIndex = currentList.indexOfFirst { it.id == _nowPlaying.value?.id }
         if (currentIndex > 0) {
@@ -450,6 +738,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     repository.saveProgress(it.id, currentPos)
                 }
 
+                val sec = currentPos / 1000L
+                if (sec != lastNotificationSec) {
+                    lastNotificationSec = sec
+                    syncMediaNotification()
+                }
+
                 _visualizerFrequencies.value = List(16) { index ->
                     val multiplier = when (_equalizerPreset.value) {
                         "Bass Booster" -> if (index < 6) 1.6f else 0.8f
@@ -466,6 +760,60 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             }
             _visualizerFrequencies.value = List(16) { 0.1f }
         }
+    }
+
+    private fun syncMediaNotification() {
+        val current = _nowPlaying.value ?: return
+        val dur = current.duration.takeIf { it > 0L } ?: (mediaPlayer?.duration?.toLong()?.coerceAtLeast(0L) ?: 0L)
+        MediaNotificationHelper.showOrUpdateNotification(
+            context = getApplication(),
+            title = current.cleanTitle,
+            subtitle = current.artist.ifBlank { if (current.isVideo) "Background Video Audio" else "Hybrid Audio Studio" },
+            mediaPath = current.path,
+            isVideo = current.isVideo,
+            isPlaying = _isPlaying.value,
+            positionMs = _playbackPosition.value,
+            durationMs = dur,
+            playbackSpeed = _playbackSpeed.value,
+            contentIntentActivity = com.example.MainActivity::class.java
+        )
+    }
+
+    override fun onNotificationPlayPause() {
+        togglePlayPause()
+    }
+
+    override fun onNotificationRewind10s() {
+        seekTo((_playbackPosition.value - 10_000L).coerceAtLeast(0L))
+    }
+
+    override fun onNotificationFastForward10s() {
+        val dur = _nowPlaying.value?.duration?.takeIf { it > 0L } ?: Long.MAX_VALUE
+        seekTo((_playbackPosition.value + 10_000L).coerceAtMost(dur))
+    }
+
+    override fun onNotificationNext() {
+        playNext()
+    }
+
+    override fun onNotificationPrevious() {
+        playPrevious()
+    }
+
+    override fun onNotificationSeekTo(positionMs: Long) {
+        seekTo(positionMs)
+    }
+
+    override fun onNotificationStop() {
+        try {
+            if (mediaPlayer?.isPlaying == true) {
+                mediaPlayer?.pause()
+            }
+        } catch (_: Exception) {
+        }
+        _isPlaying.value = false
+        progressJob?.cancel()
+        MediaNotificationHelper.cancelNotification(getApplication())
     }
 
     private fun ClosedFloatingPointRange<Float>.random(): Float {
@@ -540,32 +888,99 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- Dual-PIN Private Vault Operations ---
+    // --- 7-Layer Security Fortress & Dual-PIN Private Vault Operations ---
     fun setupVaultPin(pin: String) {
         viewModelScope.launch {
-            val pinHash = pin.hashCode().toString()
+            val pinHash = SecurityDefenseEngine.hashPinSha256(pin)
             repository.setVaultPin(pinHash)
+            SecurityDefenseEngine.resetFailedPinAttempts(getApplication())
+            _vaultLockoutSeconds.value = 0
             _vaultPinSet.value = true
             _isDecoyVault.value = false
             _vaultUnlocked.value = true
         }
     }
 
-    fun verifyVaultPin(pin: String): Boolean {
+    fun verifyVaultPin(pin: String, onResult: (Boolean) -> Unit = {}): Boolean {
+        val lockout = SecurityDefenseEngine.getLockoutRemainingSeconds(getApplication())
+        if (lockout > 0) {
+            _vaultLockoutSeconds.value = lockout
+            startVaultLockoutCountdown()
+            onResult(false)
+            return false
+        }
         if (FakeVaultHelper.isDecoyPin(pin)) {
+            SecurityDefenseEngine.resetFailedPinAttempts(getApplication())
             _isDecoyVault.value = true
             _vaultUnlocked.value = true
+            onResult(true)
             return true
         }
-        val pinHash = pin.hashCode().toString()
+        val sha256Hash = SecurityDefenseEngine.hashPinSha256(pin)
+        val legacyHash = pin.hashCode().toString()
         viewModelScope.launch {
-            val hash = repository.getVaultPinHash()
-            if (hash == pinHash) {
+            val storedHash = repository.getVaultPinHash()
+            if (storedHash == sha256Hash || storedHash == legacyHash) {
+                SecurityDefenseEngine.resetFailedPinAttempts(getApplication())
+                _vaultLockoutSeconds.value = 0
                 _isDecoyVault.value = false
                 _vaultUnlocked.value = true
+                onResult(true)
+            } else {
+                // Failed attempt! Log intruder & trigger lockout if >= 3 attempts
+                triggerDoubleShakeVibration(isSingleTick = false)
+                SecurityDefenseEngine.recordFailedPinAttempt(getApplication(), pin)
+                _intruderLogs.value = SecurityDefenseEngine.getIntruderLogs(getApplication())
+                val remainingLockout = SecurityDefenseEngine.getLockoutRemainingSeconds(getApplication())
+                if (remainingLockout > 0) {
+                    _vaultLockoutSeconds.value = remainingLockout
+                    startVaultLockoutCountdown()
+                }
+                onResult(false)
             }
         }
         return true
+    }
+
+    private fun startVaultLockoutCountdown() {
+        lockoutTimerJob?.cancel()
+        lockoutTimerJob = viewModelScope.launch {
+            while (true) {
+                val rem = SecurityDefenseEngine.getLockoutRemainingSeconds(getApplication())
+                _vaultLockoutSeconds.value = rem
+                if (rem <= 0) break
+                delay(1000L)
+            }
+        }
+    }
+
+    fun clearIntruderLogs() {
+        SecurityDefenseEngine.clearIntruderLogs(getApplication())
+        _intruderLogs.value = emptyList()
+    }
+
+    fun toggleGlobalFlagSecure() {
+        val next = !_globalFlagSecure.value
+        _globalFlagSecure.value = next
+        prefs.edit().putBoolean("security_global_flag_secure", next).apply()
+    }
+
+    fun toggleAutoLockOnMinimize() {
+        val next = !_autoLockOnMinimize.value
+        _autoLockOnMinimize.value = next
+        prefs.edit().putBoolean("security_auto_lock_minimize", next).apply()
+    }
+
+    fun togglePanicShakeVaultLock() {
+        val next = !_panicShakeVaultLock.value
+        _panicShakeVaultLock.value = next
+        prefs.edit().putBoolean("security_panic_shake_lock", next).apply()
+    }
+
+    fun onAppMinimizedToBackground() {
+        if (_autoLockOnMinimize.value && _vaultUnlocked.value) {
+            lockVault()
+        }
     }
 
     fun lockVault() {
@@ -621,9 +1036,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- Personalization & Companion Controls ---
+    // --- Personalization, 15 3D Themes & Companion Controls ---
     fun selectTheme(themeName: String) {
         _activeTheme.value = themeName
+        prefs.edit().putString("saved_app_theme", themeName).apply()
+    }
+
+    fun select3DMusicTheme(theme3DName: String) {
+        _active3DMusicTheme.value = theme3DName
+        prefs.edit().putString("saved_3d_music_theme", theme3DName).apply()
+    }
+
+    fun cycleNext3DMusicTheme() {
+        val list = Music3DThemeEngine.THEMES_3D
+        val idx = list.indexOfFirst { it.name == _active3DMusicTheme.value }
+        val next = list[(idx + 1).coerceAtLeast(0) % list.size]
+        select3DMusicTheme(next.name)
     }
 
     fun setCustomWallpaper(uriString: String?) {
@@ -679,6 +1107,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         super.onCleared()
         progressJob?.cancel()
         sleepTimerJob?.cancel()
+        lockoutTimerJob?.cancel()
+        try {
+            sensorManager?.unregisterListener(this)
+        } catch (_: Exception) {
+        }
         try {
             loudnessEnhancer?.release()
             hardwareEqualizer?.release()

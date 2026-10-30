@@ -45,19 +45,39 @@ jobs:
             cp .env.example .env
           fi
 
-      - name: Build Debug APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Compute Auto-Incrementing Point Version (1.001, 1.002, ...)
+        id: calc_version
+        run: |
+          BASE_PATCH=0
+          if [ -f "version.properties" ]; then
+            BASE_PATCH=$(grep -E '^VERSION_PATCH=' version.properties | cut -d'=' -f2 | tr -d '[:space:]' || echo 0)
+          fi
+          RUN_NUM=${{ github.run_number }}
+          TOTAL_PATCH=$((BASE_PATCH + RUN_NUM))
+          POINT_VER=$(printf "1.%03d" "$TOTAL_PATCH")
+          VER_CODE=$((1000 + TOTAL_PATCH))
+          echo "POINT_VER=$POINT_VER" >> "$GITHUB_ENV"
+          echo "VER_CODE=$VER_CODE" >> "$GITHUB_ENV"
+          echo "Generated APK Version: v$POINT_VER (versionCode=$VER_CODE)"
 
-      - name: Prepare Clean APK File for Download
+      - name: Build Debug APK with Auto Point Version
+        run: |
+          gradle :app:assembleDebug \
+            -PautoVersionName="$POINT_VER" \
+            -PautoVersionCode="$VER_CODE" \
+            --no-daemon --stacktrace
+
+      - name: Prepare Clean Versioned APK File for Download
         run: |
           mkdir -p apk-output
-          cp app/build/outputs/apk/debug/*.apk apk-output/Hybrid-Player.apk
+          cp app/build/outputs/apk/debug/*.apk "apk-output/Hybrid-Player-v${POINT_VER}.apk"
+          cp app/build/outputs/apk/debug/*.apk "apk-output/Hybrid-Player.apk"
           ls -lh apk-output/
 
       - name: Upload Hybrid-Player-APK (ZIP in Actions Tab)
         uses: actions/upload-artifact@v4
         with:
-          name: Hybrid-Player-APK
-          path: apk-output/Hybrid-Player.apk
+          name: Hybrid-Player-APK-v${{ env.POINT_VER }}
+          path: apk-output/*.apk
           if-no-files-found: error
           retention-days: 30

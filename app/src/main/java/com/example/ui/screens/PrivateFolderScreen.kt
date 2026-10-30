@@ -45,18 +45,24 @@ fun PrivateFolderScreen(
     val isUnlocked by viewModel.vaultUnlocked.collectAsState()
     val isDecoyVault by viewModel.isDecoyVault.collectAsState()
     val privateItems by viewModel.privateItems.collectAsState()
+    val lockoutSeconds by viewModel.vaultLockoutSeconds.collectAsState()
+    val intruderLogs by viewModel.intruderLogs.collectAsState()
+    val globalFlagSecure by viewModel.globalFlagSecure.collectAsState()
 
     var pinDigits by remember { mutableStateOf("") }
     var setupStep by remember { mutableStateOf(1) }
     var setupFirstPin by remember { mutableStateOf("") }
     var keypadErrorMessage by remember { mutableStateOf<String?>(null) }
+    var showIntruderDialog by remember { mutableStateOf(false) }
 
-    // Apply FLAG_SECURE to block screenshots while inside Privacy Vault
-    DisposableEffect(Unit) {
+    // Apply FLAG_SECURE to block screenshots while inside Privacy Vault (keep on if globalFlagSecure is active)
+    DisposableEffect(globalFlagSecure) {
         val activity = context as? Activity
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         onDispose {
-            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            if (!viewModel.globalFlagSecure.value) {
+                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
         }
     }
 
@@ -89,6 +95,11 @@ fun PrivateFolderScreen(
                     }
                 },
                 actions = {
+                    if (intruderLogs.isNotEmpty()) {
+                        IconButton(onClick = { showIntruderDialog = true }) {
+                            Icon(Icons.Default.Warning, contentDescription = "Intruder Logs", tint = HybridCoralRed)
+                        }
+                    }
                     if (isUnlocked) {
                         IconButton(onClick = { viewModel.lockVault() }) {
                             Icon(Icons.Default.Lock, contentDescription = "Lock Vault", tint = HybridEmerald)
@@ -142,27 +153,35 @@ fun PrivateFolderScreen(
                     }
                 )
             } else if (!isUnlocked) {
-                // Unlock Flow (Supports Real PIN or "0000" Decoy PIN)
+                // Unlock Flow (Supports Real SHA-256 PIN, "0000" Decoy PIN, and Brute-Force Cooldown Lockout)
+                val isLockedOut = lockoutSeconds > 0
                 VaultPinPadSection(
-                    title = "Enter Privacy Vault PIN",
-                    subtitle = "Enter your Real PIN (or '0000' for Decoy Empty Vault)",
+                    title = if (isLockedOut) "🛡️ Brute-Force Lockout (${lockoutSeconds}s)" else "Enter Privacy Vault PIN",
+                    subtitle = if (isLockedOut) {
+                        "Too many wrong attempts! Intruder attempt logged. Wait ${lockoutSeconds}s."
+                    } else {
+                        "SHA-256 Encrypted • Enter Real PIN (or '0000' for Decoy Vault) • Panic Shake Active"
+                    },
                     pinDigits = pinDigits,
-                    errorMessage = keypadErrorMessage,
+                    errorMessage = if (isLockedOut) "Keypad Locked for ${lockoutSeconds}s (Anti-Brute-Force Shield)" else keypadErrorMessage,
                     onDigitPress = { digit ->
+                        if (isLockedOut) return@VaultPinPadSection
                         if (pinDigits.length < 4) {
                             pinDigits += digit
                             keypadErrorMessage = null
                             if (pinDigits.length == 4) {
-                                viewModel.verifyVaultPin(pinDigits)
-                                if (!viewModel.vaultUnlocked.value) {
-                                    keypadErrorMessage = "Incorrect PIN (Try Real PIN or 0000 Decoy)"
-                                    pinDigits = ""
+                                val entered = pinDigits
+                                viewModel.verifyVaultPin(entered) { matched ->
+                                    if (!matched) {
+                                        keypadErrorMessage = "Incorrect PIN! Attempt Logged by Intruder Shield."
+                                        pinDigits = ""
+                                    }
                                 }
                             }
                         }
                     },
                     onBackspace = {
-                        if (pinDigits.isNotEmpty()) pinDigits = pinDigits.dropLast(1)
+                        if (!isLockedOut && pinDigits.isNotEmpty()) pinDigits = pinDigits.dropLast(1)
                     }
                 )
             } else {
@@ -275,6 +294,46 @@ fun PrivateFolderScreen(
                 }
             }
         }
+    }
+
+    if (showIntruderDialog) {
+        AlertDialog(
+            onDismissRequest = { showIntruderDialog = false },
+            containerColor = HybridCardBg,
+            title = { Text("🚨 Intruder Break-In Logs (${intruderLogs.size})", color = HybridCoralRed, fontWeight = FontWeight.Bold) },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 260.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(intruderLogs) { entry ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0x22FF5252))
+                                .padding(10.dp)
+                        ) {
+                            Text("${entry.timestamp} • ${entry.pinMask}", color = HybridCoralRed, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(entry.detail, color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showIntruderDialog = false }) {
+                    Text("Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.clearIntruderLogs()
+                    showIntruderDialog = false
+                }) {
+                    Text("Clear Logs", color = HybridCoralRed)
+                }
+            }
+        )
     }
 }
 

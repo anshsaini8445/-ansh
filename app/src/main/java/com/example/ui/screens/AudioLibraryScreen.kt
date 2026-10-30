@@ -23,11 +23,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
 import com.example.ui.theme.*
@@ -46,6 +48,7 @@ fun AudioLibraryScreen(
     val favorites by viewModel.favoriteItems.collectAsState()
     val nowPlaying by viewModel.nowPlaying.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
+    val doubleShakeEnabled by viewModel.doubleShakeEnabled.collectAsState()
 
     var selectedCategory by remember { mutableStateOf("Songs") } // "Songs", "Folders", "Albums", "Artists", "Favorites"
     var selectedGroupFilter by remember { mutableStateOf<String?>(null) }
@@ -68,13 +71,23 @@ fun AudioLibraryScreen(
             .background(MaterialTheme.colorScheme.background)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // --- TOP HEADER: Scrollable Category Pills + Borderless Equalizer & 3-Dot Icons ---
+            // --- TOP HEADER: Custom App Logo + Scrollable Category Pills + Borderless Equalizer & 3-Dot Icons ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Image(
+                    painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                    contentDescription = "Hybrid Player App Icon",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(9.dp))
+                )
+                Spacer(modifier = Modifier.width(10.dp))
                 LazyRow(
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -146,7 +159,7 @@ fun AudioLibraryScreen(
                 }
             }
 
-            // --- ACTION STRIP: Unified "Shuffle Play" Pill Button + Total Song Counter ---
+            // --- ACTION STRIP: Unified "Shuffle Play" + "2x Shake Vibration" Toggle + Song Counter ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -155,36 +168,81 @@ fun AudioLibraryScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(HybridEmerald.copy(alpha = 0.18f))
-                        .border(1.dp, HybridEmerald.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
-                        .clickable {
-                            viewModel.shufflePlayMusic()
-                            tracks.firstOrNull()?.let { onOpenStudioPlayer(nowPlaying ?: it) }
-                        }
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Shuffle,
-                        contentDescription = "Shuffle Play",
-                        tint = HybridEmerald,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Shuffle Play",
-                        color = HybridEmerald,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp
-                    )
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(HybridEmerald.copy(alpha = 0.18f))
+                            .border(1.dp, HybridEmerald.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
+                            .clickable {
+                                viewModel.shufflePlayMusic()
+                                tracks.firstOrNull()?.let { onOpenStudioPlayer(nowPlaying ?: it) }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Shuffle,
+                            contentDescription = "Shuffle Play",
+                            tint = HybridEmerald,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Shuffle Play",
+                            color = HybridEmerald,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    // Front-and-center 2x Shake Vibration Toggle in Audio Section
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(
+                                if (doubleShakeEnabled) HybridCyan.copy(alpha = 0.18f)
+                                else HybridCardBg
+                            )
+                            .border(
+                                1.dp,
+                                if (doubleShakeEnabled) HybridCyan else HybridCardBorder,
+                                RoundedCornerShape(24.dp)
+                            )
+                            .clickable {
+                                viewModel.toggleDoubleShakeEnabled()
+                                val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
+                                Toast.makeText(
+                                    context,
+                                    "📳 2x Shake Vibration (Next Song): $st",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Vibration,
+                            contentDescription = "2x Shake Vibration Toggle",
+                            tint = if (doubleShakeEnabled) HybridCyan else HybridTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = if (doubleShakeEnabled) "2x Shake: ON" else "2x Shake: OFF",
+                            color = if (doubleShakeEnabled) HybridCyan else HybridTextSecondary,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
 
                 Text(
                     text = "${displayedTracks.size} Songs",
                     color = HybridTextSecondary,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
                 )
             }

@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,11 +22,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.data.model.MediaItem
 import com.example.helpers.*
 import com.example.ui.theme.*
@@ -52,8 +56,18 @@ fun MeToolkitScreen(
     val hybrid8kDecoder by viewModel.hybrid8kDecoder.collectAsState()
     val is200Boost by viewModel.is200BoostEnabled.collectAsState()
     val hdrCcBadges by viewModel.hdrCcBadges.collectAsState()
+    val doubleShakeEnabled by viewModel.doubleShakeEnabled.collectAsState()
+    val shakeSensitivity by viewModel.shakeSensitivity.collectAsState()
+    val active3DMusicTheme by viewModel.active3DMusicTheme.collectAsState()
+    val globalFlagSecure by viewModel.globalFlagSecure.collectAsState()
+    val autoLockOnMinimize by viewModel.autoLockOnMinimize.collectAsState()
+    val panicShakeVaultLock by viewModel.panicShakeVaultLock.collectAsState()
+    val vaultPinSet by viewModel.vaultPinSet.collectAsState()
+    val intruderLogs by viewModel.intruderLogs.collectAsState()
 
     var showThemeStudioDialog by remember { mutableStateOf(false) }
+    var show3DMusicThemesDialog by remember { mutableStateOf(false) }
+    var showSecurityFortressDialog by remember { mutableStateOf(false) }
     var showCompanionDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showPitchDialog by remember { mutableStateOf(false) }
@@ -83,53 +97,117 @@ fun MeToolkitScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(top = if (oneHandMode) 140.dp else 14.dp, bottom = 32.dp)
     ) {
-        // --- 1. COMPACT VIP STRIP ("8K Studio Pass" with Manage Button) ---
+        // --- 1. COMPACT VIP STRIP ("8K Studio Pass" + Live Auto Point Version Badge) ---
         item {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(HybridCardBg)
                     .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
                     .padding(horizontal = 16.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(HybridGold.copy(alpha = 0.18f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.WorkspacePremium, contentDescription = null, tint = HybridGold)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                            contentDescription = "Hybrid Player App Icon",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "8K Studio Pass • v${com.example.BuildConfig.VERSION_NAME}",
+                                color = HybridGold,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "Build #${com.example.BuildConfig.VERSION_CODE} • Lock-Screen & BG Notification Active",
+                                color = HybridEmerald,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "8K Studio Pass",
-                            color = HybridGold,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp
-                        )
-                        Text(
-                            text = "Zero Ads • Hardware 8K & 200% Audio Unlocked",
-                            color = HybridTextSecondary,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+
+                    Button(
+                        onClick = { showVipManageDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
+                        shape = RoundedCornerShape(20.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text("Manage", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                 }
 
-                Button(
-                    onClick = { showVipManageDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
-                    shape = RoundedCornerShape(20.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Manage", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    OutlinedButton(
+                        onClick = {
+                            val current = viewModel.nowPlaying.value
+                                ?: viewModel.musicItems.value.firstOrNull()
+                                ?: viewModel.videoItems.value.firstOrNull()
+                            if (current != null) {
+                                viewModel.playMusic(current)
+                            } else {
+                                com.app.mediaplayer.MediaNotificationHelper.showOrUpdateNotification(
+                                    context = context,
+                                    title = "Hybrid 8K Studio Ready",
+                                    subtitle = "Notification & Lock-Screen Controls Active (v${com.example.BuildConfig.VERSION_NAME})",
+                                    mediaPath = null,
+                                    isVideo = false,
+                                    isPlaying = true,
+                                    positionMs = 0L,
+                                    durationMs = 180_000L,
+                                    contentIntentActivity = com.example.MainActivity::class.java
+                                )
+                            }
+                            Toast.makeText(
+                                context,
+                                "Notification & Lock-Screen Controls Active (Prev, -10s, Play/Pause, +10s, Next)!",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Show Notif Controls", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                context.startActivity(
+                                    android.content.Intent(context, com.app.mediaplayer.MainActivity::class.java)
+                                )
+                            } catch (_: Exception) {
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Memory, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Media3 Pro Mode", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
                 }
             }
         }
@@ -229,6 +307,13 @@ fun MeToolkitScreen(
                 )
 
                 PersonalizationNavRow(
+                    title = "3D Animated Song Player Themes",
+                    value = "$active3DMusicTheme (15 3D Themes)",
+                    icon = Icons.Default.AutoAwesome,
+                    onClick = { show3DMusicThemesDialog = true }
+                )
+
+                PersonalizationNavRow(
                     title = "Realistic Puppy Companion",
                     value = if (companionEnabled) companionBreed else "Disabled",
                     icon = Icons.Default.Pets,
@@ -319,6 +404,362 @@ fun MeToolkitScreen(
                 )
             }
         }
+
+        // --- 5. PERMANENT DOUBLE-SHAKE ("2x SHAKE + VIBRATION") CONTROL CENTER ---
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(HybridCardBg)
+                    .border(
+                        1.dp,
+                        if (doubleShakeEnabled) HybridCyan.copy(alpha = 0.6f) else HybridCardBorder,
+                        RoundedCornerShape(16.dp)
+                    )
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Vibration, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Permanent 2x Shake & Vibration (Next Song)",
+                            color = HybridCyan,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                    Text(
+                        text = if (doubleShakeEnabled) "PERMANENT ON" else "PERMANENT OFF",
+                        color = if (doubleShakeEnabled) HybridEmerald else HybridCoralRed,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                EngineSwitchRow(
+                    title = "Double-Shake (2x Shake) to Change Song",
+                    subtitle = "Shake phone twice to vibrate & play next song (Active in Audio & BG Video Audio only)",
+                    checked = doubleShakeEnabled,
+                    onCheckedChange = {
+                        viewModel.setDoubleShakeEnabled(it)
+                        Toast.makeText(
+                            context,
+                            if (it) "Permanent 2x Shake + Vibration Enabled!" else "Permanent 2x Shake Disabled",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+
+                Text(
+                    text = "Shake Sensor Sensitivity:",
+                    color = HybridTextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    listOf("High", "Normal", "Firm").forEach { level ->
+                        val active = shakeSensitivity == level
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (active) HybridCyan else HybridCardAlt)
+                                .border(1.dp, if (active) HybridCyan else HybridCardBorder, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    viewModel.setShakeSensitivity(level)
+                                    Toast.makeText(context, "2x Shake Sensitivity: $level", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = level,
+                                color = if (active) Color.Black else Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { viewModel.executeDoubleShakeNextSong() },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text("Test 2x Shake", color = HybridEmerald, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // --- 6. 7-LAYER CYBER SECURITY FORTRESS & ANTI-TAMPER AUDIT ---
+        item {
+            val auditReport = remember(globalFlagSecure, autoLockOnMinimize, panicShakeVaultLock, vaultPinSet) {
+                SecurityDefenseEngine.runSecurityIntegrityAudit(
+                    context = context,
+                    flagSecureEnabled = globalFlagSecure,
+                    autoLockOnMinimize = autoLockOnMinimize,
+                    panicShakeLock = panicShakeVaultLock,
+                    vaultPinSet = vaultPinSet
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(HybridCardBg)
+                    .border(1.dp, HybridEmerald.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Shield, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "7-Layer Cyber Security Fortress",
+                            color = HybridEmerald,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(HybridEmerald.copy(alpha = 0.18f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "Shield ${auditReport.securityScore}%",
+                            color = HybridEmerald,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+
+                EngineSwitchRow(
+                    title = "Global Anti-Screenshot Shield (FLAG_SECURE)",
+                    subtitle = "Blocks screenshots, screen recording & recent-apps snooping everywhere",
+                    checked = globalFlagSecure,
+                    onCheckedChange = {
+                        viewModel.toggleGlobalFlagSecure()
+                        Toast.makeText(
+                            context,
+                            if (!globalFlagSecure) "🛡️ Global Anti-Screenshot Shield Activated!" else "Global Shield Set to Vault-Only",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+
+                EngineSwitchRow(
+                    title = "Instant Background Auto-Lock (ON_STOP)",
+                    subtitle = "Locks Privacy Vault in <1ms when app minimizes or screen turns off",
+                    checked = autoLockOnMinimize,
+                    onCheckedChange = { viewModel.toggleAutoLockOnMinimize() }
+                )
+
+                EngineSwitchRow(
+                    title = "Panic Shake Emergency Vault Lock",
+                    subtitle = "Shaking phone inside Privacy Vault immediately locks & hides files",
+                    checked = panicShakeVaultLock,
+                    onCheckedChange = { viewModel.togglePanicShakeVaultLock() }
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = { showSecurityFortressDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Security Audit & Intruder Logs (${intruderLogs.size})",
+                            color = Color.Black,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 15 3D ANIMATED MUSIC PLAYER THEMES DIALOG ---
+    if (show3DMusicThemesDialog) {
+        AlertDialog(
+            onDismissRequest = { show3DMusicThemesDialog = false },
+            containerColor = HybridCardBg,
+            title = {
+                Text(
+                    "15 3D Animated Music Player Themes",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 320.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(Music3DThemeEngine.THEMES_3D, key = { it.id }) { spec ->
+                        val selected = active3DMusicTheme == spec.name
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (selected) spec.primaryColor.copy(alpha = 0.2f) else HybridCardAlt)
+                                .clickable {
+                                    viewModel.select3DMusicTheme(spec.name)
+                                    show3DMusicThemesDialog = false
+                                    Toast.makeText(context, "3D Music Theme: ${spec.name}", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .background(spec.primaryColor),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("${spec.id}", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(spec.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(spec.subtitle, color = HybridTextSecondary, fontSize = 11.sp)
+                            }
+                            if (selected) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = spec.primaryColor)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { show3DMusicThemesDialog = false }) {
+                    Text("Close", color = HybridEmerald)
+                }
+            }
+        )
+    }
+
+    // --- 7-LAYER CYBER SECURITY AUDIT & INTRUDER LOGS DIALOG ---
+    if (showSecurityFortressDialog) {
+        val auditReport = remember(globalFlagSecure, autoLockOnMinimize, panicShakeVaultLock, vaultPinSet) {
+            SecurityDefenseEngine.runSecurityIntegrityAudit(
+                context = context,
+                flagSecureEnabled = globalFlagSecure,
+                autoLockOnMinimize = autoLockOnMinimize,
+                panicShakeLock = panicShakeVaultLock,
+                vaultPinSet = vaultPinSet
+            )
+        }
+        AlertDialog(
+            onDismissRequest = { showSecurityFortressDialog = false },
+            containerColor = HybridCardBg,
+            title = {
+                Text(
+                    "🛡️ 7-Layer Security Audit (${auditReport.securityScore}/100)",
+                    color = HybridEmerald,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(auditReport.layers) { layer ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(HybridCardAlt)
+                                .border(1.dp, if (layer.isSecure) HybridEmerald.copy(alpha = 0.4f) else HybridCardBorder, RoundedCornerShape(10.dp))
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(layer.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text(layer.description, color = HybridTextSecondary, fontSize = 10.sp)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = layer.statusBadge,
+                                color = if (layer.isSecure) HybridEmerald else HybridGold,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+
+                    item {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Intruder Failed-PIN Logs (${intruderLogs.size}):",
+                            color = HybridCoralRed,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    if (intruderLogs.isEmpty()) {
+                        item {
+                            Text(
+                                text = "Zero unauthorized Vault break-in attempts detected.",
+                                color = HybridTextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                    } else {
+                        items(intruderLogs) { log ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0x22FF5252))
+                                    .padding(8.dp)
+                            ) {
+                                Text("${log.timestamp} • ${log.pinMask}", color = HybridCoralRed, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(log.detail, color = Color.White, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSecurityFortressDialog = false }) {
+                    Text("Done", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                if (intruderLogs.isNotEmpty()) {
+                    TextButton(onClick = { viewModel.clearIntruderLogs() }) {
+                        Text("Clear Logs", color = HybridCoralRed)
+                    }
+                }
+            }
+        )
     }
 
     // --- THEME & WALLPAPER STUDIO DIALOG (19 Themes + Custom Gallery Photo) ---
