@@ -44,6 +44,8 @@ import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.components.LiquidGlassShakeOrbWidget
 import com.example.ui.menus.MediaSevenActionDialog
+import com.example.ui.persona.DemographicMode
+import com.example.ui.persona.UniversalPersonaSelectorDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
@@ -67,11 +69,14 @@ fun VideoSectionScreen(
     val isGridView by viewModel.isVideoGridView.collectAsState()
     val hdrBadges by viewModel.hdrCcBadges.collectAsState()
     val doubleShakeEnabled by viewModel.doubleShakeEnabled.collectAsState()
+    val personaMode by viewModel.demographicMode.collectAsState()
 
     var activeSubTab by remember { mutableStateOf("Video") } // "Video" | "Folder" | "Playlist"
     var openedFolderName by remember { mutableStateOf<String?>(null) }
     var showSortDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showPersonaDialog by remember { mutableStateOf(false) }
+    var isHistoryCollapsed by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
     var actionTargetVideo by remember { mutableStateOf<MediaItem?>(null) }
 
@@ -95,11 +100,6 @@ fun VideoSectionScreen(
     val isMultiSelectMode = selectedIds.isNotEmpty()
     var pendingDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
 
-    // Calculate cleanable storage badge for Top-Right Cleaner Bucket Icon
-    val storageStats = remember(videos) {
-        HybridCleanerHubHelper.getRealStorageStats(context, videos)
-    }
-
     // Apply PLAYit-style Sort
     val sortedVideos = remember(videos, sortCriteria, sortNewToOld, openedFolderName) {
         val base = if (openedFolderName != null) {
@@ -115,9 +115,9 @@ fun VideoSectionScreen(
         if (sortNewToOld) base.sortedWith(comparator.reversed()) else base.sortedWith(comparator)
     }
 
-    val historyVideos = remember(history, videos) {
-        val histItems = history.filter { it.first.isVideo }
-        if (histItems.isNotEmpty()) histItems else videos.take(4).map { it to (it.duration / 3) }
+    // Real watched history only (never fake/duplicate items taking up half the screen)
+    val historyVideos = remember(history) {
+        history.filter { it.first.isVideo }
     }
 
     val historyProgressMap = remember(historyVideos) {
@@ -129,13 +129,14 @@ fun VideoSectionScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // --- TOP SELECTION BAR (When Multi-Select Active) OR PLAYit TOP HEADER ---
+        // --- FIXED-HEIGHT 56.DP SLEEK TOP HEADER (Never stretches vertically!) ---
         if (isMultiSelectMode) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(56.dp)
                     .background(HybridCardBg)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -143,9 +144,10 @@ fun VideoSectionScreen(
                     text = "${selectedIds.size} Selected",
                     color = HybridEmerald,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp
+                    fontSize = 16.sp,
+                    maxLines = 1
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = {
                         if (selectedIds.size == sortedVideos.size) {
                             selectedIds.clear()
@@ -154,7 +156,7 @@ fun VideoSectionScreen(
                             selectedIds.addAll(sortedVideos.map { it.id })
                         }
                     }) {
-                        Text("Select All", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text("All", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                     TextButton(onClick = { selectedIds.clear() }) {
                         Text("Done", color = HybridEmerald, fontWeight = FontWeight.Bold)
@@ -162,258 +164,143 @@ fun VideoSectionScreen(
                 }
             }
         } else {
-            // Top Header: Left Custom Red Glass Play Icon + Bold "Hybrid Player", Right Controls
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .height(56.dp)
+                    .padding(horizontal = 14.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Image(
                         painter = painterResource(id = R.drawable.ic_app_custom_logo),
                         contentDescription = "Hybrid Player App Icon",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(9.dp))
                     )
                     Text(
                         text = "Hybrid Player",
                         color = Color.White,
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.ExtraBold
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Add / Pick Real Videos Orb (Liquid Glass)
+                    // 1. Universal Experience Mode Orb (Kids 👶 / Senior 👴 / Youth ⚡ / Bharat 🇮🇳 / Global 🌍)
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(personaMode.primaryAccent.copy(alpha = 0.32f), Color(0xFF0E1726))
+                                )
+                            )
+                            .border(1.2.dp, personaMode.primaryAccent, CircleShape)
+                            .clickable { showPersonaDialog = true }
+                            .testTag("persona_mode_button"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = personaMode.badgeEmoji, fontSize = 15.sp)
+                    }
+
+                    // 2. Direct ShareKaro Transfer Orb
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.SwapHoriz,
+                        contentDescription = "ShareKaro Transfer",
+                        tintColor = Color(0xFFD500F9),
+                        size = 36.dp,
+                        iconSize = 18.dp,
+                        isActive = true,
+                        onClick = onOpenTurboShare
+                    )
+
+                    // 3. Pick Real Videos from Any Folder Orb
                     LiquidGlassIconOrb(
                         icon = Icons.Default.FolderOpen,
                         contentDescription = "Add Real Videos from Device",
                         tintColor = Color(0xFF00E5FF),
-                        size = 38.dp,
-                        iconSize = 18.dp,
-                        isActive = true,
+                        size = 36.dp,
+                        iconSize = 17.dp,
+                        isActive = false,
                         onClick = {
                             pickVideosLauncher.launch(arrayOf("video/*"))
                         }
                     )
 
-                    // Rescan Real Device Storage Orb (Liquid Glass)
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.Refresh,
-                        contentDescription = "Scan Real Device Videos",
-                        tintColor = HybridEmerald,
-                        size = 38.dp,
-                        iconSize = 18.dp,
-                        isActive = false,
-                        onClick = {
-                            val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                                arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
-                            } else {
-                                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                            }
-                            permissionLauncher.launch(perms)
-                        }
-                    )
-
-                    // Visual Liquid Glass 2x Shake Vibration Orb (No text clutter)
+                    // 4. Visual Liquid Glass 2x Shake Vibration Orb
                     LiquidGlassShakeOrbWidget(
                         isEnabled = doubleShakeEnabled,
-                        size = 38.dp,
+                        size = 36.dp,
                         onClick = {
                             viewModel.toggleDoubleShakeEnabled()
                             val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
                             Toast.makeText(
                                 context,
-                                "📳 BG Audio 2x Shake (Next Track): $st",
+                                "📳 2x Shake (Next Track): $st",
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
                     )
 
-                    // Top-Right Liquid Glass Cleaner Bucket with Cleanable Storage Badge
-                    LiquidGlassBox(
-                        modifier = Modifier.testTag("cleaner_bucket_button"),
-                        cornerRadius = 20.dp,
-                        tintColor = HybridCoralRed,
-                        glassAlpha = 0.22f,
-                        onClick = onOpenCleanerHub
+                    // 5. Compact 36.dp Cleaner Orb (Fixes the vertical stretching bug from Screenshot!)
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("cleaner_bucket_button")
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteSweep,
-                                    contentDescription = "Cleaner Bucket",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(19.dp)
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .size(7.dp)
-                                        .clip(CircleShape)
-                                        .background(HybridCoralRed)
-                                        .align(Alignment.TopEnd)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = storageStats.cleanableBadgeText,
-                                color = HybridCoralRed,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // --- HISTORY CAROUSEL (Horizontal Strip) ---
-        if (historyVideos.isNotEmpty() && openedFolderName == null) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "History",
-                        color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    IconButton(
-                        onClick = {
-                            viewModel.clearHistory()
-                            Toast.makeText(context, "Watch History Cleared", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.DeleteOutline,
-                            contentDescription = "Clear History",
-                            tint = HybridTextSecondary,
-                            modifier = Modifier.size(18.dp)
+                        LiquidGlassIconOrb(
+                            icon = Icons.Default.DeleteSweep,
+                            contentDescription = "Cleaner Hub",
+                            tintColor = HybridCoralRed,
+                            size = 36.dp,
+                            iconSize = 18.dp,
+                            onClick = onOpenCleanerHub
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(HybridCoralRed)
+                                .align(Alignment.TopEnd)
                         )
                     }
                 }
-
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    items(historyVideos, key = { "hist_${it.first.id}" }) { (video, posMs) ->
-                        val progressFraction = if (video.duration > 0) {
-                            (posMs.toFloat() / video.duration.toFloat()).coerceIn(0.12f, 1f)
-                        } else 0.35f
-
-                        Box(
-                            modifier = Modifier
-                                .size(width = 152.dp, height = 86.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(HybridCardBg)
-                                .border(1.dp, HybridCardBorder, RoundedCornerShape(12.dp))
-                                .clickable { onPlayVideo(video) }
-                        ) {
-                            GuaranteedVideoThumbnail(
-                                video = video,
-                                modifier = Modifier.fillMaxSize()
-                            )
-
-                            // Subtle bottom gradient
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(
-                                        Brush.verticalGradient(
-                                            colors = listOf(Color.Transparent, Color(0xCC000000))
-                                        )
-                                    )
-                            )
-
-                            // Bottom-Left Golden "8k" Badge
-                            if (hdrBadges) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomStart)
-                                        .padding(start = 6.dp, bottom = 8.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(HybridGold)
-                                        .padding(horizontal = 5.dp, vertical = 1.dp)
-                                ) {
-                                    Text(
-                                        text = if (video.is8K) "8k" else video.resolution,
-                                        color = Color.Black,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.ExtraBold
-                                    )
-                                }
-                            }
-
-                            // Bottom-Right Duration ("▶ 03:06")
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .padding(end = 6.dp, bottom = 8.dp)
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(Color(0x99000000))
-                                    .padding(horizontal = 5.dp, vertical = 1.dp)
-                            ) {
-                                Text(
-                                    text = "▶ ${video.formattedDuration}",
-                                    color = Color.White,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-
-                            // Bottom Edge Green Watched Progress Line
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(3.dp)
-                                    .align(Alignment.BottomCenter)
-                                    .background(Color(0x44FFFFFF))
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(progressFraction)
-                                        .fillMaxHeight()
-                                        .background(HybridEmerald)
-                                )
-                            }
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(10.dp))
             }
         }
 
-        // --- SUB-TABS & CONTROLS ROW ("Video" | "Folder" | "Playlist" + Sort + Grid/List or '+') ---
+        // --- COMPACT 42.DP SUB-TABS & CONTROLS ROW ("Video" | "Folder" | "Playlist" + Rescan + Sort + Grid/List) ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .height(44.dp)
+                .padding(horizontal = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                listOf("Video", "Folder", "Playlist").forEach { tab ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(
+                    Triple("Video", Icons.Default.SmartDisplay, sortedVideos.size),
+                    Triple("Folder", Icons.Default.Folder, videos.map { it.folderName }.distinct().size),
+                    Triple("Playlist", Icons.Default.VideoLibrary, playlists.size + 1)
+                ).forEach { (tab, tabIcon, count) ->
                     val isSelected = activeSubTab == tab
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -422,19 +309,30 @@ fun VideoSectionScreen(
                             openedFolderName = null
                         }
                     ) {
-                        Text(
-                            text = tab,
-                            color = if (isSelected) HybridEmerald else HybridTextSecondary,
-                            fontSize = 16.sp,
-                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = tabIcon,
+                                contentDescription = tab,
+                                tint = if (isSelected) personaMode.primaryAccent else HybridTextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "$count",
+                                color = if (isSelected) Color.White else HybridTextSecondary,
+                                fontSize = 13.sp,
+                                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
                         Box(
                             modifier = Modifier
-                                .width(28.dp)
+                                .width(26.dp)
                                 .height(3.dp)
                                 .clip(RoundedCornerShape(2.dp))
-                                .background(if (isSelected) HybridEmerald else Color.Transparent)
+                                .background(if (isSelected) personaMode.primaryAccent else Color.Transparent)
                         )
                     }
                 }
@@ -442,19 +340,36 @@ fun VideoSectionScreen(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                // 1. Liquid Glass Sort Icon Orb
+                // Rescan Storage Orb
+                LiquidGlassIconOrb(
+                    icon = Icons.Default.Refresh,
+                    contentDescription = "Scan Real Device Videos",
+                    tintColor = HybridEmerald,
+                    size = 34.dp,
+                    iconSize = 16.dp,
+                    onClick = {
+                        val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
+                        } else {
+                            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                        }
+                        permissionLauncher.launch(perms)
+                    }
+                )
+
+                // Sort Orb
                 LiquidGlassIconOrb(
                     icon = Icons.Default.SwapVert,
                     contentDescription = "Sort by",
                     tintColor = Color(0xFF00E5FF),
-                    size = 36.dp,
-                    iconSize = 18.dp,
+                    size = 34.dp,
+                    iconSize = 16.dp,
                     onClick = { showSortDialog = true }
                 )
 
-                // 2. Liquid Glass View Mode Toggle / Create Playlist Orb
+                // Grid / List Toggle Orb
                 LiquidGlassIconOrb(
                     icon = when {
                         activeSubTab == "Playlist" -> Icons.Default.Add
@@ -462,9 +377,9 @@ fun VideoSectionScreen(
                         else -> Icons.Default.GridView
                     },
                     contentDescription = "Toggle View / Create Playlist",
-                    tintColor = HybridEmerald,
-                    size = 36.dp,
-                    iconSize = 18.dp,
+                    tintColor = personaMode.primaryAccent,
+                    size = 34.dp,
+                    iconSize = 16.dp,
                     onClick = {
                         if (activeSubTab == "Playlist") {
                             showCreatePlaylistDialog = true
@@ -481,39 +396,44 @@ fun VideoSectionScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .padding(horizontal = 14.dp, vertical = 4.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(HybridCardBg)
                     .clickable { openedFolderName = null }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Folders", tint = HybridEmerald)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Folder: $openedFolderName (${sortedVideos.size} videos)",
+                    text = "$openedFolderName (${sortedVideos.size})",
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 14.sp,
+                    maxLines = 1
                 )
             }
         }
 
-        // --- MAIN SUB-TAB CONTENT ---
-        Box(modifier = Modifier.weight(1f)) {
+        // --- FULL-SCREEN VIDEO CONTENT AREA (Occupies ~85% of the screen immediately!) ---
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
             when (activeSubTab) {
                 "Video" -> {
                     if (sortedVideos.isEmpty()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(24.dp),
+                                .padding(20.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             LiquidGlassBox(
                                 modifier = Modifier.fillMaxWidth(),
                                 cornerRadius = 28.dp,
-                                tintColor = HybridEmerald,
+                                tintColor = personaMode.primaryAccent,
                                 glassAlpha = 0.24f
                             ) {
                                 Column(
@@ -526,7 +446,7 @@ fun VideoSectionScreen(
                                     LiquidGlassIconOrb(
                                         icon = Icons.Default.VideoLibrary,
                                         contentDescription = "Real Device Videos",
-                                        tintColor = HybridEmerald,
+                                        tintColor = personaMode.primaryAccent,
                                         size = 64.dp,
                                         iconSize = 32.dp,
                                         isActive = true,
@@ -546,7 +466,7 @@ fun VideoSectionScreen(
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                     Text(
-                                        text = "Zero dummy videos! Grant storage permission to scan all real videos on your phone, or pick videos directly from any folder.",
+                                        text = "Grant storage permission to scan all real 8K/4K/HD videos on your phone, or pick videos directly from any folder.",
                                         color = HybridTextSecondary,
                                         fontSize = 13.sp,
                                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -610,7 +530,7 @@ fun VideoSectionScreen(
                     } else if (isGridView) {
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(2),
-                            contentPadding = PaddingValues(16.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.fillMaxSize()
@@ -639,11 +559,146 @@ fun VideoSectionScreen(
                             }
                         }
                     } else {
+                        // Full-Screen Scrollable LazyColumn (History scrolls away cleanly with the list!)
                         LazyColumn(
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.fillMaxSize()
                         ) {
+                            // Scrollable Collapsible History Carousel (Only when real watch history exists)
+                            if (historyVideos.isNotEmpty() && openedFolderName == null) {
+                                item(key = "scrollable_history_section") {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                modifier = Modifier.clickable { isHistoryCollapsed = !isHistoryCollapsed }
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.History,
+                                                    contentDescription = "History",
+                                                    tint = personaMode.primaryAccent,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Text(
+                                                    text = "${historyVideos.size}",
+                                                    color = Color.White,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Icon(
+                                                    imageVector = if (isHistoryCollapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                                                    contentDescription = "Collapse History",
+                                                    tint = HybridTextSecondary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    viewModel.clearHistory()
+                                                    Toast.makeText(context, "Watch History Cleared", Toast.LENGTH_SHORT).show()
+                                                },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.DeleteOutline,
+                                                    contentDescription = "Clear History",
+                                                    tint = HybridTextSecondary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+
+                                        if (!isHistoryCollapsed) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            LazyRow(
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                items(historyVideos, key = { "hist_${it.first.id}" }) { (video, posMs) ->
+                                                    val progressFraction = if (video.duration > 0) {
+                                                        (posMs.toFloat() / video.duration.toFloat()).coerceIn(0.12f, 1f)
+                                                    } else 0.35f
+
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(width = 132.dp, height = 72.dp)
+                                                            .clip(RoundedCornerShape(10.dp))
+                                                            .background(HybridCardBg)
+                                                            .border(1.dp, HybridCardBorder, RoundedCornerShape(10.dp))
+                                                            .clickable { onPlayVideo(video) }
+                                                    ) {
+                                                        GuaranteedVideoThumbnail(
+                                                            video = video,
+                                                            modifier = Modifier.fillMaxSize()
+                                                        )
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxSize()
+                                                                .background(
+                                                                    Brush.verticalGradient(
+                                                                        colors = listOf(Color.Transparent, Color(0xCC000000))
+                                                                    )
+                                                                )
+                                                        )
+                                                        if (hdrBadges) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .align(Alignment.BottomStart)
+                                                                    .padding(start = 5.dp, bottom = 6.dp)
+                                                                    .clip(RoundedCornerShape(4.dp))
+                                                                    .background(HybridGold)
+                                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = if (video.is8K) "8k" else video.resolution,
+                                                                    color = Color.Black,
+                                                                    fontSize = 8.sp,
+                                                                    fontWeight = FontWeight.ExtraBold
+                                                                )
+                                                            }
+                                                        }
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .align(Alignment.BottomEnd)
+                                                                .padding(end = 5.dp, bottom = 6.dp)
+                                                                .clip(RoundedCornerShape(4.dp))
+                                                                .background(Color(0x99000000))
+                                                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "▶ ${video.formattedDuration}",
+                                                                color = Color.White,
+                                                                fontSize = 8.sp,
+                                                                fontWeight = FontWeight.SemiBold
+                                                            )
+                                                        }
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .height(3.dp)
+                                                                .align(Alignment.BottomCenter)
+                                                                .background(Color(0x44FFFFFF))
+                                                        ) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth(progressFraction)
+                                                                    .fillMaxHeight()
+                                                                    .background(personaMode.primaryAccent)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             items(sortedVideos, key = { it.id }) { video ->
                                 val isSelected = video.id in selectedIds
                                 VideoDetailedRowItem(
@@ -651,6 +706,7 @@ fun VideoSectionScreen(
                                     isSelected = isSelected,
                                     showBadges = hdrBadges,
                                     progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
+                                    personaMode = personaMode,
                                     onClick = {
                                         if (isMultiSelectMode) {
                                             if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
@@ -1024,6 +1080,22 @@ fun VideoSectionScreen(
             }
         )
     }
+
+    // --- UNIVERSAL DEMOGRAPHIC & GLOBAL PERSONA SELECTOR DIALOG (Kids, Seniors, Youth, Bharat, Global) ---
+    if (showPersonaDialog) {
+        UniversalPersonaSelectorDialog(
+            activeMode = personaMode,
+            onSelectMode = { mode ->
+                viewModel.selectDemographicMode(mode)
+                Toast.makeText(
+                    context,
+                    "${mode.badgeEmoji} ${mode.title} Activated!",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onDismiss = { showPersonaDialog = false }
+        )
+    }
 }
 
 /**
@@ -1088,19 +1160,21 @@ private fun VideoDetailedRowItem(
     isSelected: Boolean,
     showBadges: Boolean,
     progressFraction: Float,
+    personaMode: DemographicMode = DemographicMode.YOUTH_PRO,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
+    val cornerRad = if (personaMode == DemographicMode.KIDS_MAGIC) 20.dp else 14.dp
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(cornerRad))
             .background(if (isSelected) HybridEmerald.copy(alpha = 0.16f) else HybridCardBg)
             .border(
-                width = 1.dp,
-                color = if (isSelected) HybridEmerald else HybridCardBorder,
-                shape = RoundedCornerShape(14.dp)
+                width = if (personaMode == DemographicMode.SENIOR_EASY || personaMode == DemographicMode.KIDS_MAGIC) 1.5.dp else 1.dp,
+                color = if (isSelected) HybridEmerald else if (personaMode == DemographicMode.SENIOR_EASY) personaMode.primaryAccent.copy(alpha = 0.45f) else HybridCardBorder,
+                shape = RoundedCornerShape(cornerRad)
             )
             .combinedClickable(
                 onClick = onClick,
@@ -1112,7 +1186,7 @@ private fun VideoDetailedRowItem(
         // Thumbnail with Golden "8k" Badge, "▶ 02:05" Duration Pill, and Bottom Progress Bar
         Box(
             modifier = Modifier
-                .size(width = 136.dp, height = 80.dp)
+                .size(width = personaMode.thumbnailWidth, height = personaMode.thumbnailHeight)
                 .clip(RoundedCornerShape(10.dp))
         ) {
             GuaranteedVideoThumbnail(
@@ -1182,43 +1256,63 @@ private fun VideoDetailedRowItem(
             Text(
                 text = video.cleanTitle,
                 color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontSize = personaMode.titleFontSize,
+                fontWeight = if (personaMode == DemographicMode.SENIOR_EASY) FontWeight.ExtraBold else FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                lineHeight = 18.sp
+                lineHeight = (personaMode.titleFontSize.value + 4f).sp
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "${video.resolution} • ${video.format} • ${video.formattedSize}${if (video.isPartialDownload) " • Partial" else ""}",
                 color = HybridTextSecondary,
-                fontSize = 11.sp
+                fontSize = personaMode.metaFontSize
             )
             Spacer(modifier = Modifier.height(5.dp))
             // Folder Source Chip
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0x1A2ECC71))
+                    .background(personaMode.primaryAccent.copy(alpha = 0.14f))
                     .padding(horizontal = 6.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     imageVector = Icons.Default.Folder,
                     contentDescription = null,
-                    tint = HybridEmerald,
+                    tint = personaMode.primaryAccent,
                     modifier = Modifier.size(12.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = video.folderName,
-                    color = HybridEmerald,
+                    color = personaMode.primaryAccent,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+
+        // In Senior Easy, Kids Magic, or Bharat Desi Mode, show a bright 1-tap Play Orb right on the row!
+        if (personaMode.showBigPlayButtonOnRow) {
+            IconButton(
+                onClick = onClick,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(personaMode.primaryAccent.copy(alpha = 0.22f))
+                    .border(1.dp, personaMode.primaryAccent, CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = "Instant Play",
+                    tint = personaMode.primaryAccent,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(2.dp))
         }
 
         IconButton(onClick = onMoreClick) {

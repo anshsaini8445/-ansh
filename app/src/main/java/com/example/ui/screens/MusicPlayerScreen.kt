@@ -297,7 +297,8 @@ fun MusicPlayerScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .padding(horizontal = 20.dp),
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
@@ -434,15 +435,16 @@ fun MusicPlayerScreen(
                         else -> {
                             // 3D Cover / Spinning Vinyl + Live Mini Synced Lyric Pill below
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                val discShape = if (isVinylDiscMode) CircleShape else RoundedCornerShape(26.dp)
                                 Box(
                                     modifier = Modifier
-                                        .size(222.dp)
+                                        .size(218.dp)
                                         .offset { IntOffset(animatedSwipeOffset.roundToInt(), 0) }
-                                        .clip(if (isVinylDiscMode) CircleShape else RoundedCornerShape(26.dp))
+                                        .clip(discShape)
                                         .border(
                                             width = if (isVinylDiscMode) 5.dp else 1.5.dp,
-                                            color = if (isVinylDiscMode) themePrimary.copy(alpha = 0.8f) else HybridCardBorder,
-                                            shape = if (isVinylDiscMode) CircleShape else RoundedCornerShape(26.dp)
+                                            color = if (isVinylDiscMode) themePrimary.copy(alpha = 0.85f) else HybridCardBorder,
+                                            shape = discShape
                                         )
                                         .clickable { isVinylDiscMode = !isVinylDiscMode }
                                         .pointerInput(Unit) {
@@ -468,9 +470,11 @@ fun MusicPlayerScreen(
                                         track = currentTrack,
                                         modifier = Modifier
                                             .fillMaxSize()
+                                            .clip(discShape)
                                             .then(
                                                 if (isVinylDiscMode && isPlaying) Modifier.rotate(discRotation) else Modifier
                                             )
+                                            .clip(discShape)
                                     )
 
                                     if (isVinylDiscMode) {

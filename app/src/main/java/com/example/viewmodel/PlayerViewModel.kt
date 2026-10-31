@@ -38,6 +38,7 @@ import com.example.helpers.PermanentDeleteHelper
 import com.example.helpers.SecurityDefenseEngine
 import com.example.helpers.SyncedLyricLine
 import com.example.helpers.SyncedLyricsEngine
+import com.example.ui.persona.DemographicMode
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -56,6 +57,22 @@ class PlayerViewModel(application: Application) :
     private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val sensorManager = application.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
     private val accelerometer: Sensor? = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+    // --- Universal Demographic & Global Experience Mode (Kids, Seniors, Youth, Bharat, Global) ---
+    private val _demographicMode = MutableStateFlow(DemographicMode.loadSavedMode(application))
+    val demographicMode: StateFlow<DemographicMode> = _demographicMode.asStateFlow()
+
+    fun selectDemographicMode(mode: DemographicMode) {
+        _demographicMode.value = mode
+        DemographicMode.saveMode(getApplication(), mode)
+        // Automatically apply the persona's signature theme & penguins mode if Kids Magic is selected
+        selectTheme(mode.defaultThemeName)
+        if (mode == DemographicMode.KIDS_MAGIC) {
+            _companionEnabled.value = true
+            _penguinsOnlyMode.value = true
+            prefs.edit().putBoolean("companion_penguins_only_mode", true).apply()
+        }
+    }
 
     private val database = AppDatabase.getDatabase(application)
     private val repository = MediaRepository(
@@ -158,6 +175,8 @@ class PlayerViewModel(application: Application) :
 
     private var firstShakeTimestampMs: Long = 0L
     private var lastDoubleShakeTriggerMs: Long = 0L
+    private val gravityFilter = FloatArray(3) { 0f }
+    private var gravityInitialized = false
 
     // --- A-B Repeat ---
     private val _abPointAMs = MutableStateFlow<Long?>(null)
@@ -360,7 +379,7 @@ class PlayerViewModel(application: Application) :
         }
     }
 
-    // --- Hardware Accelerometer Double-Shake Registration & Detection ---
+    // --- Hardware Accelerometer Double-Shake Registration & High-Pass Gravity Filtered Detection ---
     private fun registerDoubleShakeSensor() {
         try {
             if (accelerometer != null) {
@@ -376,18 +395,30 @@ class PlayerViewModel(application: Application) :
         val y = event.values[1]
         val z = event.values[2]
 
-        val gX = x / SensorManager.GRAVITY_EARTH
-        val gY = y / SensorManager.GRAVITY_EARTH
-        val gZ = z / SensorManager.GRAVITY_EARTH
-        val gForce = sqrt(gX * gX + gY * gY + gZ * gZ)
+        // High-pass filter to isolate pure linear wrist shake acceleration regardless of phone tilt/orientation
+        if (!gravityInitialized) {
+            gravityFilter[0] = x
+            gravityFilter[1] = y
+            gravityFilter[2] = z
+            gravityInitialized = true
+        }
+        val alpha = 0.82f
+        gravityFilter[0] = alpha * gravityFilter[0] + (1f - alpha) * x
+        gravityFilter[1] = alpha * gravityFilter[1] + (1f - alpha) * y
+        gravityFilter[2] = alpha * gravityFilter[2] + (1f - alpha) * z
 
-        val thresholdG = when (_shakeSensitivity.value) {
-            "High" -> 1.85f
-            "Firm" -> 2.55f
-            else -> 2.15f
+        val linearX = x - gravityFilter[0]
+        val linearY = y - gravityFilter[1]
+        val linearZ = z - gravityFilter[2]
+        val linearMagnitude = sqrt(linearX * linearX + linearY * linearY + linearZ * linearZ)
+
+        val linearThreshold = when (_shakeSensitivity.value) {
+            "High" -> 8.2f
+            "Firm" -> 14.5f
+            else -> 10.8f
         }
 
-        if (gForce > thresholdG) {
+        if (linearMagnitude > linearThreshold) {
             val now = System.currentTimeMillis()
             // 1. Check Emergency Panic Shake inside Unlocked Privacy Vault
             if (_vaultUnlocked.value && _panicShakeVaultLock.value && now - lastDoubleShakeTriggerMs > 900L) {
@@ -404,16 +435,16 @@ class PlayerViewModel(application: Application) :
 
             // 2. Check Double-Shake to Skip Song (Active in Audio Mode OR Background Video Audio Mode; OFF in Foreground Video)
             if (!_doubleShakeEnabled.value || _isForegroundVideoActive.value) return
-            if (now - lastDoubleShakeTriggerMs < 1100L) return
+            if (now - lastDoubleShakeTriggerMs < 950L) return
 
             val gap = now - firstShakeTimestampMs
-            if (gap in 160L..950L) {
+            if (gap in 140L..900L) {
                 // Confirmed 2nd Shake (Double Shake)!
                 firstShakeTimestampMs = 0L
                 lastDoubleShakeTriggerMs = now
                 executeDoubleShakeNextSong()
-            } else if (gap > 950L) {
-                // 1st Shake detected: store timestamp & give a subtle haptic tick
+            } else if (gap > 900L) {
+                // 1st Shake detected: store timestamp & give a crisp haptic tick so the user feels the 1st shake
                 firstShakeTimestampMs = now
                 triggerDoubleShakeVibration(isSingleTick = true)
             }

@@ -71,6 +71,7 @@ fun AudioLibraryScreen(
     val eqBands by viewModel.equalizerBands.collectAsState()
     val is200Boost by viewModel.is200BoostEnabled.collectAsState()
     val audioVolumePct by viewModel.audioVolumePercent.collectAsState()
+    val personaMode by viewModel.demographicMode.collectAsState()
 
     var selectedCategory by remember { mutableStateOf("Songs") }
     var selectedGroupFilter by remember { mutableStateOf<String?>(null) }
@@ -110,7 +111,8 @@ fun AudioLibraryScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
+                    .height(56.dp)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Image(
@@ -134,7 +136,7 @@ fun AudioLibraryScreen(
                         val active = selectedCategory == cat.key
                         Box(
                             modifier = Modifier
-                                .size(if (active) 44.dp else 40.dp)
+                                .size(if (active) 40.dp else 36.dp)
                                 .clip(CircleShape)
                                 .background(
                                     Brush.verticalGradient(
@@ -157,7 +159,7 @@ fun AudioLibraryScreen(
                                 imageVector = cat.icon,
                                 contentDescription = cat.key,
                                 tint = if (active) cat.color else Color.White.copy(alpha = 0.8f),
-                                modifier = Modifier.size(if (active) 22.dp else 19.dp)
+                                modifier = Modifier.size(if (active) 20.dp else 18.dp)
                             )
                         }
                     }
@@ -169,7 +171,7 @@ fun AudioLibraryScreen(
                 LiquidGlassEqualizerWidget(
                     bands = eqBands,
                     isPlaying = isPlaying,
-                    size = 40.dp,
+                    size = 38.dp,
                     onClick = onOpenEqualizer
                 )
 
@@ -179,7 +181,7 @@ fun AudioLibraryScreen(
                 LiquidGlassVolumeBoosterWidget(
                     isBoostEnabled = is200Boost,
                     volumePercent = audioVolumePct,
-                    size = 40.dp,
+                    size = 38.dp,
                     onClick = { viewModel.toggle200Boost() }
                 )
             }
@@ -188,12 +190,12 @@ fun AudioLibraryScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Pure Visual Shuffle Play Orb
@@ -201,8 +203,8 @@ fun AudioLibraryScreen(
                         icon = Icons.Default.Shuffle,
                         contentDescription = "Shuffle Play",
                         tintColor = HybridEmerald,
-                        size = 40.dp,
-                        iconSize = 20.dp,
+                        size = 38.dp,
+                        iconSize = 19.dp,
                         isActive = true,
                         onClick = {
                             viewModel.shufflePlayMusic()
@@ -213,7 +215,7 @@ fun AudioLibraryScreen(
                     // Visual Liquid Glass 2x Shake Vibration Orb
                     LiquidGlassShakeOrbWidget(
                         isEnabled = doubleShakeEnabled,
-                        size = 40.dp,
+                        size = 38.dp,
                         onClick = { viewModel.toggleDoubleShakeEnabled() }
                     )
 
@@ -222,8 +224,8 @@ fun AudioLibraryScreen(
                         icon = Icons.Default.FolderOpen,
                         contentDescription = "Pick Real Songs",
                         tintColor = Color(0xFF00E5FF),
-                        size = 40.dp,
-                        iconSize = 19.dp,
+                        size = 38.dp,
+                        iconSize = 18.dp,
                         onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }
                     )
 
@@ -232,8 +234,8 @@ fun AudioLibraryScreen(
                         icon = Icons.Default.Refresh,
                         contentDescription = "Rescan Audio",
                         tintColor = Color(0xFFFFEA00),
-                        size = 40.dp,
-                        iconSize = 19.dp,
+                        size = 38.dp,
+                        iconSize = 18.dp,
                         onClick = {
                             val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                                 arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
@@ -249,8 +251,8 @@ fun AudioLibraryScreen(
                         icon = Icons.Default.SwapHoriz,
                         contentDescription = "Hybrid Share",
                         tintColor = Color(0xFFD500F9),
-                        size = 40.dp,
-                        iconSize = 20.dp,
+                        size = 38.dp,
+                        iconSize = 19.dp,
                         onClick = onOpenTurboShare
                     )
                 }
@@ -261,7 +263,7 @@ fun AudioLibraryScreen(
                         .clip(CircleShape)
                         .background(Color.White.copy(alpha = 0.08f))
                         .border(1.dp, HybridEmerald.copy(alpha = 0.45f), CircleShape)
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
@@ -269,7 +271,7 @@ fun AudioLibraryScreen(
                         imageVector = Icons.Default.QueueMusic,
                         contentDescription = null,
                         tint = HybridEmerald,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                     Text(
                         text = "${displayedTracks.size}",
@@ -285,7 +287,7 @@ fun AudioLibraryScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .padding(horizontal = 14.dp, vertical = 4.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(HybridCardBg)
                         .border(1.dp, HybridEmerald.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
@@ -299,92 +301,77 @@ fun AudioLibraryScreen(
                 }
             }
 
-            // --- GROUP LIST OR SONG ROWS ---
-            if (selectedGroupFilter == null && selectedCategory in listOf("Folders", "Albums", "Artists")) {
-                val groups = remember(tracks, selectedCategory) {
-                    when (selectedCategory) {
-                        "Folders" -> tracks.groupBy { it.folderName }
-                        "Albums" -> tracks.groupBy { it.albumName }
-                        else -> tracks.groupBy { it.artist }
-                    }
-                }
-                LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(groups.entries.toList(), key = { it.key }) { (groupName, groupTracks) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(HybridCardBg)
-                                .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
-                                .clickable { selectedGroupFilter = groupName }
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            GuaranteedAlbumArt(
-                                track = groupTracks.first(),
-                                modifier = Modifier
-                                    .size(52.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(groupName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text("${groupTracks.size}", color = HybridEmerald, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                            }
-                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = HybridTextSecondary)
+            // --- MAIN SCROLLABLE LIST CONTAINER (Modifier.weight(1f) so Mini-Player never overlaps song rows!) ---
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                if (selectedGroupFilter == null && selectedCategory in listOf("Folders", "Albums", "Artists")) {
+                    val groups = remember(tracks, selectedCategory) {
+                        when (selectedCategory) {
+                            "Folders" -> tracks.groupBy { it.folderName }
+                            "Albums" -> tracks.groupBy { it.albumName }
+                            else -> tracks.groupBy { it.artist }
                         }
                     }
-                }
-            } else if (displayedTracks.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    LiquidGlassBox(
-                        modifier = Modifier.fillMaxWidth(),
-                        cornerRadius = 28.dp,
-                        tintColor = Color(0xFF00E5FF),
-                        glassAlpha = 0.24f
+                    LazyColumn(
+                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            LiquidGlassIconOrb(
-                                icon = Icons.Default.LibraryMusic,
-                                contentDescription = "Real Device Audio",
-                                tintColor = Color(0xFF00E5FF),
-                                size = 72.dp,
-                                iconSize = 36.dp,
-                                isActive = true,
-                                onClick = {
-                                    val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                                        arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
-                                    } else {
-                                        arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                    }
-                                    permissionLauncher.launch(perms)
-                                }
-                            )
+                        items(groups.entries.toList(), key = { it.key }) { (groupName, groupTracks) ->
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(HybridCardBg)
+                                    .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
+                                    .clickable { selectedGroupFilter = groupName }
+                                    .padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                GuaranteedAlbumArt(
+                                    track = groupTracks.first(),
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(groupName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    Text("${groupTracks.size}", color = HybridEmerald, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                }
+                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = HybridTextSecondary)
+                            }
+                        }
+                    }
+                } else if (displayedTracks.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        LiquidGlassBox(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 28.dp,
+                            tintColor = Color(0xFF00E5FF),
+                            glassAlpha = 0.24f
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
                                 LiquidGlassIconOrb(
-                                    icon = Icons.Default.Refresh,
-                                    contentDescription = "Scan Storage",
-                                    tintColor = HybridEmerald,
-                                    size = 54.dp,
-                                    iconSize = 26.dp,
+                                    icon = Icons.Default.LibraryMusic,
+                                    contentDescription = "Real Device Audio",
+                                    tintColor = Color(0xFF00E5FF),
+                                    size = 72.dp,
+                                    iconSize = 36.dp,
                                     isActive = true,
                                     onClick = {
                                         val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -395,123 +382,147 @@ fun AudioLibraryScreen(
                                         permissionLauncher.launch(perms)
                                     }
                                 )
-                                LiquidGlassIconOrb(
-                                    icon = Icons.Default.FolderOpen,
-                                    contentDescription = "Pick Audio Files",
-                                    tintColor = Color(0xFF00E5FF),
-                                    size = 54.dp,
-                                    iconSize = 26.dp,
-                                    isActive = true,
-                                    onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }
-                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    LiquidGlassIconOrb(
+                                        icon = Icons.Default.Refresh,
+                                        contentDescription = "Scan Storage",
+                                        tintColor = HybridEmerald,
+                                        size = 54.dp,
+                                        iconSize = 26.dp,
+                                        isActive = true,
+                                        onClick = {
+                                            val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                                arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
+                                            } else {
+                                                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                            }
+                                            permissionLauncher.launch(perms)
+                                        }
+                                    )
+                                    LiquidGlassIconOrb(
+                                        icon = Icons.Default.FolderOpen,
+                                        contentDescription = "Pick Audio Files",
+                                        tintColor = Color(0xFF00E5FF),
+                                        size = 54.dp,
+                                        iconSize = 26.dp,
+                                        isActive = true,
+                                        onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }
+                                    )
+                                }
                             }
                         }
                     }
-                }
-            } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(displayedTracks, key = { it.id }) { track ->
-                        val isCurrentTrack = nowPlaying?.id == track.id
-                        AudioSongRow(
-                            track = track,
-                            isCurrentTrack = isCurrentTrack,
-                            onClick = {
-                                viewModel.playMusic(track)
-                                onOpenStudioPlayer(track)
-                            },
-                            onMoreClick = { menuTargetTrack = track }
-                        )
+                } else {
+                    LazyColumn(
+                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(displayedTracks, key = { it.id }) { track ->
+                            val isCurrentTrack = nowPlaying?.id == track.id
+                            AudioSongRow(
+                                track = track,
+                                isCurrentTrack = isCurrentTrack,
+                                titleFontSize = personaMode.titleFontSize.value.toInt(),
+                                metaFontSize = personaMode.metaFontSize.value.toInt(),
+                                showPlayOrb = personaMode.showBigPlayButtonOnRow,
+                                accentColor = personaMode.primaryAccent,
+                                onClick = {
+                                    viewModel.playMusic(track)
+                                    onOpenStudioPlayer(track)
+                                },
+                                onMoreClick = { menuTargetTrack = track }
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        // --- FLOATING LIQUID GLASS MINI-PLAYER DOCK ---
-        val activeTrack = nowPlaying ?: tracks.firstOrNull()
-        if (activeTrack != null) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(Color(0xF50B1324), Color(0xF5131F36))
-                        )
-                    )
-                    .border(1.2.dp, HybridEmerald.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
-                    .clickable {
-                        if (nowPlaying == null) {
-                            viewModel.playMusic(activeTrack)
-                        }
-                        onOpenStudioPlayer(activeTrack)
-                    }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                GuaranteedAlbumArt(
-                    track = activeTrack,
+            // --- DOCKED LIQUID GLASS MINI-PLAYER BAR (Never overlaps song rows!) ---
+            val activeTrack = nowPlaying ?: tracks.firstOrNull()
+            if (activeTrack != null) {
+                Row(
                     modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = activeTrack.cleanTitle,
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Color(0xF50B1324), Color(0xF5131F36))
+                            )
+                        )
+                        .border(1.2.dp, HybridEmerald.copy(alpha = 0.50f), RoundedCornerShape(20.dp))
+                        .clickable {
+                            if (nowPlaying == null) {
+                                viewModel.playMusic(activeTrack)
+                            }
+                            onOpenStudioPlayer(activeTrack)
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    GuaranteedAlbumArt(
+                        track = activeTrack,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(12.dp))
                     )
-                    Text(
-                        text = "${activeTrack.artist} • ${activeTrack.format}",
-                        color = HybridEmerald,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = activeTrack.cleanTitle,
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${activeTrack.artist} • ${activeTrack.format}",
+                            color = HybridEmerald,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
 
-                IconButton(
-                    onClick = { viewModel.playPrevious() },
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White)
-                }
+                    IconButton(
+                        onClick = { viewModel.playPrevious() },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White)
+                    }
 
-                IconButton(
-                    onClick = {
-                        if (nowPlaying == null) viewModel.playMusic(activeTrack) else viewModel.togglePlayPause()
-                    },
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
-                        contentDescription = "Play/Pause",
-                        tint = HybridEmerald,
-                        modifier = Modifier.size(34.dp)
-                    )
-                }
+                    IconButton(
+                        onClick = {
+                            if (nowPlaying == null) viewModel.playMusic(activeTrack) else viewModel.togglePlayPause()
+                        },
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
+                            contentDescription = "Play/Pause",
+                            tint = HybridEmerald,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
 
-                IconButton(
-                    onClick = { viewModel.playNext() },
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White)
-                }
+                    IconButton(
+                        onClick = { viewModel.playNext() },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White)
+                    }
 
-                IconButton(
-                    onClick = { menuTargetTrack = activeTrack },
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "Track Menu", tint = Color.White)
+                    IconButton(
+                        onClick = { menuTargetTrack = activeTrack },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Track Menu", tint = Color.White)
+                    }
                 }
             }
         }
@@ -610,6 +621,10 @@ fun GuaranteedAlbumArt(
 private fun AudioSongRow(
     track: MediaItem,
     isCurrentTrack: Boolean,
+    titleFontSize: Int = 15,
+    metaFontSize: Int = 12,
+    showPlayOrb: Boolean = false,
+    accentColor: Color = HybridEmerald,
     onClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
@@ -640,7 +655,7 @@ private fun AudioSongRow(
             Text(
                 text = track.cleanTitle,
                 color = if (isCurrentTrack) HybridEmerald else Color.White,
-                fontSize = 15.sp,
+                fontSize = titleFontSize.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -649,10 +664,29 @@ private fun AudioSongRow(
             Text(
                 text = "${track.artist} • ${track.formattedDuration} • ${track.format}",
                 color = HybridTextSecondary,
-                fontSize = 12.sp,
+                fontSize = metaFontSize.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+
+        if (showPlayOrb) {
+            IconButton(
+                onClick = onClick,
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(accentColor.copy(alpha = 0.22f))
+                    .border(1.dp, accentColor, CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = "Play Song",
+                    tint = accentColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(2.dp))
         }
 
         IconButton(onClick = onMoreClick) {

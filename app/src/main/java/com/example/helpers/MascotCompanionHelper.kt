@@ -273,8 +273,8 @@ fun RealisticCompanionOverlay(
 
     val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-    val mascotSizePx = with(density) { 104.dp.toPx() }
-    val floorY = (screenHeightPx - mascotSizePx - with(density) { 104.dp.toPx() }).coerceAtLeast(100f)
+    val mascotSizePx = with(density) { 74.dp.toPx() }
+    val floorY = (screenHeightPx - mascotSizePx - with(density) { 126.dp.toPx() }).coerceAtLeast(100f)
 
     var penguinCycleIndex by remember { mutableIntStateOf(0) }
 
@@ -299,9 +299,10 @@ fun RealisticCompanionOverlay(
         }
     }
 
-    var posX by remember { mutableFloatStateOf(screenWidthPx * 0.68f) }
+    // Default to bottom-left safe margin so right-side 3-dot (⋮) buttons on video/song rows are never blocked!
+    var posX by remember { mutableFloatStateOf(with(density) { 12.dp.toPx() }) }
     var posY by remember { mutableFloatStateOf(floorY) }
-    var velX by remember { mutableFloatStateOf(1.8f) }
+    var velX by remember { mutableFloatStateOf(1.5f) }
     var velY by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
     var walkDirection by remember { mutableFloatStateOf(1f) }
@@ -345,10 +346,10 @@ fun RealisticCompanionOverlay(
                 } else {
                     posY = floorY
                     if (!isMusicPlaying && !manualDanceMode) {
-                        posX += walkDirection * 1.15f
-                        if (posX >= screenWidthPx - mascotSizePx - 16f) {
+                        posX += walkDirection * 1.05f
+                        if (posX >= screenWidthPx * 0.55f) {
                             walkDirection = -1f
-                        } else if (posX <= 16f) {
+                        } else if (posX <= 12f) {
                             walkDirection = 1f
                         }
                     }
@@ -361,7 +362,7 @@ fun RealisticCompanionOverlay(
         Canvas(
             modifier = Modifier
                 .offset { IntOffset(posX.roundToInt(), posY.roundToInt()) }
-                .size(104.dp)
+                .size(74.dp)
                 .pointerInput(isMusicPlaying, penguinsOnlyMode, breed) {
                     detectTapGestures(
                         onTap = {

@@ -121,8 +121,10 @@ fun VideoPlayerView(
     // Sleep Timer (Hidden inside 3-Dot Menu) & Aspect Ratio / Orientation State
     var videoSleepTimerTotalMinutes by remember { mutableStateOf(0) }
     var videoSleepRemainingSeconds by remember { mutableStateOf(0) }
-    var aspectRatioMode by remember { mutableStateOf("Original Fit") }
+    var aspectRatioMode by remember { mutableStateOf("Full Screen") }
     var orientationLabel by remember { mutableStateOf("Auto") }
+    var nativeVideoWidth by remember { mutableStateOf(1920) }
+    var nativeVideoHeight by remember { mutableStateOf(1080) }
 
     // Live 1-Second Countdown for Video Sleep Timer
     LaunchedEffect(videoSleepRemainingSeconds, isPlaying) {
@@ -292,6 +294,11 @@ fun VideoPlayerView(
             if (MediaNotificationHelper.getControlDelegate() === delegate) {
                 MediaNotificationHelper.setControlDelegate(null)
             }
+            try {
+                (context as? Activity)?.requestedOrientation =
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -397,72 +404,81 @@ fun VideoPlayerView(
                 }
             )
     ) {
-        // --- VIDEO SURFACE WITH PINCH-TO-ZOOM & 8K VISUAL ENHANCER FILTERS ---
+        // --- HARDWARE FULL-SCREEN VIDEO SURFACE (Centered FrameLayout + Custom onMeasure VideoView) ---
         key(videoPath) {
             AndroidView(
                 factory = { ctx ->
-                    VideoView(ctx).apply {
-                        videoViewRef = this
-                        try {
-                            if (
-                                videoPath.startsWith("http") ||
-                                videoPath.startsWith("content://") ||
-                                videoPath.startsWith("android.resource://")
-                            ) {
-                                setVideoURI(Uri.parse(videoPath))
-                            } else {
-                                val file = File(videoPath)
-                                if (file.exists()) {
-                                    val playablePath = resolvePlayablePartialPath(ctx, videoPath)
-                                    setVideoPath(playablePath)
-                                } else {
+                    android.widget.FrameLayout(ctx).apply {
+                        setBackgroundColor(android.graphics.Color.BLACK)
+                        val customVideoView = FullScreenStudioVideoView(ctx).apply {
+                            videoViewRef = this
+                            layoutParams = android.widget.FrameLayout.LayoutParams(
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.Gravity.CENTER
+                            )
+                            try {
+                                if (
+                                    videoPath.startsWith("http") ||
+                                    videoPath.startsWith("content://") ||
+                                    videoPath.startsWith("android.resource://")
+                                ) {
                                     setVideoURI(Uri.parse(videoPath))
+                                } else {
+                                    val file = File(videoPath)
+                                    if (file.exists()) {
+                                        val playablePath = resolvePlayablePartialPath(ctx, videoPath)
+                                        setVideoPath(playablePath)
+                                    } else {
+                                        setVideoURI(Uri.parse(videoPath))
+                                    }
                                 }
-                            }
-                            setOnPreparedListener { mp ->
-                                mediaPlayerRef = mp
-                                totalDurationMs = mp.duration.toLong().coerceAtLeast(1L)
-                                if (initialPositionMs > 0 && initialPositionMs < totalDurationMs - 2000L) {
-                                    seekTo(initialPositionMs.toInt())
+                                setOnPreparedListener { mp ->
+                                    mediaPlayerRef = mp
+                                    val vw = mp.videoWidth.takeIf { it > 0 } ?: 1920
+                                    val vh = mp.videoHeight.takeIf { it > 0 } ?: 1080
+                                    nativeVideoWidth = vw
+                                    nativeVideoHeight = vh
+                                    updateVideoGeometry(vw, vh, aspectRatioMode, zoomScale)
+                                    mp.setOnVideoSizeChangedListener { _, w, h ->
+                                        if (w > 0 && h > 0) {
+                                            nativeVideoWidth = w
+                                            nativeVideoHeight = h
+                                            updateVideoGeometry(w, h, aspectRatioMode, zoomScale)
+                                        }
+                                    }
+                                    totalDurationMs = mp.duration.toLong().coerceAtLeast(1L)
+                                    if (initialPositionMs > 0 && initialPositionMs < totalDurationMs - 2000L) {
+                                        seekTo(initialPositionMs.toInt())
+                                    }
+                                    start()
+                                    isPlaying = true
+                                    try {
+                                        loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
+                                    } catch (_: Exception) {
+                                    }
                                 }
-                                start()
-                                isPlaying = true
-                                try {
-                                    loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
-                                } catch (_: Exception) {
+                                setOnErrorListener { _, _, _ ->
+                                    Toast.makeText(
+                                        ctx,
+                                        "Playing Stream via Hybrid Byte-Recovery Engine",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    true
                                 }
+                            } catch (_: Exception) {
                             }
-                            setOnErrorListener { _, _, _ ->
-                                Toast.makeText(
-                                    ctx,
-                                    "Playing Stream via Hybrid Byte-Recovery Engine",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                                true
-                            }
-                        } catch (_: Exception) {
                         }
+                        addView(customVideoView)
                     }
                 },
-            modifier = Modifier
-                .fillMaxSize()
-                .align(Alignment.Center)
-                .graphicsLayer(
-                    scaleX = zoomScale * when (aspectRatioMode) {
-                        "Zoom Crop" -> 1.22f
-                        "Stretch 16:9" -> 1.12f
-                        "Cinema 21:9" -> 1.28f
-                        "Classic 4:3" -> 0.86f
-                        else -> 1.0f
-                    },
-                    scaleY = zoomScale * when (aspectRatioMode) {
-                        "Zoom Crop" -> 1.22f
-                        "Stretch 16:9" -> 1.06f
-                        "Cinema 21:9" -> 0.88f
-                        "Classic 4:3" -> 1.04f
-                        else -> 1.0f
-                    }
-                )
+                update = { frameLayout ->
+                    val vv = frameLayout.getChildAt(0) as? FullScreenStudioVideoView
+                    vv?.updateVideoGeometry(nativeVideoWidth, nativeVideoHeight, aspectRatioMode, zoomScale)
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .align(Alignment.Center)
             )
         }
 
@@ -1235,7 +1251,7 @@ fun VideoPlayerView(
                     // 3. ASPECT RATIO & SCREEN FIT
                     Text("Aspect Ratio & Screen Crop:", color = HybridTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(listOf("Original Fit", "Zoom Crop", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")) { ratio ->
+                        items(listOf("Full Screen", "Zoom Crop", "Original Fit", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")) { ratio ->
                             val active = aspectRatioMode == ratio
                             Box(
                                 modifier = Modifier
@@ -1427,6 +1443,101 @@ fun VideoPlayerView(
                 }
             }
         )
+    }
+}
+
+/**
+ * Custom Hardware-Accelerated VideoView that overrides [onMeasure] so the video surface
+ * properly fills the screen in Full Screen, Zoom Crop, Original Fit, Stretch 16:9, Cinema 21:9,
+ * and Classic 4:3 modes without shrinking to half the screen or detaching the SurfaceView buffer.
+ */
+private class FullScreenStudioVideoView(context: Context) : VideoView(context) {
+    private var videoW: Int = 1920
+    private var videoH: Int = 1080
+    private var aspectMode: String = "Full Screen"
+    private var pinchScale: Float = 1.0f
+
+    fun updateVideoGeometry(w: Int, h: Int, mode: String, scale: Float) {
+        val validW = if (w > 0) w else 1920
+        val validH = if (h > 0) h else 1080
+        if (videoW != validW || videoH != validH || aspectMode != mode || pinchScale != scale) {
+            videoW = validW
+            videoH = validH
+            aspectMode = mode
+            pinchScale = scale.coerceIn(0.5f, 6.0f)
+            requestLayout()
+            invalidate()
+        }
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val parentWidth = MeasureSpec.getSize(widthMeasureSpec).coerceAtLeast(1)
+        val parentHeight = MeasureSpec.getSize(heightMeasureSpec).coerceAtLeast(1)
+
+        var measuredW = parentWidth
+        var measuredH = parentHeight
+
+        when (aspectMode) {
+            "Full Screen" -> {
+                // Full-screen immersive display: fills 100% of screen width and height
+                measuredW = parentWidth
+                measuredH = parentHeight
+            }
+            "Zoom Crop" -> {
+                // Center-crop to fill 100% of screen with proportional aspect ratio
+                val videoRatio = videoW.toFloat() / videoH.toFloat().coerceAtLeast(1f)
+                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat().coerceAtLeast(1f)
+                if (videoRatio > screenRatio) {
+                    measuredH = parentHeight
+                    measuredW = (parentHeight * videoRatio).toInt()
+                } else {
+                    measuredW = parentWidth
+                    measuredH = (parentWidth / videoRatio).toInt()
+                }
+            }
+            "Original Fit" -> {
+                val videoRatio = videoW.toFloat() / videoH.toFloat().coerceAtLeast(1f)
+                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat().coerceAtLeast(1f)
+                if (videoRatio > screenRatio) {
+                    measuredW = parentWidth
+                    measuredH = (parentWidth / videoRatio).toInt()
+                } else {
+                    measuredH = parentHeight
+                    measuredW = (parentHeight * videoRatio).toInt()
+                }
+            }
+            "Stretch 16:9" -> {
+                val targetRatio = 16f / 9f
+                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat()
+                if (screenRatio > targetRatio) {
+                    measuredH = parentHeight
+                    measuredW = (parentHeight * targetRatio).toInt()
+                } else {
+                    measuredW = parentWidth
+                    measuredH = (parentWidth / targetRatio).toInt()
+                }
+            }
+            "Cinema 21:9" -> {
+                val targetRatio = 21f / 9f
+                measuredW = parentWidth
+                measuredH = (parentWidth / targetRatio).toInt().coerceAtMost(parentHeight)
+            }
+            "Classic 4:3" -> {
+                val targetRatio = 4f / 3f
+                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat()
+                if (screenRatio > targetRatio) {
+                    measuredH = parentHeight
+                    measuredW = (parentHeight * targetRatio).toInt()
+                } else {
+                    measuredW = parentWidth
+                    measuredH = (parentWidth / targetRatio).toInt()
+                }
+            }
+        }
+
+        val finalW = (measuredW * pinchScale).toInt().coerceAtLeast(100)
+        val finalH = (measuredH * pinchScale).toInt().coerceAtLeast(100)
+        setMeasuredDimension(finalW, finalH)
     }
 }
 
