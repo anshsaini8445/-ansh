@@ -67,17 +67,17 @@ jobs:
             -PautoVersionCode="$VER_CODE" \
             --no-daemon --stacktrace
 
-      - name: Prepare Clean Versioned APK File for Download
+      - name: Prepare Single Clean Versioned APK File for Download
         run: |
+          rm -rf apk-output
           mkdir -p apk-output
-          cp app/build/outputs/apk/debug/*.apk "apk-output/Hybrid-Player-v${POINT_VER}.apk"
-          cp app/build/outputs/apk/debug/*.apk "apk-output/Hybrid-Player.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "apk-output/Hybrid-Player-v${POINT_VER}.apk"
           ls -lh apk-output/
 
-      - name: Upload Hybrid-Player-APK (ZIP in Actions Tab)
+      - name: Upload Hybrid-Player-APK (Single APK in Actions Tab)
         uses: actions/upload-artifact@v4
         with:
           name: Hybrid-Player-APK-v${{ env.POINT_VER }}
-          path: apk-output/*.apk
+          path: apk-output/Hybrid-Player-v${{ env.POINT_VER }}.apk
           if-no-files-found: error
           retention-days: 30

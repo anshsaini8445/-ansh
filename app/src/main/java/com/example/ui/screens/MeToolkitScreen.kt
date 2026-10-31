@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.helpers.*
+import com.example.ui.components.LiquidGlassBox
+import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
@@ -50,6 +52,7 @@ fun MeToolkitScreen(
     val activeTheme by viewModel.activeTheme.collectAsState()
     val companionEnabled by viewModel.companionEnabled.collectAsState()
     val companionBreed by viewModel.companionBreed.collectAsState()
+    val penguinsOnlyMode by viewModel.penguinsOnlyMode.collectAsState()
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
     val activePitchPreset by viewModel.activePitchPreset.collectAsState()
     val oneHandMode by viewModel.oneHandMode.collectAsState()
@@ -74,9 +77,7 @@ fun MeToolkitScreen(
     var showNetworkStreamDialog by remember { mutableStateOf(false) }
     var showRecycleBinDialog by remember { mutableStateOf(false) }
     var showVipManageDialog by remember { mutableStateOf(false) }
-    var streamUrlInput by remember {
-        mutableStateOf("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")
-    }
+    var streamUrlInput by remember { mutableStateOf("") }
     var recycleRefresh by remember { mutableStateOf(0) }
 
     // Zero-Permission Android Photo Picker for Custom Gallery Wallpaper
@@ -164,7 +165,7 @@ fun MeToolkitScreen(
                             if (current != null) {
                                 viewModel.playMusic(current)
                             } else {
-                                com.app.mediaplayer.MediaNotificationHelper.showOrUpdateNotification(
+                                MediaNotificationHelper.showOrUpdateNotification(
                                     context = context,
                                     title = "Hybrid 8K Studio Ready",
                                     subtitle = "Notification & Lock-Screen Controls Active (v${com.example.BuildConfig.VERSION_NAME})",
@@ -193,20 +194,20 @@ fun MeToolkitScreen(
 
                     OutlinedButton(
                         onClick = {
-                            try {
-                                context.startActivity(
-                                    android.content.Intent(context, com.app.mediaplayer.MainActivity::class.java)
-                                )
-                            } catch (_: Exception) {
-                            }
+                            viewModel.loadMedia()
+                            Toast.makeText(
+                                context,
+                                "Deep Scanning Real Device Videos & Songs...",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
                     ) {
-                        Icon(Icons.Default.Memory, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Media3 Pro Mode", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text("Deep Scan Media", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
                 }
             }
@@ -314,8 +315,12 @@ fun MeToolkitScreen(
                 )
 
                 PersonalizationNavRow(
-                    title = "Realistic Puppy Companion",
-                    value = if (companionEnabled) companionBreed else "Disabled",
+                    title = "3D Puppy & Penguin Companion (20 Varieties)",
+                    value = when {
+                        !companionEnabled -> "Disabled"
+                        penguinsOnlyMode -> "🐧 Penguins Only Mode ($companionBreed)"
+                        else -> "$companionBreed (20 Varieties)"
+                    },
                     icon = Icons.Default.Pets,
                     onClick = { showCompanionDialog = true }
                 )
@@ -833,12 +838,19 @@ fun MeToolkitScreen(
         )
     }
 
-    // --- REALISTIC 3D PUPPY COMPANION SELECTOR DIALOG ---
+    // --- REALISTIC 3D PUPPY & PENGUIN COMPANION SELECTOR DIALOG (20 Colorful Varieties) ---
     if (showCompanionDialog) {
         AlertDialog(
             onDismissRequest = { showCompanionDialog = false },
             containerColor = HybridCardBg,
-            title = { Text("3D Articulated Companion", color = Color.White, fontWeight = FontWeight.Bold) },
+            title = {
+                Text(
+                    "20 Colorful Companions (Penguins & Puppies)",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
@@ -846,41 +858,91 @@ fun MeToolkitScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Show Floating 3D Companion", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Text("Show Floating 3D Companion", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                         Switch(
                             checked = companionEnabled,
                             onCheckedChange = { viewModel.setCompanionEnabled(it) }
                         )
                     }
 
+                    // Penguins Only Mode Toggle
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = Color(0xFF00E5FF),
+                        glassAlpha = if (penguinsOnlyMode) 0.32f else 0.14f,
+                        onClick = { viewModel.togglePenguinsOnlyMode() }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "🐧 Penguins Only Mode",
+                                    color = Color(0xFF00E5FF),
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 13.sp
+                                )
+                                Text(
+                                    text = "Auto-cycles through all 6 colorful 3D DJ Penguins!",
+                                    color = HybridTextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            Switch(
+                                checked = penguinsOnlyMode,
+                                onCheckedChange = { viewModel.setPenguinsOnlyMode(it) }
+                            )
+                        }
+                    }
+
                     LazyColumn(
-                        modifier = Modifier.heightIn(max = 260.dp),
+                        modifier = Modifier.heightIn(max = 280.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(CompanionBreed.entries) { breed ->
                             val selected = companionBreed == breed.displayName
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selected) HybridEmerald.copy(alpha = 0.2f) else HybridCardAlt)
-                                    .clickable {
-                                        viewModel.selectCompanionBreed(breed.displayName)
-                                        showCompanionDialog = false
+                            LiquidGlassBox(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 12.dp,
+                                tintColor = if (selected) breed.headphoneAccent else breed.primaryFur,
+                                glassAlpha = if (selected) 0.34f else 0.16f,
+                                onClick = {
+                                    viewModel.selectCompanionBreed(breed.displayName)
+                                    if (!breed.isPenguin && penguinsOnlyMode) {
+                                        viewModel.setPenguinsOnlyMode(false)
                                     }
-                                    .padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    showCompanionDialog = false
+                                }
                             ) {
-                                Box(
+                                Row(
                                     modifier = Modifier
-                                        .size(18.dp)
-                                        .clip(CircleShape)
-                                        .background(breed.primaryFur)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(breed.displayName, color = Color.White, modifier = Modifier.weight(1f))
-                                if (selected) {
-                                    Icon(Icons.Default.Check, contentDescription = null, tint = HybridEmerald)
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(breed.primaryFur)
+                                            .border(2.dp, breed.headphoneAccent, CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = breed.displayName,
+                                        color = Color.White,
+                                        fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                        fontSize = 13.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (selected) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = breed.headphoneAccent)
+                                    }
                                 }
                             }
                         }
@@ -889,7 +951,7 @@ fun MeToolkitScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showCompanionDialog = false }) {
-                    Text("Done", color = HybridEmerald)
+                    Text("Done", color = HybridEmerald, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -1126,41 +1188,46 @@ private fun UniformToolkitGridCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(HybridCardBg)
-            .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
-            .padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically
+    LiquidGlassBox(
+        modifier = modifier,
+        cornerRadius = 18.dp,
+        tintColor = accent,
+        glassAlpha = 0.22f,
+        onClick = onClick
     ) {
-        Box(
+        Row(
             modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(accent.copy(alpha = 0.16f)),
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(imageVector = icon, contentDescription = title, tint = accent, modifier = Modifier.size(22.dp))
-        }
-        Spacer(modifier = Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+            LiquidGlassIconOrb(
+                icon = icon,
+                contentDescription = title,
+                tintColor = accent,
+                size = 40.dp,
+                iconSize = 20.dp,
+                isActive = true,
+                onClick = onClick
             )
-            Text(
-                text = subtitle,
-                color = HybridTextSecondary,
-                fontSize = 11.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    color = HybridTextSecondary,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }

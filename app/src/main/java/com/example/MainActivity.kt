@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.MediaItem
 import com.example.helpers.*
+import com.example.ui.components.LiquidGlassBox
+import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.components.VideoPlayerView
 import com.example.ui.screens.*
 import com.example.ui.theme.*
@@ -63,7 +65,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        com.app.mediaplayer.MediaNotificationHelper.ensureChannel(this)
+        MediaNotificationHelper.ensureChannel(this)
         requestNecessaryMediaAndNotificationPermissions()
 
         setContent {
@@ -71,6 +73,7 @@ class MainActivity : ComponentActivity() {
             val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
             val companionEnabled by viewModel.companionEnabled.collectAsState()
             val companionBreed by viewModel.companionBreed.collectAsState()
+            val penguinsOnlyMode by viewModel.penguinsOnlyMode.collectAsState()
             val isMusicPlaying by viewModel.isPlaying.collectAsState()
             val videos by viewModel.videoItems.collectAsState()
             val music by viewModel.musicItems.collectAsState()
@@ -138,43 +141,66 @@ class MainActivity : ComponentActivity() {
                                 Scaffold(
                                     containerColor = if (customWallpaperUri != null) Color.Transparent else MaterialTheme.colorScheme.background,
                                     bottomBar = {
-                                        NavigationBar(
-                                            containerColor = HybridSurfaceBg,
-                                            tonalElevation = 8.dp
+                                        LiquidGlassBox(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                                            cornerRadius = 26.dp,
+                                            tintColor = HybridEmerald,
+                                            glassAlpha = 0.22f
                                         ) {
-                                            MainBottomTab.entries.forEach { tab ->
-                                                val selected = selectedTab == tab
-                                                val icon = when (tab) {
-                                                    MainBottomTab.VIDEO -> if (selected) Icons.Filled.VideoLibrary else Icons.Outlined.VideoLibrary
-                                                    MainBottomTab.MUSIC -> if (selected) Icons.Filled.LibraryMusic else Icons.Outlined.LibraryMusic
-                                                    MainBottomTab.SEARCH -> if (selected) Icons.Filled.Search else Icons.Outlined.Search
-                                                    MainBottomTab.ME -> if (selected) Icons.Filled.Person else Icons.Outlined.Person
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                horizontalArrangement = Arrangement.SpaceEvenly
+                                            ) {
+                                                MainBottomTab.entries.forEach { tab ->
+                                                    val selected = selectedTab == tab
+                                                    val tabTint = when (tab) {
+                                                        MainBottomTab.VIDEO -> Color(0xFF00E676)
+                                                        MainBottomTab.MUSIC -> Color(0xFF00E5FF)
+                                                        MainBottomTab.SEARCH -> Color(0xFFFFD54F)
+                                                        MainBottomTab.ME -> Color(0xFFFF4081)
+                                                    }
+                                                    val icon = when (tab) {
+                                                        MainBottomTab.VIDEO -> if (selected) Icons.Filled.VideoLibrary else Icons.Outlined.VideoLibrary
+                                                        MainBottomTab.MUSIC -> if (selected) Icons.Filled.LibraryMusic else Icons.Outlined.LibraryMusic
+                                                        MainBottomTab.SEARCH -> if (selected) Icons.Filled.Search else Icons.Outlined.Search
+                                                        MainBottomTab.ME -> if (selected) Icons.Filled.Person else Icons.Outlined.Person
+                                                    }
+                                                    LiquidGlassBox(
+                                                        modifier = Modifier
+                                                            .weight(1f)
+                                                            .padding(horizontal = 4.dp)
+                                                            .testTag("nav_tab_${tab.name.lowercase()}"),
+                                                        cornerRadius = 20.dp,
+                                                        tintColor = if (selected) tabTint else Color.White,
+                                                        glassAlpha = if (selected) 0.28f else 0.05f,
+                                                        onClick = { selectedTab = tab }
+                                                    ) {
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(vertical = 8.dp),
+                                                            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = icon,
+                                                                contentDescription = tab.label,
+                                                                tint = if (selected) tabTint else Color.White.copy(alpha = 0.72f),
+                                                                modifier = Modifier.size(22.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.height(3.dp))
+                                                            Text(
+                                                                text = tab.label,
+                                                                fontSize = 11.sp,
+                                                                color = if (selected) Color.White else HybridTextSecondary,
+                                                                fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium
+                                                            )
+                                                        }
+                                                    }
                                                 }
-                                                NavigationBarItem(
-                                                    selected = selected,
-                                                    onClick = { selectedTab = tab },
-                                                    icon = {
-                                                        Icon(
-                                                            imageVector = icon,
-                                                            contentDescription = tab.label
-                                                        )
-                                                    },
-                                                    label = {
-                                                        Text(
-                                                            text = tab.label,
-                                                            fontSize = 11.sp,
-                                                            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium
-                                                        )
-                                                    },
-                                                    colors = NavigationBarItemDefaults.colors(
-                                                        selectedIconColor = HybridEmerald,
-                                                        selectedTextColor = HybridEmerald,
-                                                        indicatorColor = HybridEmerald.copy(alpha = 0.16f),
-                                                        unselectedIconColor = HybridTextSecondary,
-                                                        unselectedTextColor = HybridTextSecondary
-                                                    ),
-                                                    modifier = Modifier.testTag("nav_tab_${tab.name.lowercase()}")
-                                                )
                                             }
                                         }
                                     }
@@ -408,12 +434,13 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // --- REALISTIC 3D ARTICULATED PUPPY COMPANION OVERLAY ---
+                    // --- REALISTIC 3D ARTICULATED PUPPY & PENGUIN COMPANION OVERLAY ---
                     if (currentScreen == ActiveScreen.MainTabs) {
                         RealisticCompanionOverlay(
                             enabled = companionEnabled,
                             breedName = companionBreed,
                             isMusicPlaying = isMusicPlaying,
+                            penguinsOnlyMode = penguinsOnlyMode,
                             onQuickPlayTrigger = {
                                 music.firstOrNull()?.let { viewModel.playMusic(it) }
                             },

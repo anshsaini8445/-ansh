@@ -1,48 +1,53 @@
-package com.app.mediaplayer
+package com.example.helpers
 
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.RectF
 import android.graphics.Shader
 import android.media.MediaMetadata
 import android.media.MediaMetadataRetriever
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.net.Uri
+import android.os.Binder
 import android.os.Build
+import android.os.IBinder
 import android.util.LruCache
+import android.util.Size
 import java.io.File
+import java.util.Locale
 
 /**
- * Universal Foreground & Lock-Screen Media Notification Engine for Hybrid Player.
- * Supports Android 5.0 (API 21) through Android 15+ (API 36) with:
+ * Universal Foreground & Lock-Screen Media Notification Engine for Hybrid Player (com.example.helpers).
+ * Supports Android 5.0 through Android 15+ with:
  *  - Lock-screen visibility (VISIBILITY_PUBLIC)
  *  - Native MediaSession + Notification.MediaStyle (Lock-screen scrubbing, Bluetooth/Headset keys)
- *  - 5 Notification Transport Controls: Prev (⏮), Rewind -10s (⏪), Play/Pause (▶/⏸), Forward +10s (⏩), Next (⏭)
- *  - Works seamlessly for both Audio (Music Studio) and Video (Foreground & Background Video Playback).
+ *  - 5 Notification Transport Controls: Prev, Rewind -10s, Play/Pause, Forward +10s, Next
  */
 object MediaNotificationHelper {
 
-    const val CHANNEL_ID = "hybrid_media_playback_channel_v2"
+    const val CHANNEL_ID = "hybrid_media_playback_channel_v3"
     const val CHANNEL_NAME = "Hybrid Player Media Controls"
     const val NOTIFICATION_ID = 7701
 
-    const val ACTION_MEDIA_PREV = "com.app.mediaplayer.ACTION_MEDIA_PREV"
-    const val ACTION_MEDIA_REWIND_10 = "com.app.mediaplayer.ACTION_MEDIA_REWIND_10"
-    const val ACTION_MEDIA_PLAY_PAUSE = "com.app.mediaplayer.ACTION_MEDIA_PLAY_PAUSE"
-    const val ACTION_MEDIA_FAST_FORWARD_10 = "com.app.mediaplayer.ACTION_MEDIA_FAST_FORWARD_10"
-    const val ACTION_MEDIA_NEXT = "com.app.mediaplayer.ACTION_MEDIA_NEXT"
-    const val ACTION_MEDIA_STOP = "com.app.mediaplayer.ACTION_MEDIA_STOP"
+    const val ACTION_MEDIA_PREV = "com.example.helpers.ACTION_MEDIA_PREV"
+    const val ACTION_MEDIA_REWIND_10 = "com.example.helpers.ACTION_MEDIA_REWIND_10"
+    const val ACTION_MEDIA_PLAY_PAUSE = "com.example.helpers.ACTION_MEDIA_PLAY_PAUSE"
+    const val ACTION_MEDIA_FAST_FORWARD_10 = "com.example.helpers.ACTION_MEDIA_FAST_FORWARD_10"
+    const val ACTION_MEDIA_NEXT = "com.example.helpers.ACTION_MEDIA_NEXT"
+    const val ACTION_MEDIA_STOP = "com.example.helpers.ACTION_MEDIA_STOP"
 
     interface ControlDelegate {
         fun onNotificationPlayPause()
@@ -63,7 +68,7 @@ object MediaNotificationHelper {
     @Volatile
     private var mediaSession: MediaSession? = null
 
-    private val artworkCache = object : LruCache<String, Bitmap>(20) {}
+    private val artworkCache = object : LruCache<String, Bitmap>(24) {}
     private var fallbackVinylArtwork: Bitmap? = null
 
     fun setControlDelegate(delegate: ControlDelegate?) {
@@ -167,7 +172,6 @@ object MediaNotificationHelper {
 
         val artwork = resolveMediaArtwork(appCtx, mediaPath, isVideo)
 
-        // Update MediaSession Metadata & PlaybackState for Lock Screen + System Media Panel
         try {
             val metaBuilder = MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
@@ -210,8 +214,6 @@ object MediaNotificationHelper {
             if (!mediaPath.isNullOrBlank()) {
                 putExtra("video_path", mediaPath)
                 putExtra("video_title", title)
-                putExtra(AudioPlayerActivity.EXTRA_AUDIO_PATH, mediaPath)
-                putExtra(AudioPlayerActivity.EXTRA_AUDIO_TITLE, title)
             }
         }
         val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
@@ -225,9 +227,9 @@ object MediaNotificationHelper {
         val nextPending = createBroadcastPendingIntent(appCtx, ACTION_MEDIA_NEXT, 105, piFlags)
         val stopPending = createBroadcastPendingIntent(appCtx, ACTION_MEDIA_STOP, 106, piFlags)
 
-        val posFormatted = VideoModel.formatMediaDuration(positionMs)
-        val durFormatted = if (durationMs > 0L) VideoModel.formatMediaDuration(durationMs) else "LIVE"
-        val modeTag = if (isVideo) "🎬 Video" else "🎧 Music"
+        val posFormatted = formatDurationMs(positionMs)
+        val durFormatted = if (durationMs > 0L) formatDurationMs(durationMs) else "LIVE"
+        val modeTag = if (isVideo) "Video" else "Music"
         val subTextLine = "$modeTag • $posFormatted / $durFormatted"
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -237,15 +239,10 @@ object MediaNotificationHelper {
             Notification.Builder(appCtx)
         }
 
-        val smallIconRes = if (isVideo) {
-            android.R.drawable.ic_media_play
-        } else {
-            if (isPlaying) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause
-        }
+        val smallIconRes = if (isPlaying) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause
 
         val mediaStyle = Notification.MediaStyle()
             .setMediaSession(session.sessionToken)
-            // Show Rewind -10s (index 1), Play/Pause (index 2), Fast-Forward +10s (index 3) in compact shade!
             .setShowActionsInCompactView(1, 2, 3)
 
         builder
@@ -352,6 +349,18 @@ object MediaNotificationHelper {
         }
     }
 
+    private fun formatDurationMs(durationMs: Long): String {
+        val totalSeconds = (durationMs.coerceAtLeast(0L)) / 1000L
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.US, "%02d:%02d", minutes, seconds)
+        }
+    }
+
     private fun createBroadcastPendingIntent(
         context: Context,
         action: String,
@@ -369,7 +378,7 @@ object MediaNotificationHelper {
             val cached = artworkCache.get(mediaPath)
             if (cached != null && !cached.isRecycled) return cached
 
-            val extracted = extractArtworkFromFile(mediaPath, isVideo)
+            val extracted = extractArtworkFromFileOrUri(context, mediaPath, isVideo)
             if (extracted != null) {
                 artworkCache.put(mediaPath, extracted)
                 return extracted
@@ -384,13 +393,23 @@ object MediaNotificationHelper {
         return generated
     }
 
-    private fun extractArtworkFromFile(path: String, isVideo: Boolean): Bitmap? {
+    private fun extractArtworkFromFileOrUri(context: Context, path: String, isVideo: Boolean): Bitmap? {
         if (path.startsWith("http")) return null
-        val file = File(path)
-        if (!file.exists()) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && path.startsWith("content://")) {
+            try {
+                return context.contentResolver.loadThumbnail(Uri.parse(path), Size(256, 256), null)
+            } catch (_: Exception) {
+            }
+        }
         val retriever = MediaMetadataRetriever()
         return try {
-            retriever.setDataSource(path)
+            if (path.startsWith("content://")) {
+                retriever.setDataSource(context, Uri.parse(path))
+            } else {
+                val file = File(path)
+                if (!file.exists()) return null
+                retriever.setDataSource(path)
+            }
             val embedded = retriever.embeddedPicture
             if (embedded != null) {
                 BitmapFactory.decodeByteArray(embedded, 0, embedded.size)
@@ -451,8 +470,103 @@ object MediaNotificationHelper {
 }
 
 /**
- * BroadcastReceiver that handles notification bar & lock-screen clicks
- * for Prev, -10s Rewind, Play/Pause, +10s Fast-Forward, Next, and Stop.
+ * Foreground Media Playback Service for Hybrid Player.
+ */
+class AudioService : Service() {
+
+    companion object {
+        const val ACTION_KEEP_FOREGROUND = "com.example.helpers.ACTION_KEEP_FOREGROUND"
+
+        @Volatile
+        private var runningInstance: AudioService? = null
+
+        fun startServiceSafely(context: Context) {
+            val appCtx = context.applicationContext
+            val intent = Intent(appCtx, AudioService::class.java).apply {
+                action = ACTION_KEEP_FOREGROUND
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appCtx.startForegroundService(intent)
+                } else {
+                    appCtx.startService(intent)
+                }
+            } catch (_: Exception) {
+                try {
+                    appCtx.startService(intent)
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        fun syncForegroundWithNotification(
+            context: Context,
+            notification: Notification,
+            isPlaying: Boolean
+        ) {
+            val instance = runningInstance
+            if (instance != null) {
+                instance.promoteNotificationToForeground(notification)
+            } else if (isPlaying) {
+                startServiceSafely(context)
+            }
+        }
+    }
+
+    inner class LocalBinder : Binder() {
+        fun getService(): AudioService = this@AudioService
+    }
+
+    private val binder = LocalBinder()
+
+    override fun onCreate() {
+        super.onCreate()
+        runningInstance = this
+        MediaNotificationHelper.ensureChannel(this)
+    }
+
+    fun promoteNotificationToForeground(notification: Notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    MediaNotificationHelper.NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(MediaNotificationHelper.NOTIFICATION_ID, notification)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        runningInstance = this
+        promoteNotificationToForeground(MediaNotificationHelper.getLastOrDefaultNotification(this))
+        val activeDelegate = MediaNotificationHelper.getControlDelegate()
+        when (intent?.action) {
+            MediaNotificationHelper.ACTION_MEDIA_PREV -> activeDelegate?.onNotificationPrevious()
+            MediaNotificationHelper.ACTION_MEDIA_REWIND_10 -> activeDelegate?.onNotificationRewind10s()
+            MediaNotificationHelper.ACTION_MEDIA_PLAY_PAUSE -> activeDelegate?.onNotificationPlayPause()
+            MediaNotificationHelper.ACTION_MEDIA_FAST_FORWARD_10 -> activeDelegate?.onNotificationFastForward10s()
+            MediaNotificationHelper.ACTION_MEDIA_NEXT -> activeDelegate?.onNotificationNext()
+            MediaNotificationHelper.ACTION_MEDIA_STOP -> activeDelegate?.onNotificationStop()
+        }
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onDestroy() {
+        if (runningInstance === this) {
+            runningInstance = null
+        }
+        super.onDestroy()
+    }
+}
+
+/**
+ * BroadcastReceiver that handles notification bar & lock-screen clicks.
  */
 class MediaNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {

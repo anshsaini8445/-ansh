@@ -32,11 +32,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
 import com.example.helpers.HybridCleanerHubHelper
+import com.example.ui.components.LiquidGlassBox
+import com.example.ui.components.LiquidGlassIconOrb
+import com.example.ui.components.LiquidGlassShakeOrbWidget
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
@@ -65,6 +70,21 @@ fun VideoSectionScreen(
     var showSortDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
+
+    val pickVideosLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importPickedMedia(uris, isVideo = true)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        viewModel.loadMedia()
+        Toast.makeText(context, "Scanning device storage for real videos...", Toast.LENGTH_SHORT).show()
+    }
 
     // Multi-Select Mode State
     val selectedIds = remember { mutableStateListOf<String>() }
@@ -171,80 +191,87 @@ fun VideoSectionScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // BG Audio 2x Shake Vibration Toggle (Active only when video plays in background audio mode)
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(
-                                if (doubleShakeEnabled) HybridEmerald.copy(alpha = 0.16f)
-                                else HybridCardBg
-                            )
-                            .border(
-                                1.dp,
-                                if (doubleShakeEnabled) HybridEmerald else HybridCardBorder,
-                                RoundedCornerShape(20.dp)
-                            )
-                            .clickable {
-                                viewModel.toggleDoubleShakeEnabled()
-                                val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
-                                Toast.makeText(
-                                    context,
-                                    "📳 BG Audio 2x Shake (Next Track): $st",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Vibration,
-                            contentDescription = "BG Audio 2x Shake",
-                            tint = if (doubleShakeEnabled) HybridEmerald else HybridTextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (doubleShakeEnabled) "BG Shake ON" else "BG Shake OFF",
-                            color = if (doubleShakeEnabled) HybridEmerald else HybridTextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    }
+                    // Add / Pick Real Videos Orb (Liquid Glass)
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.FolderOpen,
+                        contentDescription = "Add Real Videos from Device",
+                        tintColor = Color(0xFF00E5FF),
+                        size = 38.dp,
+                        iconSize = 18.dp,
+                        isActive = true,
+                        onClick = {
+                            pickVideosLauncher.launch(arrayOf("video/*"))
+                        }
+                    )
 
-                    // Top-Right Cleaner Bucket Icon with Red Dot & Cleanable Storage Badge
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(HybridCardBg)
-                            .border(1.dp, HybridCardBorder, RoundedCornerShape(20.dp))
-                            .clickable { onOpenCleanerHub() }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                            .testTag("cleaner_bucket_button"),
-                        verticalAlignment = Alignment.CenterVertically
+                    // Rescan Real Device Storage Orb (Liquid Glass)
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.Refresh,
+                        contentDescription = "Scan Real Device Videos",
+                        tintColor = HybridEmerald,
+                        size = 38.dp,
+                        iconSize = 18.dp,
+                        isActive = false,
+                        onClick = {
+                            val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
+                            } else {
+                                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                            }
+                            permissionLauncher.launch(perms)
+                        }
+                    )
+
+                    // Visual Liquid Glass 2x Shake Vibration Orb (No text clutter)
+                    LiquidGlassShakeOrbWidget(
+                        isEnabled = doubleShakeEnabled,
+                        size = 38.dp,
+                        onClick = {
+                            viewModel.toggleDoubleShakeEnabled()
+                            val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
+                            Toast.makeText(
+                                context,
+                                "📳 BG Audio 2x Shake (Next Track): $st",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+
+                    // Top-Right Liquid Glass Cleaner Bucket with Cleanable Storage Badge
+                    LiquidGlassBox(
+                        modifier = Modifier.testTag("cleaner_bucket_button"),
+                        cornerRadius = 20.dp,
+                        tintColor = HybridCoralRed,
+                        glassAlpha = 0.22f,
+                        onClick = onOpenCleanerHub
                     ) {
-                        Box {
-                            Icon(
-                                imageVector = Icons.Default.DeleteSweep,
-                                contentDescription = "Cleaner Bucket",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            // Red notification dot
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(HybridCoralRed)
-                                    .align(Alignment.TopEnd)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteSweep,
+                                    contentDescription = "Cleaner Bucket",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(HybridCoralRed)
+                                        .align(Alignment.TopEnd)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = storageStats.cleanableBadgeText,
+                                color = HybridCoralRed,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
                             )
                         }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = storageStats.cleanableBadgeText,
-                            color = HybridCoralRed,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
                     }
                 }
             }
@@ -409,40 +436,39 @@ fun VideoSectionScreen(
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // 1. Sort Icon (Up/Down Arrows)
-                IconButton(
-                    onClick = { showSortDialog = true },
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.SwapVert,
-                        contentDescription = "Sort by",
-                        tint = Color.White
-                    )
-                }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 1. Liquid Glass Sort Icon Orb
+                LiquidGlassIconOrb(
+                    icon = Icons.Default.SwapVert,
+                    contentDescription = "Sort by",
+                    tintColor = Color(0xFF00E5FF),
+                    size = 36.dp,
+                    iconSize = 18.dp,
+                    onClick = { showSortDialog = true }
+                )
 
-                // 2. View Mode Toggle Icon (or '+' Create Playlist on Playlist tab)
-                IconButton(
+                // 2. Liquid Glass View Mode Toggle / Create Playlist Orb
+                LiquidGlassIconOrb(
+                    icon = when {
+                        activeSubTab == "Playlist" -> Icons.Default.Add
+                        isGridView -> Icons.Default.ViewList
+                        else -> Icons.Default.GridView
+                    },
+                    contentDescription = "Toggle View / Create Playlist",
+                    tintColor = HybridEmerald,
+                    size = 36.dp,
+                    iconSize = 18.dp,
                     onClick = {
                         if (activeSubTab == "Playlist") {
                             showCreatePlaylistDialog = true
                         } else {
                             viewModel.toggleVideoViewMode()
                         }
-                    },
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = when {
-                            activeSubTab == "Playlist" -> Icons.Default.Add
-                            isGridView -> Icons.Default.ViewList
-                            else -> Icons.Default.GridView
-                        },
-                        contentDescription = "Toggle View / Create Playlist",
-                        tint = Color.White
-                    )
-                }
+                    }
+                )
             }
         }
 
@@ -473,7 +499,111 @@ fun VideoSectionScreen(
         Box(modifier = Modifier.weight(1f)) {
             when (activeSubTab) {
                 "Video" -> {
-                    if (isGridView) {
+                    if (sortedVideos.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            LiquidGlassBox(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 28.dp,
+                                tintColor = HybridEmerald,
+                                glassAlpha = 0.24f
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    LiquidGlassIconOrb(
+                                        icon = Icons.Default.VideoLibrary,
+                                        contentDescription = "Real Device Videos",
+                                        tintColor = HybridEmerald,
+                                        size = 64.dp,
+                                        iconSize = 32.dp,
+                                        isActive = true,
+                                        onClick = {
+                                            val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                                arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
+                                            } else {
+                                                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                            }
+                                            permissionLauncher.launch(perms)
+                                        }
+                                    )
+                                    Text(
+                                        text = "100% Real Device Video Scanner",
+                                        color = Color.White,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                    Text(
+                                        text = "Zero dummy videos! Grant storage permission to scan all real videos on your phone, or pick videos directly from any folder.",
+                                        color = HybridTextSecondary,
+                                        fontSize = 13.sp,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        LiquidGlassBox(
+                                            modifier = Modifier.weight(1f),
+                                            cornerRadius = 20.dp,
+                                            tintColor = HybridEmerald,
+                                            glassAlpha = 0.32f,
+                                            onClick = {
+                                                val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                                    arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
+                                                } else {
+                                                    arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                                }
+                                                permissionLauncher.launch(perms)
+                                            }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 12.dp),
+                                                horizontalArrangement = Arrangement.Center,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(18.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Scan Storage", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+                                            }
+                                        }
+
+                                        LiquidGlassBox(
+                                            modifier = Modifier.weight(1f),
+                                            cornerRadius = 20.dp,
+                                            tintColor = Color(0xFF00E5FF),
+                                            glassAlpha = 0.32f,
+                                            onClick = {
+                                                pickVideosLauncher.launch(arrayOf("video/*"))
+                                            }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 12.dp),
+                                                horizontalArrangement = Arrangement.Center,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(18.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Pick Videos", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if (isGridView) {
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(2),
                             contentPadding = PaddingValues(16.dp),
@@ -876,13 +1006,14 @@ fun GuaranteedVideoThumbnail(
     video: MediaItem,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var localBitmap by remember(video.path) {
         mutableStateOf<Bitmap?>(DeepMediaScanner.getCachedBitmap(video.path))
     }
 
     LaunchedEffect(video.path) {
         if (localBitmap == null && !video.path.startsWith("http")) {
-            localBitmap = DeepMediaScanner.loadOrExtractBitmap(video.path, isVideo = true)
+            localBitmap = DeepMediaScanner.loadOrExtractBitmap(video.path, isVideo = true, context = context)
         }
     }
 

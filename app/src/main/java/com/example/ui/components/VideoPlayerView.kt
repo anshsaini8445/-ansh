@@ -203,7 +203,7 @@ fun VideoPlayerView(
     }
 
     fun postComposeVideoNotification(playingState: Boolean = isPlaying, posMs: Long = currentPosMs) {
-        com.app.mediaplayer.MediaNotificationHelper.showOrUpdateNotification(
+        MediaNotificationHelper.showOrUpdateNotification(
             context = context,
             title = displayTitle,
             subtitle = "Hybrid 8K Video • $visualFilter",
@@ -218,7 +218,7 @@ fun VideoPlayerView(
     }
 
     DisposableEffect(videoPath, allVideos) {
-        val delegate = object : com.app.mediaplayer.MediaNotificationHelper.ControlDelegate {
+        val delegate = object : MediaNotificationHelper.ControlDelegate {
             override fun onNotificationPlayPause() {
                 videoViewRef?.let { vv ->
                     if (vv.isPlaying) {
@@ -278,14 +278,14 @@ fun VideoPlayerView(
             override fun onNotificationStop() {
                 videoViewRef?.pause()
                 isPlaying = false
-                com.app.mediaplayer.MediaNotificationHelper.cancelNotification(context)
+                MediaNotificationHelper.cancelNotification(context)
             }
         }
-        com.app.mediaplayer.MediaNotificationHelper.setControlDelegate(delegate)
+        MediaNotificationHelper.setControlDelegate(delegate)
         postComposeVideoNotification(isPlaying, currentPosMs)
         onDispose {
-            if (com.app.mediaplayer.MediaNotificationHelper.getControlDelegate() === delegate) {
-                com.app.mediaplayer.MediaNotificationHelper.setControlDelegate(null)
+            if (MediaNotificationHelper.getControlDelegate() === delegate) {
+                MediaNotificationHelper.setControlDelegate(null)
             }
         }
     }
@@ -393,43 +393,52 @@ fun VideoPlayerView(
             )
     ) {
         // --- VIDEO SURFACE WITH PINCH-TO-ZOOM & 8K VISUAL ENHANCER FILTERS ---
-        AndroidView(
-            factory = { ctx ->
-                VideoView(ctx).apply {
-                    videoViewRef = this
-                    try {
-                        if (videoPath.startsWith("http")) {
-                            setVideoURI(Uri.parse(videoPath))
-                        } else {
-                            val playablePath = resolvePlayablePartialPath(ctx, videoPath)
-                            setVideoPath(playablePath)
-                        }
-                        setOnPreparedListener { mp ->
-                            mediaPlayerRef = mp
-                            totalDurationMs = mp.duration.toLong().coerceAtLeast(1L)
-                            if (initialPositionMs > 0 && initialPositionMs < totalDurationMs - 2000L) {
-                                seekTo(initialPositionMs.toInt())
+        key(videoPath) {
+            AndroidView(
+                factory = { ctx ->
+                    VideoView(ctx).apply {
+                        videoViewRef = this
+                        try {
+                            if (
+                                videoPath.startsWith("http") ||
+                                videoPath.startsWith("content://") ||
+                                videoPath.startsWith("android.resource://")
+                            ) {
+                                setVideoURI(Uri.parse(videoPath))
+                            } else {
+                                val file = File(videoPath)
+                                if (file.exists()) {
+                                    val playablePath = resolvePlayablePartialPath(ctx, videoPath)
+                                    setVideoPath(playablePath)
+                                } else {
+                                    setVideoURI(Uri.parse(videoPath))
+                                }
                             }
-                            start()
-                            isPlaying = true
-                            try {
-                                loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
-                            } catch (_: Exception) {
+                            setOnPreparedListener { mp ->
+                                mediaPlayerRef = mp
+                                totalDurationMs = mp.duration.toLong().coerceAtLeast(1L)
+                                if (initialPositionMs > 0 && initialPositionMs < totalDurationMs - 2000L) {
+                                    seekTo(initialPositionMs.toInt())
+                                }
+                                start()
+                                isPlaying = true
+                                try {
+                                    loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
+                                } catch (_: Exception) {
+                                }
                             }
+                            setOnErrorListener { _, _, _ ->
+                                Toast.makeText(
+                                    ctx,
+                                    "Playing Stream via Hybrid Byte-Recovery Engine",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                true
+                            }
+                        } catch (_: Exception) {
                         }
-                        setOnErrorListener { _, _, _ ->
-                            // Stage 3 Graceful Fallback so partial/corrupt containers never crash
-                            Toast.makeText(
-                                ctx,
-                                "Playing Partial Stream via Hybrid Byte-Recovery Engine",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            true
-                        }
-                    } catch (_: Exception) {
                     }
-                }
-            },
+                },
             modifier = Modifier
                 .fillMaxSize()
                 .align(Alignment.Center)
@@ -449,7 +458,8 @@ fun VideoPlayerView(
                         else -> 1.0f
                     }
                 )
-        )
+            )
+        }
 
         // 8K Visual Enhancer Filter Overlay Tint
         val filterTint = remember(visualFilter) {
@@ -786,10 +796,11 @@ fun VideoPlayerView(
                             )
                         }
                         item {
-                            ProPillButton(
-                                label = if (volumePercent > 100) "${volumePercent}% Boost" else "200% Boost",
-                                icon = if (volumePercent == 0) Icons.AutoMirrored.Filled.VolumeMute else Icons.AutoMirrored.Filled.VolumeUp,
-                                isActive = volumePercent > 100,
+                            // Visual Liquid Glass Volume Booster Orb (No "Volume Boost" text clutter!)
+                            LiquidGlassVolumeBoosterWidget(
+                                isBoostEnabled = volumePercent > 100,
+                                volumePercent = volumePercent,
+                                size = 38.dp,
                                 onClick = {
                                     updateVolumeWithBoost(if (volumePercent > 100) 100 else 200, triggerManualHaptic = true)
                                 }
@@ -835,6 +846,8 @@ fun VideoPlayerView(
                                         val retriever = android.media.MediaMetadataRetriever()
                                         if (videoPath.startsWith("http")) {
                                             retriever.setDataSource(videoPath, HashMap())
+                                        } else if (videoPath.startsWith("content://")) {
+                                            retriever.setDataSource(context, Uri.parse(videoPath))
                                         } else {
                                             retriever.setDataSource(videoPath)
                                         }
@@ -1399,27 +1412,30 @@ private fun ProPillButton(
     isActive: Boolean = false,
     onClick: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(if (isActive) HybridEmerald.copy(alpha = 0.28f) else HybridTranslucentControl)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
+    LiquidGlassBox(
+        cornerRadius = 20.dp,
+        tintColor = if (isActive) HybridEmerald else Color(0xFF00E5FF),
+        glassAlpha = if (isActive) 0.34f else 0.18f,
+        onClick = onClick
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = if (isActive) HybridEmerald else Color.White,
-            modifier = Modifier.size(16.dp)
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = label,
-            color = if (isActive) HybridEmerald else Color.White,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (isActive) HybridEmerald else Color.White,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = label,
+                color = if (isActive) HybridEmerald else Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
     }
 }
 

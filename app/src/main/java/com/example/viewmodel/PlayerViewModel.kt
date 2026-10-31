@@ -17,16 +17,22 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.widget.Toast
+import android.database.ContentObserver
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.app.mediaplayer.AudioService
-import com.app.mediaplayer.MediaNotificationHelper
 import com.example.data.database.AppDatabase
 import com.example.data.model.MediaItem
 import com.example.data.model.PlaylistEntity
 import com.example.data.repository.MediaRepository
+import com.example.data.scanner.DeepMediaScanner
+import com.example.helpers.AudioService
 import com.example.helpers.FakeVaultHelper
 import com.example.helpers.IntruderLogEntry
+import com.example.helpers.MediaNotificationHelper
 import com.example.helpers.Music3DThemeEngine
 import com.example.helpers.PermanentDeleteHelper
 import com.example.helpers.SecurityDefenseEngine
@@ -199,12 +205,19 @@ class PlayerViewModel(application: Application) :
     private val _oneHandMode = MutableStateFlow(false)
     val oneHandMode: StateFlow<Boolean> = _oneHandMode.asStateFlow()
 
-    // --- 3D Companion Mascot ---
+    // --- 3D Companion Mascot (20 Colorful Varieties + Penguins Only Mode) ---
     private val _companionEnabled = MutableStateFlow(true)
     val companionEnabled: StateFlow<Boolean> = _companionEnabled.asStateFlow()
 
-    private val _companionBreed = MutableStateFlow("Muso Headphone Puppy (DJ)")
+    private val _companionBreed = MutableStateFlow(
+        prefs.getString("saved_companion_breed", "Emperor Penguin DJ 🐧") ?: "Emperor Penguin DJ 🐧"
+    )
     val companionBreed: StateFlow<String> = _companionBreed.asStateFlow()
+
+    private val _penguinsOnlyMode = MutableStateFlow(
+        prefs.getBoolean("companion_penguins_only_mode", false)
+    )
+    val penguinsOnlyMode: StateFlow<Boolean> = _penguinsOnlyMode.asStateFlow()
 
     // --- Engine Switches ---
     private val _hybrid8kDecoder = MutableStateFlow(true)
@@ -213,9 +226,12 @@ class PlayerViewModel(application: Application) :
     private val _hdrCcBadges = MutableStateFlow(true)
     val hdrCcBadges: StateFlow<Boolean> = _hdrCcBadges.asStateFlow()
 
-    // --- Smart Search Recent History ---
-    private val _recentSearches = MutableStateFlow(
-        listOf("8K HDR", "Synthwave", "Blender", "Partial", "Lofi")
+    // --- Smart Search Recent History (100% Real User Searches, Zero Dummy Data) ---
+    private val _recentSearches = MutableStateFlow<List<String>>(
+        prefs.getString("real_recent_searches", "")
+            ?.split("|")
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
     )
     val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
 
@@ -258,15 +274,53 @@ class PlayerViewModel(application: Application) :
     private val _visualizerFrequencies = MutableStateFlow(List(16) { 0.1f })
     val visualizerFrequencies: StateFlow<List<Float>> = _visualizerFrequencies.asStateFlow()
 
+    private val mediaStoreObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            super.onChange(selfChange)
+            loadMedia()
+        }
+    }
+
     init {
         loadMedia()
         checkVaultPinStatus()
         registerDoubleShakeSensor()
+        registerMediaStoreObserver()
         if (_vaultLockoutSeconds.value > 0) {
             startVaultLockoutCountdown()
         }
         _musicItems.value.firstOrNull()?.let { firstTrack ->
             _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), firstTrack)
+        }
+    }
+
+    private fun registerMediaStoreObserver() {
+        try {
+            val resolver = getApplication<Application>().contentResolver
+            resolver.registerContentObserver(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                true,
+                mediaStoreObserver
+            )
+            resolver.registerContentObserver(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                true,
+                mediaStoreObserver
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    fun importPickedMedia(uris: List<Uri>, isVideo: Boolean) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            DeepMediaScanner.addPickedMediaUris(getApplication(), uris, isVideo)
+            loadMedia()
+            Toast.makeText(
+                getApplication(),
+                "Added ${uris.size} real ${if (isVideo) "video(s)" else "audio track(s)"} to library",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -470,11 +524,14 @@ class PlayerViewModel(application: Application) :
         if (clean.length < 2) return
         val updated = (_recentSearches.value.filterNot { it.equals(clean, ignoreCase = true) }).toMutableList()
         updated.add(0, clean)
-        _recentSearches.value = updated.take(10)
+        val top10 = updated.take(10)
+        _recentSearches.value = top10
+        prefs.edit().putString("real_recent_searches", top10.joinToString("|")).apply()
     }
 
     fun clearRecentSearches() {
         _recentSearches.value = emptyList()
+        prefs.edit().remove("real_recent_searches").apply()
     }
 
     // --- Recycle Bin & Permanent Delete ---
@@ -524,7 +581,21 @@ class PlayerViewModel(application: Application) :
 
         mediaPlayer = MediaPlayer().apply {
             try {
-                setDataSource(item.path)
+                if (
+                    item.path.startsWith("content://") ||
+                    item.path.startsWith("http://") ||
+                    item.path.startsWith("https://") ||
+                    item.path.startsWith("android.resource://")
+                ) {
+                    setDataSource(getApplication(), Uri.parse(item.path))
+                } else {
+                    val file = java.io.File(item.path)
+                    if (file.exists()) {
+                        setDataSource(item.path)
+                    } else {
+                        setDataSource(getApplication(), Uri.parse(item.path))
+                    }
+                }
                 prepareAsync()
                 setOnPreparedListener { mp ->
                     mp.start()
@@ -1073,6 +1144,20 @@ class PlayerViewModel(application: Application) :
     fun selectCompanionBreed(breedName: String) {
         _companionBreed.value = breedName
         _companionEnabled.value = true
+        prefs.edit().putString("saved_companion_breed", breedName).apply()
+    }
+
+    fun togglePenguinsOnlyMode() {
+        val next = !_penguinsOnlyMode.value
+        _penguinsOnlyMode.value = next
+        _companionEnabled.value = true
+        prefs.edit().putBoolean("companion_penguins_only_mode", next).apply()
+    }
+
+    fun setPenguinsOnlyMode(enabled: Boolean) {
+        _penguinsOnlyMode.value = enabled
+        if (enabled) _companionEnabled.value = true
+        prefs.edit().putBoolean("companion_penguins_only_mode", enabled).apply()
     }
 
     fun toggleHybrid8kDecoder() {
@@ -1108,6 +1193,10 @@ class PlayerViewModel(application: Application) :
         progressJob?.cancel()
         sleepTimerJob?.cancel()
         lockoutTimerJob?.cancel()
+        try {
+            getApplication<Application>().contentResolver.unregisterContentObserver(mediaStoreObserver)
+        } catch (_: Exception) {
+        }
         try {
             sensorManager?.unregisterListener(this)
         } catch (_: Exception) {

@@ -3,9 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -21,58 +21,50 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:requestLegacyExternalStorage="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MyApplication">
+        android:theme="@style/Theme.MyApplication"
+        android:usesCleartextTraffic="true">
+
+        <!-- Single Unified Compose MainActivity -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
             android:exported="true"
-            android:launchMode="singleTask"
-            android:supportsPictureInPicture="true"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:label="@string/app_name"
+            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.MyApplication">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
             </intent-filter>
         </activity>
 
-        <activity
-            android:name="com.app.mediaplayer.MainActivity"
-            android:exported="false"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
-            android:theme="@style/Theme.AppCompat.NoActionBar" />
-
-        <activity
-            android:name="com.app.mediaplayer.VideoPlayerActivity"
-            android:exported="false"
-            android:supportsPictureInPicture="true"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
-            android:theme="@style/Theme.AppCompat.NoActionBar" />
-
-        <activity
-            android:name="com.app.mediaplayer.AudioPlayerActivity"
-            android:exported="false"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
-            android:theme="@style/Theme.AppCompat.NoActionBar" />
-
         <service
-            android:name="com.app.mediaplayer.AudioService"
+            android:name="com.example.helpers.AudioService"
+            android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
         <receiver
-            android:name="com.app.mediaplayer.MediaNotificationReceiver"
+            android:name="com.example.helpers.MediaNotificationReceiver"
+            android:enabled="true"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.app.mediaplayer.ACTION_MEDIA_PREV" />
-                <action android:name="com.app.mediaplayer.ACTION_MEDIA_REWIND_10" />
-                <action android:name="com.app.mediaplayer.ACTION_MEDIA_PLAY_PAUSE" />
-                <action android:name="com.app.mediaplayer.ACTION_MEDIA_FAST_FORWARD_10" />
-                <action android:name="com.app.mediaplayer.ACTION_MEDIA_NEXT" />
-                <action android:name="com.app.mediaplayer.ACTION_MEDIA_STOP" />
+                <action android:name="com.example.helpers.ACTION_MEDIA_PREV" />
+                <action android:name="com.example.helpers.ACTION_MEDIA_REWIND_10" />
+                <action android:name="com.example.helpers.ACTION_MEDIA_PLAY_PAUSE" />
+                <action android:name="com.example.helpers.ACTION_MEDIA_FAST_FORWARD_10" />
+                <action android:name="com.example.helpers.ACTION_MEDIA_NEXT" />
+                <action android:name="com.example.helpers.ACTION_MEDIA_STOP" />
             </intent-filter>
         </receiver>
     </application>

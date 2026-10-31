@@ -45,6 +45,12 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.helpers.*
+import com.example.ui.components.LiquidGlassBox
+import com.example.ui.components.LiquidGlassEqualizerWidget
+import com.example.ui.components.LiquidGlassIconOrb
+import com.example.ui.components.LiquidGlassShakeOrbWidget
+import com.example.ui.components.LiquidGlassSpeedDialOrb
+import com.example.ui.components.LiquidGlassVolumeBoosterWidget
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
@@ -80,6 +86,7 @@ fun MusicPlayerScreen(
     val pointB by viewModel.abPointBMs.collectAsState()
     val sleepMinutes by viewModel.sleepTimerMinutes.collectAsState()
     val activePitchPreset by viewModel.activePitchPreset.collectAsState()
+    val eqBands by viewModel.equalizerBands.collectAsState()
 
     val currentTrack = nowPlaying ?: tracks.firstOrNull() ?: return
     val current3DTheme = remember(active3DThemeName) {
@@ -238,37 +245,46 @@ fun MusicPlayerScreen(
                         }
                     },
                     actions = {
-                        // Quick 3D Theme Switcher Icon
-                        IconButton(onClick = { show3DThemesDialog = true }) {
-                            Icon(
-                                imageVector = Icons.Default.Palette,
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(end = 8.dp)
+                        ) {
+                            // 3D Theme Palette Liquid Glass Orb
+                            LiquidGlassIconOrb(
+                                icon = Icons.Default.Palette,
                                 contentDescription = "15 3D Themes",
-                                tint = themePrimary
+                                tintColor = themePrimary,
+                                size = 38.dp,
+                                iconSize = 18.dp,
+                                isActive = true,
+                                onClick = { show3DThemesDialog = true }
                             )
-                        }
-                        // Quick Volume HUD Trigger Button
-                        IconButton(onClick = {
-                            lastVolumeHudInteractionMs = System.currentTimeMillis()
-                            showVerticalVolumeHud = !showVerticalVolumeHud
-                        }) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                                contentDescription = "Volume HUD",
-                                tint = if (audioVolumePct > 100) HybridGold else Color.White
+                            // Visual Liquid Glass Volume Booster Component (No text label!)
+                            LiquidGlassVolumeBoosterWidget(
+                                isBoostEnabled = is200Boost,
+                                volumePercent = audioVolumePct,
+                                size = 38.dp,
+                                onClick = {
+                                    lastVolumeHudInteractionMs = System.currentTimeMillis()
+                                    showVerticalVolumeHud = !showVerticalVolumeHud
+                                }
                             )
-                        }
-                        IconButton(onClick = onOpenEqualizer) {
-                            Icon(
-                                imageVector = Icons.Default.Equalizer,
-                                contentDescription = "Equalizer",
-                                tint = Color.White
+                            // Visual Liquid Glass Equalizer Component (No text label!)
+                            LiquidGlassEqualizerWidget(
+                                bands = eqBands,
+                                isPlaying = isPlaying,
+                                size = 38.dp,
+                                onClick = onOpenEqualizer
                             )
-                        }
-                        IconButton(onClick = { showStudioMenu = true }) {
-                            Icon(
-                                imageVector = Icons.Default.MoreVert,
+                            // 3-Dot Studio Menu Liquid Glass Orb
+                            LiquidGlassIconOrb(
+                                icon = Icons.Default.MoreVert,
                                 contentDescription = "Studio 3-Dot Menu",
-                                tint = Color.White
+                                tintColor = Color.White,
+                                size = 38.dp,
+                                iconSize = 18.dp,
+                                onClick = { showStudioMenu = true }
                             )
                         }
                     },
@@ -607,99 +623,83 @@ fun MusicPlayerScreen(
                     )
                 }
 
-                // --- SECONDARY ACTION STRIP: Heart, "200% Boost", "1.0x" Speed, "Lyrics", Share ---
+                // --- SECONDARY LIQUID GLASS VISUAL COMPONENTS STRIP (Zero Text Clutter!) ---
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { viewModel.toggleFavorite(currentTrack) }) {
-                        Icon(
-                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Favorite",
-                            tint = if (isFavorite) HybridCoralRed else Color.White
-                        )
-                    }
+                    // 1. Liquid Glass Heart Orb
+                    LiquidGlassIconOrb(
+                        icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = "Favorite",
+                        tintColor = if (isFavorite) HybridCoralRed else Color.White,
+                        size = 44.dp,
+                        iconSize = 21.dp,
+                        isActive = isFavorite,
+                        onClick = { viewModel.toggleFavorite(currentTrack) }
+                    )
 
-                    // "200% Boost" Toggle Pill (Also opens Vertical Volume Pill HUD!)
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(if (is200Boost) themePrimary else HybridCardBg)
-                            .border(1.dp, if (is200Boost) themePrimary else HybridCardBorder, RoundedCornerShape(18.dp))
-                            .clickable {
-                                viewModel.toggle200Boost()
-                                lastVolumeHudInteractionMs = System.currentTimeMillis()
-                                showVerticalVolumeHud = true
-                            }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = if (is200Boost) "200% Boost ON" else "200% Boost",
-                            color = if (is200Boost) Color.Black else Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    // 2. Visual Liquid Glass Equalizer Component (Opens Equalizer on click, no text!)
+                    LiquidGlassEqualizerWidget(
+                        bands = eqBands,
+                        isPlaying = isPlaying,
+                        size = 44.dp,
+                        onClick = onOpenEqualizer
+                    )
 
-                    // "1.0x" Speed Pill
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(HybridCardBg)
-                            .border(1.dp, HybridCardBorder, RoundedCornerShape(18.dp))
-                            .clickable {
-                                val nextSpeed = when (speed) {
-                                    0.75f -> 1.0f
-                                    1.0f -> 1.25f
-                                    1.25f -> 1.5f
-                                    1.5f -> 2.0f
-                                    else -> 0.75f
-                                }
-                                viewModel.setPlaybackSpeed(nextSpeed)
-                            }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = String.format(Locale.US, "%.2fx", speed).replace(".00x", ".0x"),
-                            color = HybridCyan,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    // Test 2x Shake Button (Triggers real double-shake vibration + next song)
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(HybridCardBg)
-                            .border(1.dp, themePrimary.copy(alpha = 0.5f), RoundedCornerShape(18.dp))
-                            .clickable {
-                                viewModel.executeDoubleShakeNextSong()
-                            }
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = "📳 Shake Next",
-                            color = themePrimary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    IconButton(onClick = {
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, "Listening to ${currentTrack.cleanTitle} on Hybrid Player")
+                    // 3. Visual Liquid Glass Volume Booster Component (Toggles 200% boost + opens Volume HUD, no text!)
+                    LiquidGlassVolumeBoosterWidget(
+                        isBoostEnabled = is200Boost,
+                        volumePercent = audioVolumePct,
+                        size = 44.dp,
+                        onClick = {
+                            viewModel.toggle200Boost()
+                            lastVolumeHudInteractionMs = System.currentTimeMillis()
+                            showVerticalVolumeHud = true
                         }
-                        context.startActivity(Intent.createChooser(shareIntent, "Share Track"))
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Quick Share",
-                            tint = Color.White
-                        )
-                    }
+                    )
+
+                    // 4. Visual Liquid Glass Speed Dial Component
+                    LiquidGlassSpeedDialOrb(
+                        speed = speed,
+                        size = 44.dp,
+                        onClick = {
+                            val nextSpeed = when (speed) {
+                                0.75f -> 1.0f
+                                1.0f -> 1.25f
+                                1.25f -> 1.5f
+                                1.5f -> 2.0f
+                                else -> 0.75f
+                            }
+                            viewModel.setPlaybackSpeed(nextSpeed)
+                        }
+                    )
+
+                    // 5. Visual Liquid Glass 2x Shake Vibration Orb
+                    LiquidGlassShakeOrbWidget(
+                        isEnabled = doubleShakeEnabled,
+                        size = 44.dp,
+                        onClick = {
+                            viewModel.executeDoubleShakeNextSong()
+                        }
+                    )
+
+                    // 6. Liquid Glass Share Orb
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.Share,
+                        contentDescription = "Quick Share",
+                        tintColor = Color(0xFF00E5FF),
+                        size = 44.dp,
+                        iconSize = 20.dp,
+                        onClick = {
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, "Listening to ${currentTrack.cleanTitle} on Hybrid Player")
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share Track"))
+                        }
+                    )
                 }
 
                 // --- SINGLE SLEEK TIMELINE SEEKBAR + TIMESTAMPS ---

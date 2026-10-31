@@ -28,10 +28,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
+import com.example.ui.components.LiquidGlassBox
+import com.example.ui.components.LiquidGlassEqualizerWidget
+import com.example.ui.components.LiquidGlassIconOrb
+import com.example.ui.components.LiquidGlassShakeOrbWidget
+import com.example.ui.components.LiquidGlassVolumeBoosterWidget
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
@@ -49,11 +56,29 @@ fun AudioLibraryScreen(
     val nowPlaying by viewModel.nowPlaying.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val doubleShakeEnabled by viewModel.doubleShakeEnabled.collectAsState()
+    val eqBands by viewModel.equalizerBands.collectAsState()
+    val is200Boost by viewModel.is200BoostEnabled.collectAsState()
+    val audioVolumePct by viewModel.audioVolumePercent.collectAsState()
 
     var selectedCategory by remember { mutableStateOf("Songs") } // "Songs", "Folders", "Albums", "Artists", "Favorites"
     var selectedGroupFilter by remember { mutableStateOf<String?>(null) }
     var menuTargetTrack by remember { mutableStateOf<MediaItem?>(null) }
     var showTopMenu by remember { mutableStateOf(false) }
+
+    val pickAudioLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importPickedMedia(uris, isVideo = false)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        viewModel.loadMedia()
+        Toast.makeText(context, "Scanning device storage for real songs...", Toast.LENGTH_SHORT).show()
+    }
 
     val displayedTracks = remember(tracks, favorites, selectedCategory, selectedGroupFilter) {
         when {
@@ -115,51 +140,44 @@ fun AudioLibraryScreen(
                     }
                 }
 
-                // Borderless Equalizer Icon
-                IconButton(onClick = onOpenEqualizer) {
-                    Icon(
-                        imageVector = Icons.Default.Equalizer,
-                        contentDescription = "Equalizer",
-                        tint = Color.White
-                    )
-                }
+                Spacer(modifier = Modifier.width(6.dp))
 
-                // Borderless 3-Dot Icon
-                Box {
-                    IconButton(onClick = { showTopMenu = true }) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "Audio Options",
-                            tint = Color.White
-                        )
+                // Visual Liquid Glass Equalizer Component (No "Equalizer" text label!)
+                LiquidGlassEqualizerWidget(
+                    bands = eqBands,
+                    isPlaying = isPlaying,
+                    size = 40.dp,
+                    onClick = onOpenEqualizer
+                )
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Visual Liquid Glass Volume Booster Component (No "Volume Boost" text label!)
+                LiquidGlassVolumeBoosterWidget(
+                    isBoostEnabled = is200Boost,
+                    volumePercent = audioVolumePct,
+                    size = 40.dp,
+                    onClick = {
+                        viewModel.toggle200Boost()
                     }
-                    DropdownMenu(
-                        expanded = showTopMenu,
-                        onDismissRequest = { showTopMenu = false },
-                        containerColor = HybridCardBg
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Rescan Audio Library", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridEmerald) },
-                            onClick = {
-                                showTopMenu = false
-                                viewModel.loadMedia()
-                                Toast.makeText(context, "Audio Library Synced", Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("5-Band Studio Equalizer", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Default.GraphicEq, contentDescription = null, tint = HybridCyan) },
-                            onClick = {
-                                showTopMenu = false
-                                onOpenEqualizer()
-                            }
-                        )
+                )
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Pick Real Songs Orb (Liquid Glass)
+                LiquidGlassIconOrb(
+                    icon = Icons.Default.FolderOpen,
+                    contentDescription = "Pick Real Songs",
+                    tintColor = Color(0xFF00E5FF),
+                    size = 38.dp,
+                    iconSize = 18.dp,
+                    onClick = {
+                        pickAudioLauncher.launch(arrayOf("audio/*"))
                     }
-                }
+                )
             }
 
-            // --- ACTION STRIP: Unified "Shuffle Play" + "2x Shake Vibration" Toggle + Song Counter ---
+            // --- ACTION STRIP: Liquid Glass "Shuffle" + Visual Shake Orb + Rescan Orb + Song Counter ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -171,72 +189,66 @@ fun AudioLibraryScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(HybridEmerald.copy(alpha = 0.18f))
-                            .border(1.dp, HybridEmerald.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
-                            .clickable {
-                                viewModel.shufflePlayMusic()
-                                tracks.firstOrNull()?.let { onOpenStudioPlayer(nowPlaying ?: it) }
-                            }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    LiquidGlassBox(
+                        cornerRadius = 24.dp,
+                        tintColor = HybridEmerald,
+                        glassAlpha = 0.25f,
+                        onClick = {
+                            viewModel.shufflePlayMusic()
+                            tracks.firstOrNull()?.let { onOpenStudioPlayer(nowPlaying ?: it) }
+                        }
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle Play",
-                            tint = HybridEmerald,
-                            modifier = Modifier.size(17.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Shuffle Play",
-                            color = HybridEmerald,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 12.sp
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Shuffle,
+                                contentDescription = "Shuffle Play",
+                                tint = HybridEmerald,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Shuffle",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 12.sp
+                            )
+                        }
                     }
 
-                    // Front-and-center 2x Shake Vibration Toggle in Audio Section
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(
-                                if (doubleShakeEnabled) HybridCyan.copy(alpha = 0.18f)
-                                else HybridCardBg
-                            )
-                            .border(
-                                1.dp,
-                                if (doubleShakeEnabled) HybridCyan else HybridCardBorder,
-                                RoundedCornerShape(24.dp)
-                            )
-                            .clickable {
-                                viewModel.toggleDoubleShakeEnabled()
-                                val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
-                                Toast.makeText(
-                                    context,
-                                    "📳 2x Shake Vibration (Next Song): $st",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                    // Visual Liquid Glass 2x Shake Vibration Orb
+                    LiquidGlassShakeOrbWidget(
+                        isEnabled = doubleShakeEnabled,
+                        size = 38.dp,
+                        onClick = {
+                            viewModel.toggleDoubleShakeEnabled()
+                            val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
+                            Toast.makeText(
+                                context,
+                                "📳 2x Shake Vibration (Next Song): $st",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+
+                    // Rescan Real Audio Orb
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.Refresh,
+                        contentDescription = "Rescan Audio",
+                        tintColor = HybridCyan,
+                        size = 38.dp,
+                        iconSize = 18.dp,
+                        onClick = {
+                            val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
+                            } else {
+                                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
                             }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Vibration,
-                            contentDescription = "2x Shake Vibration Toggle",
-                            tint = if (doubleShakeEnabled) HybridCyan else HybridTextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Text(
-                            text = if (doubleShakeEnabled) "2x Shake: ON" else "2x Shake: OFF",
-                            color = if (doubleShakeEnabled) HybridCyan else HybridTextSecondary,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 12.sp
-                        )
-                    }
+                            permissionLauncher.launch(perms)
+                        }
+                    )
                 }
 
                 Text(
@@ -301,6 +313,110 @@ fun AudioLibraryScreen(
                                 Text("${groupTracks.size} Tracks", color = HybridTextSecondary, fontSize = 12.sp)
                             }
                             Icon(Icons.Default.ChevronRight, contentDescription = null, tint = HybridTextSecondary)
+                        }
+                    }
+                }
+            } else if (displayedTracks.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 28.dp,
+                        tintColor = Color(0xFF00E5FF),
+                        glassAlpha = 0.24f
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            LiquidGlassIconOrb(
+                                icon = Icons.Default.LibraryMusic,
+                                contentDescription = "Real Device Audio",
+                                tintColor = Color(0xFF00E5FF),
+                                size = 64.dp,
+                                iconSize = 32.dp,
+                                isActive = true,
+                                onClick = {
+                                    val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                        arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
+                                    } else {
+                                        arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                    }
+                                    permissionLauncher.launch(perms)
+                                }
+                            )
+                            Text(
+                                text = "100% Real Device Music Scanner",
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            Text(
+                                text = "Zero dummy songs! Grant audio permission to scan all real MP3/FLAC/WAV songs on your phone, or pick audio files directly.",
+                                color = HybridTextSecondary,
+                                fontSize = 13.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                LiquidGlassBox(
+                                    modifier = Modifier.weight(1f),
+                                    cornerRadius = 20.dp,
+                                    tintColor = HybridEmerald,
+                                    glassAlpha = 0.32f,
+                                    onClick = {
+                                        val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                            arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
+                                        } else {
+                                            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                        }
+                                        permissionLauncher.launch(perms)
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Scan Songs", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+                                    }
+                                }
+
+                                LiquidGlassBox(
+                                    modifier = Modifier.weight(1f),
+                                    cornerRadius = 20.dp,
+                                    tintColor = Color(0xFF00E5FF),
+                                    glassAlpha = 0.32f,
+                                    onClick = {
+                                        pickAudioLauncher.launch(arrayOf("audio/*"))
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Pick Songs", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -441,18 +557,6 @@ fun AudioLibraryScreen(
                     }
                     TextButton(
                         onClick = {
-                            viewModel.toggle200Boost()
-                            menuTargetTrack = null
-                            Toast.makeText(context, "200% Hardware Loudness Boost Toggled", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = null, tint = HybridCyan)
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text("200% Hardware Boost", color = Color.White, modifier = Modifier.weight(1f))
-                    }
-                    TextButton(
-                        onClick = {
                             menuTargetTrack = null
                             onOpenTurboShare()
                         },
@@ -496,13 +600,14 @@ fun GuaranteedAlbumArt(
     track: MediaItem,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var localBitmap by remember(track.path) {
         mutableStateOf<Bitmap?>(DeepMediaScanner.getCachedBitmap(track.path))
     }
 
     LaunchedEffect(track.path) {
         if (localBitmap == null && !track.path.startsWith("http")) {
-            localBitmap = DeepMediaScanner.loadOrExtractBitmap(track.path, isVideo = false)
+            localBitmap = DeepMediaScanner.loadOrExtractBitmap(track.path, isVideo = false, context = context)
         }
     }
 
