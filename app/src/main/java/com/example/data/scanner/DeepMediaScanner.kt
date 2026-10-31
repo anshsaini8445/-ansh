@@ -17,6 +17,8 @@ import android.util.Size
 import com.example.data.model.MediaItem
 import com.example.helpers.PermanentDeleteHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -28,6 +30,7 @@ import java.io.File
  *  3. Deep Direct Folder & Partial Download File Scanner (DCIM, Camera, Movies, Download, WhatsApp, Music, Recordings)
  *  4. User-Picked Document URI Persistence
  *  5. Instant RAM + SharedPreferences Snapshot Cache (purging any legacy dummy caches)
+ *  6. Semaphore-throttled + downscaled thumbnail extraction for 120Hz zero-jank scrolling
  */
 object DeepMediaScanner {
 
@@ -39,11 +42,13 @@ object DeepMediaScanner {
     private const val KEY_PICKED_AUDIOS = "user_picked_audio_uris_v3"
 
     val VIDEO_EXTENSIONS = setOf(
-        "mp4", "mkv", "webm", "avi", "mov", "flv", "ts", "m4v", "3gp", "wmv", "CrDownload", "part", "partial", "temp", "download"
+        "mp4", "mkv", "webm", "avi", "mov", "flv", "ts", "m4v", "3gp", "wmv",
+        "hevc", "h265", "av1", "divx", "vob", "ogv", "m2ts", "mts", "rmvb",
+        "crdownload", "part", "partial", "temp", "download"
     )
 
     val AUDIO_EXTENSIONS = setOf(
-        "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma", "amr"
+        "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma", "amr", "alac", "aiff"
     )
 
     @Volatile
@@ -55,7 +60,10 @@ object DeepMediaScanner {
     @Volatile
     private var ramAudioCache: List<MediaItem> = emptyList()
 
-    private val bitmapCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(80) {}
+    private val bitmapCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(120) {}
+
+    // Limits concurrent heavy MediaMetadataRetriever frame decodes to 2 threads so UI stays locked at 120fps
+    private val thumbnailDecodeSemaphore = Semaphore(permits = 2)
 
     fun getCachedBitmap(path: String): Bitmap? = bitmapCache.get(path)
 
@@ -68,89 +76,110 @@ object DeepMediaScanner {
         ramAudioCache = emptyList()
     }
 
+    private fun downscaleForSmoothUi(src: Bitmap?, isVideo: Boolean): Bitmap? {
+        if (src == null) return null
+        val maxW = if (isVideo) 320 else 240
+        val maxH = if (isVideo) 180 else 240
+        if (src.width <= maxW && src.height <= maxH) return src
+        return try {
+            val ratio = minOf(maxW.toFloat() / src.width.toFloat(), maxH.toFloat() / src.height.toFloat())
+            val targetW = (src.width * ratio).toInt().coerceAtLeast(1)
+            val targetH = (src.height * ratio).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(src, targetW, targetH, true)
+        } catch (_: Exception) {
+            src
+        }
+    }
+
     suspend fun loadOrExtractBitmap(path: String, isVideo: Boolean, context: Context? = appContextRef): Bitmap? =
         withContext(Dispatchers.IO) {
             if (path.isBlank() || path.startsWith("http")) return@withContext null
             bitmapCache.get(path)?.let { return@withContext it }
 
-            val ctx = context ?: appContextRef
-            var extracted: Bitmap? = null
+            thumbnailDecodeSemaphore.withPermit {
+                bitmapCache.get(path)?.let { return@withPermit it }
 
-            // 1. If content:// URI or MediaStore URI on Android 10+ (API 29+), try ContentResolver.loadThumbnail first
-            if (ctx != null && path.startsWith("content://")) {
-                val uri = Uri.parse(path)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    try {
-                        extracted = ctx.contentResolver.loadThumbnail(
-                            uri,
-                            if (isVideo) Size(360, 202) else Size(256, 256),
-                            null
-                        )
-                    } catch (_: Exception) {
-                    }
-                }
-                if (extracted == null) {
-                    val retriever = MediaMetadataRetriever()
-                    try {
-                        retriever.setDataSource(ctx, uri)
-                        if (isVideo) {
-                            extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                                ?: retriever.getFrameAtTime(0L)
-                        } else {
-                            val pic = retriever.embeddedPicture
-                            if (pic != null && pic.isNotEmpty()) {
-                                extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
-                            }
-                        }
-                    } catch (_: Exception) {
-                    } finally {
-                        try {
-                            retriever.release()
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-            } else {
-                // 2. Local File path
-                val file = File(path)
-                if (file.exists() && file.length() > 1024L) {
-                    val retriever = MediaMetadataRetriever()
-                    try {
-                        retriever.setDataSource(file.absolutePath)
-                        if (isVideo) {
-                            extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                                ?: retriever.getFrameAtTime(0L)
-                        } else {
-                            val pic = retriever.embeddedPicture
-                            if (pic != null && pic.isNotEmpty()) {
-                                extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
-                            }
-                        }
-                    } catch (_: Exception) {
-                    } finally {
-                        try {
-                            retriever.release()
-                        } catch (_: Exception) {
-                        }
-                    }
+                val ctx = context ?: appContextRef
+                var extracted: Bitmap? = null
 
-                    if (extracted == null && isVideo) {
+                // 1. If content:// URI or MediaStore URI on Android 10+ (API 29+), try ContentResolver.loadThumbnail first
+                if (ctx != null && path.startsWith("content://")) {
+                    val uri = Uri.parse(path)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         try {
-                            @Suppress("DEPRECATION")
-                            extracted = ThumbnailUtils.createVideoThumbnail(
-                                file.absolutePath,
-                                MediaStore.Images.Thumbnails.MINI_KIND
+                            extracted = ctx.contentResolver.loadThumbnail(
+                                uri,
+                                if (isVideo) Size(320, 180) else Size(240, 240),
+                                null
                             )
                         } catch (_: Exception) {
                         }
                     }
+                    if (extracted == null) {
+                        val retriever = MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(ctx, uri)
+                            if (isVideo) {
+                                extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                    ?: retriever.getFrameAtTime(0L)
+                            } else {
+                                val pic = retriever.embeddedPicture
+                                if (pic != null && pic.isNotEmpty()) {
+                                    extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
+                                }
+                            }
+                        } catch (_: Exception) {
+                        } finally {
+                            try {
+                                retriever.release()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                } else {
+                    // 2. Local File path
+                    val file = File(path)
+                    if (file.exists() && file.length() > 1024L) {
+                        if (isVideo) {
+                            try {
+                                @Suppress("DEPRECATION")
+                                extracted = ThumbnailUtils.createVideoThumbnail(
+                                    file.absolutePath,
+                                    MediaStore.Images.Thumbnails.MINI_KIND
+                                )
+                            } catch (_: Exception) {
+                            }
+                        }
+                        if (extracted == null) {
+                            val retriever = MediaMetadataRetriever()
+                            try {
+                                retriever.setDataSource(file.absolutePath)
+                                if (isVideo) {
+                                    extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                        ?: retriever.getFrameAtTime(0L)
+                                } else {
+                                    val pic = retriever.embeddedPicture
+                                    if (pic != null && pic.isNotEmpty()) {
+                                        extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
+                                    }
+                                }
+                            } catch (_: Exception) {
+                            } finally {
+                                try {
+                                    retriever.release()
+                                } catch (_: Exception) {
+                                }
+                            }
+                        }
+                    }
                 }
-            }
 
-            if (extracted != null) {
-                bitmapCache.put(path, extracted)
+                val scaled = downscaleForSmoothUi(extracted, isVideo)
+                if (scaled != null) {
+                    bitmapCache.put(path, scaled)
+                }
+                scaled
             }
-            extracted
         }
 
     private fun purgeLegacyDummySnapshot(context: Context) {
@@ -175,7 +204,7 @@ object DeepMediaScanner {
         if (currentRam.isNotEmpty()) {
             return currentRam.filterNot {
                 it.path.startsWith("http", ignoreCase = true) ||
-                    PermanentDeleteHelper.isHiddenByTrash(context, it.id)
+                    PermanentDeleteHelper.isHiddenByTrash(context, it.id, it.path)
             }
         }
 
@@ -184,7 +213,7 @@ object DeepMediaScanner {
         if (!raw.isNullOrBlank()) {
             val parsed = deserializeSnapshot(raw, isVideo).filterNot {
                 it.path.startsWith("http", ignoreCase = true) ||
-                    PermanentDeleteHelper.isHiddenByTrash(context, it.id)
+                    PermanentDeleteHelper.isHiddenByTrash(context, it.id, it.path)
             }
             if (parsed.isNotEmpty()) {
                 if (isVideo) ramVideoCache = parsed else ramAudioCache = parsed
@@ -207,14 +236,14 @@ object DeepMediaScanner {
         // 1. Query MediaStore (External + Internal volumes)
         val mediaStoreList = queryMediaStore(context, isVideo)
         for (item in mediaStoreList) {
-            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id)) continue
+            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
             discoveredMap[item.path] = item
         }
 
         // 2. Deep Directory & Partial File Scanner (>1KB real files on device storage)
         val directFiles = scanRealDeviceDirectories(context, isVideo)
         for (item in directFiles) {
-            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id)) continue
+            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
             if (!discoveredMap.containsKey(item.path)) {
                 discoveredMap[item.path] = item
             }
@@ -223,7 +252,7 @@ object DeepMediaScanner {
         // 3. User-Picked Persistent Document URIs
         val pickedItems = loadUserPickedUris(context, isVideo)
         for (item in pickedItems) {
-            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id)) continue
+            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
             if (!discoveredMap.containsKey(item.path)) {
                 discoveredMap[item.path] = item
             }

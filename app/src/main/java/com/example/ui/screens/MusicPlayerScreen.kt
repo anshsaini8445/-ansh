@@ -301,7 +301,7 @@ fun MusicPlayerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // --- MODE SWITCHER STRIP: 3D Cover | Synced Lyrics | 3D Stage + 2x Shake Vibration Toggle ---
+                // --- PURE VISUAL MODE SWITCHER STRIP (Vinyl Cover Orb | Synced Lyrics Orb | 3D Stage Orb) + Visual 2x Shake Orb ---
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -309,76 +309,45 @@ fun MusicPlayerScreen(
                 ) {
                     Row(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(Color(0x99111927))
-                            .border(1.dp, HybridCardBorder, RoundedCornerShape(22.dp))
-                            .padding(3.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xAA0C1424))
+                            .border(1.dp, HybridCardBorder, RoundedCornerShape(24.dp))
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         listOf(
-                            "COVER_3D" to "3D Cover",
-                            "LYRICS" to "Lyrics",
-                            "STAGE_3D" to "3D Stage"
-                        ).forEach { (modeKey, label) ->
+                            Triple("COVER_3D", Icons.Default.Album, "3D Cover"),
+                            Triple("LYRICS", Icons.Default.Lyrics, "Lyrics"),
+                            Triple("STAGE_3D", Icons.Default.AutoAwesome, "3D Stage")
+                        ).forEach { (modeKey, iconVec, desc) ->
                             val selected = centerDisplayMode == modeKey
                             Box(
                                 modifier = Modifier
+                                    .size(width = 48.dp, height = 36.dp)
                                     .clip(RoundedCornerShape(18.dp))
                                     .background(if (selected) themePrimary else Color.Transparent)
                                     .clickable { centerDisplayMode = modeKey }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                                    .testTag("music_mode_${modeKey.lowercase()}")
+                                    .testTag("music_mode_${modeKey.lowercase()}"),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = label,
-                                    color = if (selected) Color.Black else Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.ExtraBold
+                                Icon(
+                                    imageVector = iconVec,
+                                    contentDescription = desc,
+                                    tint = if (selected) Color.Black else Color.White.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
                     }
 
-                    // Front-and-Center Double-Shake ("2x Shake") Vibration Toggle Pill
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(
-                                if (doubleShakeEnabled) themePrimary.copy(alpha = 0.22f)
-                                else Color(0x99111927)
-                            )
-                            .border(
-                                1.dp,
-                                if (doubleShakeEnabled) themePrimary else HybridCardBorder,
-                                RoundedCornerShape(20.dp)
-                            )
-                            .clickable {
-                                viewModel.toggleDoubleShakeEnabled()
-                                val status = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
-                                Toast.makeText(
-                                    context,
-                                    "📳 2x Shake Vibration to Skip Song: $status",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                            .testTag("double_shake_toggle_audio_player"),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Vibration,
-                            contentDescription = "2x Shake Vibration",
-                            tint = if (doubleShakeEnabled) themePrimary else HybridTextSecondary,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (doubleShakeEnabled) "2x Shake ON" else "2x Shake OFF",
-                            color = if (doubleShakeEnabled) themePrimary else HybridTextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    }
+                    // Front-and-Center Pure Visual Double-Shake ("2x Shake") Vibration Orb
+                    LiquidGlassShakeOrbWidget(
+                        isEnabled = doubleShakeEnabled,
+                        size = 42.dp,
+                        onClick = {
+                            viewModel.toggleDoubleShakeEnabled()
+                        }
+                    )
                 }
 
                 // --- CENTER STAGE: 3D Cover Art OR Scrollable Synced Lyrics OR Full 3D Visualizer Stage ---
@@ -423,15 +392,16 @@ fun MusicPlayerScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "✨ ${current3DTheme.name} (#${current3DTheme.id}/15)",
+                                        text = "✨ #${current3DTheme.id}/15",
                                         color = themePrimary,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.ExtraBold
                                     )
-                                    Text(
-                                        text = "Tap to Cycle 3D",
-                                        color = Color.White.copy(alpha = 0.75f),
-                                        fontSize = 11.sp
+                                    Icon(
+                                        imageVector = Icons.Default.TouchApp,
+                                        contentDescription = null,
+                                        tint = themePrimary,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
 
@@ -526,7 +496,7 @@ fun MusicPlayerScreen(
 
                                 // Live 1-Line Synced Lyric Preview Pill (Tapping opens full scrollable Synced Lyrics)
                                 val activeIdx = SyncedLyricsEngine.findActiveLyricIndex(syncedLyrics, playbackPos)
-                                val activeLine = syncedLyrics.getOrNull(activeIdx)?.text ?: "Tap to view Synced Lyrics"
+                                val activeLine = syncedLyrics.getOrNull(activeIdx)?.text ?: currentTrack.cleanTitle
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -559,42 +529,46 @@ fun MusicPlayerScreen(
                     }
                 }
 
-                // --- 15 3D THEMES HORIZONTAL QUICK BAR ---
+                // --- 15 3D THEMES PURE VISUAL COLOR SPHERES BAR (Zero English Clutter!) ---
                 LazyRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     items(Music3DThemeEngine.THEMES_3D, key = { it.id }) { spec ->
                         val active = spec.name == current3DTheme.name
-                        Row(
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
+                                .size(if (active) 34.dp else 28.dp)
+                                .clip(CircleShape)
                                 .background(
-                                    if (active) spec.primaryColor.copy(alpha = 0.25f)
-                                    else Color(0x88111927)
+                                    Brush.linearGradient(
+                                        listOf(spec.primaryColor, spec.secondaryColor)
+                                    )
                                 )
                                 .border(
-                                    1.dp,
-                                    if (active) spec.primaryColor else HybridCardBorder,
-                                    RoundedCornerShape(16.dp)
+                                    width = if (active) 2.5.dp else 1.dp,
+                                    color = if (active) Color.White else Color.White.copy(alpha = 0.25f),
+                                    shape = CircleShape
                                 )
-                                .clickable { viewModel.select3DMusicTheme(spec.name) }
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .clickable { viewModel.select3DMusicTheme(spec.name) },
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(spec.primaryColor)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = spec.name,
-                                color = if (active) spec.primaryColor else Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = if (active) FontWeight.ExtraBold else FontWeight.Medium
-                            )
+                            if (active) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            } else {
+                                Text(
+                                    text = "${spec.id}",
+                                    color = Color.Black.copy(alpha = 0.78f),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
                         }
                     }
                 }
@@ -615,7 +589,7 @@ fun MusicPlayerScreen(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "${currentTrack.artist} • ${currentTrack.albumName} • Vol $audioVolumePct%",
+                        text = "${currentTrack.artist} • ${currentTrack.albumName} • $audioVolumePct%",
                         color = HybridTextSecondary,
                         fontSize = 13.sp,
                         maxLines = 1,
@@ -685,19 +659,15 @@ fun MusicPlayerScreen(
                         }
                     )
 
-                    // 6. Liquid Glass Share Orb
+                    // 6. Liquid Glass Share Orb (System Real File Share)
                     LiquidGlassIconOrb(
                         icon = Icons.Default.Share,
-                        contentDescription = "Quick Share",
+                        contentDescription = "System Share",
                         tintColor = Color(0xFF00E5FF),
                         size = 44.dp,
                         iconSize = 20.dp,
                         onClick = {
-                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "Listening to ${currentTrack.cleanTitle} on Hybrid Player")
-                            }
-                            context.startActivity(Intent.createChooser(shareIntent, "Share Track"))
+                            WifiDirectTransferEngine.shareRealFilesViaSystem(context, listOf(currentTrack))
                         }
                     )
                 }
@@ -727,7 +697,7 @@ fun MusicPlayerScreen(
                         )
                         if (pointA != null) {
                             Text(
-                                text = "A-B Loop Active",
+                                text = "A ⇄ B",
                                 color = themePrimary,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
@@ -807,29 +777,30 @@ fun MusicPlayerScreen(
                     }
                 }
 
-                // --- BOTTOM "UP NEXT" STRIP ---
+                // --- BOTTOM VISUAL QUEUE DOCK (Pure Icon + Next Track Title, No Hardcoded "UP NEXT" English Label) ---
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 10.dp)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(16.dp))
                         .background(Color(0xCC111927))
-                        .border(1.dp, HybridCardBorder, RoundedCornerShape(14.dp))
+                        .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
                         .clickable { showQueueSheet = true }
                         .padding(horizontal = 14.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "UP NEXT",
-                        color = themePrimary,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = null,
+                        tint = themePrimary,
+                        modifier = Modifier.size(18.dp)
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = nextTrack?.cleanTitle ?: "End of Queue",
+                        text = nextTrack?.cleanTitle ?: currentTrack.cleanTitle,
                         color = Color.White,
                         fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)

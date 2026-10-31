@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import android.graphics.Bitmap
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,15 +23,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
@@ -39,8 +41,17 @@ import com.example.ui.components.LiquidGlassEqualizerWidget
 import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.components.LiquidGlassShakeOrbWidget
 import com.example.ui.components.LiquidGlassVolumeBoosterWidget
+import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+
+private enum class AudioVisualCategory(val key: String, val icon: ImageVector, val color: Color) {
+    SONGS("Songs", Icons.Default.MusicNote, Color(0xFF00E676)),
+    FOLDERS("Folders", Icons.Default.Folder, Color(0xFF00E5FF)),
+    ALBUMS("Albums", Icons.Default.Album, Color(0xFFD500F9)),
+    ARTISTS("Artists", Icons.Default.MicExternalOn, Color(0xFFFFEA00)),
+    FAVORITES("Favorites", Icons.Default.Favorite, Color(0xFFFF1744))
+}
 
 @Composable
 fun AudioLibraryScreen(
@@ -48,6 +59,7 @@ fun AudioLibraryScreen(
     onOpenStudioPlayer: (MediaItem) -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenTurboShare: () -> Unit,
+    onHybridShareItem: (MediaItem) -> Unit = { _ -> onOpenTurboShare() },
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -60,10 +72,9 @@ fun AudioLibraryScreen(
     val is200Boost by viewModel.is200BoostEnabled.collectAsState()
     val audioVolumePct by viewModel.audioVolumePercent.collectAsState()
 
-    var selectedCategory by remember { mutableStateOf("Songs") } // "Songs", "Folders", "Albums", "Artists", "Favorites"
+    var selectedCategory by remember { mutableStateOf("Songs") }
     var selectedGroupFilter by remember { mutableStateOf<String?>(null) }
     var menuTargetTrack by remember { mutableStateOf<MediaItem?>(null) }
-    var showTopMenu by remember { mutableStateOf(false) }
 
     val pickAudioLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -77,7 +88,6 @@ fun AudioLibraryScreen(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
         viewModel.loadMedia()
-        Toast.makeText(context, "Scanning device storage for real songs...", Toast.LENGTH_SHORT).show()
     }
 
     val displayedTracks = remember(tracks, favorites, selectedCategory, selectedGroupFilter) {
@@ -96,11 +106,11 @@ fun AudioLibraryScreen(
             .background(MaterialTheme.colorScheme.background)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // --- TOP HEADER: Custom App Logo + Scrollable Category Pills + Borderless Equalizer & 3-Dot Icons ---
+            // --- TOP HEADER: Custom App Logo + Pure Visual Liquid Glass Category Icon Orbs + EQ & Booster Widgets ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                    .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Image(
@@ -108,33 +118,46 @@ fun AudioLibraryScreen(
                     contentDescription = "Hybrid Player App Icon",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(9.dp))
-                        .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(9.dp))
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(10.dp))
                 )
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Pure Visual Category Orbs (No hardcoded English text labels!)
                 LazyRow(
                     modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    items(listOf("Songs", "Folders", "Albums", "Artists", "Favorites")) { pill ->
-                        val active = selectedCategory == pill
+                    items(AudioVisualCategory.entries) { cat ->
+                        val active = selectedCategory == cat.key
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(if (active) HybridEmerald else HybridCardBg)
-                                .border(1.dp, if (active) HybridEmerald else HybridCardBorder, RoundedCornerShape(20.dp))
+                                .size(if (active) 44.dp else 40.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.verticalGradient(
+                                        if (active) listOf(cat.color.copy(alpha = 0.38f), Color(0xFF0A1222))
+                                        else listOf(Color.White.copy(alpha = 0.10f), Color(0xFF0B111E))
+                                    )
+                                )
+                                .border(
+                                    width = if (active) 1.6.dp else 1.dp,
+                                    color = if (active) cat.color else Color.White.copy(alpha = 0.22f),
+                                    shape = CircleShape
+                                )
                                 .clickable {
-                                    selectedCategory = pill
+                                    selectedCategory = cat.key
                                     selectedGroupFilter = null
-                                }
-                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = pill,
-                                color = if (active) Color.Black else Color.White,
-                                fontSize = 13.sp,
-                                fontWeight = if (active) FontWeight.ExtraBold else FontWeight.Medium
+                            Icon(
+                                imageVector = cat.icon,
+                                contentDescription = cat.key,
+                                tint = if (active) cat.color else Color.White.copy(alpha = 0.8f),
+                                modifier = Modifier.size(if (active) 22.dp else 19.dp)
                             )
                         }
                     }
@@ -142,7 +165,7 @@ fun AudioLibraryScreen(
 
                 Spacer(modifier = Modifier.width(6.dp))
 
-                // Visual Liquid Glass Equalizer Component (No "Equalizer" text label!)
+                // Visual Liquid Glass Equalizer Component
                 LiquidGlassEqualizerWidget(
                     bands = eqBands,
                     isPlaying = isPlaying,
@@ -152,94 +175,65 @@ fun AudioLibraryScreen(
 
                 Spacer(modifier = Modifier.width(6.dp))
 
-                // Visual Liquid Glass Volume Booster Component (No "Volume Boost" text label!)
+                // Visual Liquid Glass Volume Booster Component
                 LiquidGlassVolumeBoosterWidget(
                     isBoostEnabled = is200Boost,
                     volumePercent = audioVolumePct,
                     size = 40.dp,
-                    onClick = {
-                        viewModel.toggle200Boost()
-                    }
-                )
-
-                Spacer(modifier = Modifier.width(6.dp))
-
-                // Pick Real Songs Orb (Liquid Glass)
-                LiquidGlassIconOrb(
-                    icon = Icons.Default.FolderOpen,
-                    contentDescription = "Pick Real Songs",
-                    tintColor = Color(0xFF00E5FF),
-                    size = 38.dp,
-                    iconSize = 18.dp,
-                    onClick = {
-                        pickAudioLauncher.launch(arrayOf("audio/*"))
-                    }
+                    onClick = { viewModel.toggle200Boost() }
                 )
             }
 
-            // --- ACTION STRIP: Liquid Glass "Shuffle" + Visual Shake Orb + Rescan Orb + Song Counter ---
+            // --- PURE VISUAL ACTION STRIP: Shuffle Orb + 2x Shake Orb + Folder Picker Orb + Rescan Orb + Track Counter Badge ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    LiquidGlassBox(
-                        cornerRadius = 24.dp,
+                    // Pure Visual Shuffle Play Orb
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.Shuffle,
+                        contentDescription = "Shuffle Play",
                         tintColor = HybridEmerald,
-                        glassAlpha = 0.25f,
+                        size = 40.dp,
+                        iconSize = 20.dp,
+                        isActive = true,
                         onClick = {
                             viewModel.shufflePlayMusic()
                             tracks.firstOrNull()?.let { onOpenStudioPlayer(nowPlaying ?: it) }
                         }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Shuffle,
-                                contentDescription = "Shuffle Play",
-                                tint = HybridEmerald,
-                                modifier = Modifier.size(17.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Shuffle",
-                                color = Color.White,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
+                    )
 
                     // Visual Liquid Glass 2x Shake Vibration Orb
                     LiquidGlassShakeOrbWidget(
                         isEnabled = doubleShakeEnabled,
-                        size = 38.dp,
-                        onClick = {
-                            viewModel.toggleDoubleShakeEnabled()
-                            val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
-                            Toast.makeText(
-                                context,
-                                "📳 2x Shake Vibration (Next Song): $st",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
+                        size = 40.dp,
+                        onClick = { viewModel.toggleDoubleShakeEnabled() }
+                    )
+
+                    // Pick Real Songs Orb (Liquid Glass)
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.FolderOpen,
+                        contentDescription = "Pick Real Songs",
+                        tintColor = Color(0xFF00E5FF),
+                        size = 40.dp,
+                        iconSize = 19.dp,
+                        onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }
                     )
 
                     // Rescan Real Audio Orb
                     LiquidGlassIconOrb(
                         icon = Icons.Default.Refresh,
                         contentDescription = "Rescan Audio",
-                        tintColor = HybridCyan,
-                        size = 38.dp,
-                        iconSize = 18.dp,
+                        tintColor = Color(0xFFFFEA00),
+                        size = 40.dp,
+                        iconSize = 19.dp,
                         onClick = {
                             val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                                 arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
@@ -249,14 +243,42 @@ fun AudioLibraryScreen(
                             permissionLauncher.launch(perms)
                         }
                     )
+
+                    // Direct Hybrid Share Orb
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.SwapHoriz,
+                        contentDescription = "Hybrid Share",
+                        tintColor = Color(0xFFD500F9),
+                        size = 40.dp,
+                        iconSize = 20.dp,
+                        onClick = onOpenTurboShare
+                    )
                 }
 
-                Text(
-                    text = "${displayedTracks.size} Songs",
-                    color = HybridTextSecondary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                // Pure Visual Numeric Counter Pill ("🎵 24")
+                Row(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .border(1.dp, HybridEmerald.copy(alpha = 0.45f), CircleShape)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.QueueMusic,
+                        contentDescription = null,
+                        tint = HybridEmerald,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "${displayedTracks.size}",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
 
             if (selectedGroupFilter != null) {
@@ -264,15 +286,16 @@ fun AudioLibraryScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(HybridCardBg)
+                        .border(1.dp, HybridEmerald.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
                         .clickable { selectedGroupFilter = null }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Default.ArrowBackIosNew, contentDescription = "Back", tint = HybridEmerald, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Showing: $selectedGroupFilter", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(selectedGroupFilter ?: "", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
 
@@ -286,7 +309,7 @@ fun AudioLibraryScreen(
                     }
                 }
                 LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
@@ -294,9 +317,9 @@ fun AudioLibraryScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
+                                .clip(RoundedCornerShape(16.dp))
                                 .background(HybridCardBg)
-                                .border(1.dp, HybridCardBorder, RoundedCornerShape(14.dp))
+                                .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
                                 .clickable { selectedGroupFilter = groupName }
                                 .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -310,7 +333,7 @@ fun AudioLibraryScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(groupName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text("${groupTracks.size} Tracks", color = HybridTextSecondary, fontSize = 12.sp)
+                                Text("${groupTracks.size}", color = HybridEmerald, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                             }
                             Icon(Icons.Default.ChevronRight, contentDescription = null, tint = HybridTextSecondary)
                         }
@@ -334,14 +357,14 @@ fun AudioLibraryScreen(
                                 .fillMaxWidth()
                                 .padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             LiquidGlassIconOrb(
                                 icon = Icons.Default.LibraryMusic,
                                 contentDescription = "Real Device Audio",
                                 tintColor = Color(0xFF00E5FF),
-                                size = 64.dp,
-                                iconSize = 32.dp,
+                                size = 72.dp,
+                                iconSize = 36.dp,
                                 isActive = true,
                                 onClick = {
                                     val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -352,27 +375,17 @@ fun AudioLibraryScreen(
                                     permissionLauncher.launch(perms)
                                 }
                             )
-                            Text(
-                                text = "100% Real Device Music Scanner",
-                                color = Color.White,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Text(
-                                text = "Zero dummy songs! Grant audio permission to scan all real MP3/FLAC/WAV songs on your phone, or pick audio files directly.",
-                                color = HybridTextSecondary,
-                                fontSize = 13.sp,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                modifier = Modifier.fillMaxWidth()
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                LiquidGlassBox(
-                                    modifier = Modifier.weight(1f),
-                                    cornerRadius = 20.dp,
+                                LiquidGlassIconOrb(
+                                    icon = Icons.Default.Refresh,
+                                    contentDescription = "Scan Storage",
                                     tintColor = HybridEmerald,
-                                    glassAlpha = 0.32f,
+                                    size = 54.dp,
+                                    iconSize = 26.dp,
+                                    isActive = true,
                                     onClick = {
                                         val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                                             arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
@@ -381,48 +394,23 @@ fun AudioLibraryScreen(
                                         }
                                         permissionLauncher.launch(perms)
                                     }
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 12.dp),
-                                        horizontalArrangement = Arrangement.Center,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Scan Songs", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
-                                    }
-                                }
-
-                                LiquidGlassBox(
-                                    modifier = Modifier.weight(1f),
-                                    cornerRadius = 20.dp,
+                                )
+                                LiquidGlassIconOrb(
+                                    icon = Icons.Default.FolderOpen,
+                                    contentDescription = "Pick Audio Files",
                                     tintColor = Color(0xFF00E5FF),
-                                    glassAlpha = 0.32f,
-                                    onClick = {
-                                        pickAudioLauncher.launch(arrayOf("audio/*"))
-                                    }
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 12.dp),
-                                        horizontalArrangement = Arrangement.Center,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Pick Songs", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
-                                    }
-                                }
+                                    size = 54.dp,
+                                    iconSize = 26.dp,
+                                    isActive = true,
+                                    onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }
+                                )
                             }
                         }
                     }
                 }
             } else {
                 LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
@@ -442,7 +430,7 @@ fun AudioLibraryScreen(
             }
         }
 
-        // --- FLOATING MINI-PLAYER DOCK (Bottom Card with 3-Dot "..." Button instead of Cross 'X') ---
+        // --- FLOATING LIQUID GLASS MINI-PLAYER DOCK ---
         val activeTrack = nowPlaying ?: tracks.firstOrNull()
         if (activeTrack != null) {
             Row(
@@ -450,9 +438,13 @@ fun AudioLibraryScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xF2141E30))
-                    .border(1.dp, HybridEmerald.copy(alpha = 0.35f), RoundedCornerShape(18.dp))
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(Color(0xF50B1324), Color(0xF5131F36))
+                        )
+                    )
+                    .border(1.2.dp, HybridEmerald.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
                     .clickable {
                         if (nowPlaying == null) {
                             viewModel.playMusic(activeTrack)
@@ -466,7 +458,7 @@ fun AudioLibraryScreen(
                     track = activeTrack,
                     modifier = Modifier
                         .size(44.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(12.dp))
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -498,7 +490,7 @@ fun AudioLibraryScreen(
                     onClick = {
                         if (nowPlaying == null) viewModel.playMusic(activeTrack) else viewModel.togglePlayPause()
                     },
-                    modifier = Modifier.size(38.dp)
+                    modifier = Modifier.size(40.dp)
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
@@ -515,75 +507,40 @@ fun AudioLibraryScreen(
                     Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White)
                 }
 
-                // 3-Dot ("...") Button instead of Cross ('X')
                 IconButton(
                     onClick = { menuTargetTrack = activeTrack },
                     modifier = Modifier.size(36.dp)
                 ) {
-                    Icon(Icons.Default.MoreHoriz, contentDescription = "Mini Player Menu", tint = Color.White)
+                    Icon(Icons.Default.MoreVert, contentDescription = "Track Menu", tint = Color.White)
                 }
             }
         }
     }
 
-    // --- 3-Dot Song Options Sheet ---
+    // --- 7-ACTION COMPREHENSIVE MEDIA SHEET ---
     if (menuTargetTrack != null) {
-        val track = menuTargetTrack!!
-        AlertDialog(
-            onDismissRequest = { menuTargetTrack = null },
-            containerColor = HybridCardBg,
-            title = {
-                Text(
-                    text = track.cleanTitle,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+        val target = menuTargetTrack!!
+        val isFav = favorites.any { it.id == target.id }
+        MediaSevenActionDialog(
+            item = target,
+            isFavorite = isFav,
+            onDismiss = { menuTargetTrack = null },
+            onHybridShare = { item ->
+                menuTargetTrack = null
+                onHybridShareItem(item)
             },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(
-                        onClick = {
-                            viewModel.toggleFavorite(track)
-                            menuTargetTrack = null
-                            Toast.makeText(context, "Updated Favorites", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Favorite, contentDescription = null, tint = HybridEmerald)
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text("Add / Remove Favorite", color = Color.White, modifier = Modifier.weight(1f))
-                    }
-                    TextButton(
-                        onClick = {
-                            menuTargetTrack = null
-                            onOpenTurboShare()
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Bolt, contentDescription = null, tint = HybridGold)
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text("Turbo Share Track", color = Color.White, modifier = Modifier.weight(1f))
-                    }
-                    TextButton(
-                        onClick = {
-                            viewModel.moveToRecycleBin(track)
-                            menuTargetTrack = null
-                            Toast.makeText(context, "Moved to 30-Day Recycle Bin", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = HybridCoralRed)
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text("Move to Recycle Bin", color = HybridCoralRed, modifier = Modifier.weight(1f))
-                    }
-                }
+            onToggleFavorite = { item ->
+                viewModel.toggleFavorite(item)
             },
-            confirmButton = {
-                TextButton(onClick = { menuTargetTrack = null }) {
-                    Text("Close", color = HybridTextSecondary)
-                }
+            onLockInVault = { item ->
+                viewModel.toggleVaultLock(item)
+                Toast.makeText(context, "🔒 Vault Updated", Toast.LENGTH_SHORT).show()
+            },
+            onPlayBackgroundAudio = { item ->
+                viewModel.playMusic(item)
+            },
+            onPermanentDeleteConfirmed = { item ->
+                viewModel.deletePermanently(item)
             }
         )
     }
@@ -593,7 +550,7 @@ fun AudioLibraryScreen(
  * 3-Stage Guaranteed Album Art Engine (<1ms):
  * Stage 1: Instant RAM LruCache lookup
  * Stage 2: Immediate High-Definition Studio Vinyl Cover Generator on Canvas
- * Stage 3: Background MediaMetadataRetriever.embeddedPicture / Coil artwork
+ * Stage 3: Throttled Background MediaMetadataRetriever.embeddedPicture / Coil artwork
  */
 @Composable
 fun GuaranteedAlbumArt(
@@ -612,7 +569,6 @@ fun GuaranteedAlbumArt(
     }
 
     Box(modifier = modifier) {
-        // Stage 2: Immediate High-Definition Studio Vinyl Cover Generator
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(
                 brush = Brush.linearGradient(
@@ -660,18 +616,17 @@ private fun AudioSongRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (isCurrentTrack) HybridEmerald.copy(alpha = 0.14f) else HybridCardBg)
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (isCurrentTrack) HybridEmerald.copy(alpha = 0.15f) else HybridCardBg)
             .border(
                 width = 1.dp,
                 color = if (isCurrentTrack) HybridEmerald else HybridCardBorder,
-                shape = RoundedCornerShape(14.dp)
+                shape = RoundedCornerShape(16.dp)
             )
             .clickable(onClick = onClick)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 52dp Rounded Cover Photo
         GuaranteedAlbumArt(
             track = track,
             modifier = Modifier
@@ -681,7 +636,6 @@ private fun AudioSongRow(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Underscore-cleaned Song Title & "Artist • Duration • Format" Subtitle
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = track.cleanTitle,
@@ -701,7 +655,6 @@ private fun AudioSongRow(
             )
         }
 
-        // Borderless 3-Dot Icon
         IconButton(onClick = onMoreClick) {
             Icon(
                 imageVector = Icons.Default.MoreVert,

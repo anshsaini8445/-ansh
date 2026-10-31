@@ -50,6 +50,7 @@ fun MeToolkitScreen(
 ) {
     val context = LocalContext.current
     val activeTheme by viewModel.activeTheme.collectAsState()
+    val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
     val companionEnabled by viewModel.companionEnabled.collectAsState()
     val companionBreed by viewModel.companionBreed.collectAsState()
     val penguinsOnlyMode by viewModel.penguinsOnlyMode.collectAsState()
@@ -302,7 +303,7 @@ fun MeToolkitScreen(
 
                 PersonalizationNavRow(
                     title = "Theme & Wallpaper Studio",
-                    value = "$activeTheme (19 Themes + Gallery)",
+                    value = "$activeTheme (60 Themes + Custom Builder)",
                     icon = Icons.Default.Palette,
                     onClick = { showThemeStudioDialog = true }
                 )
@@ -326,7 +327,7 @@ fun MeToolkitScreen(
                 )
 
                 PersonalizationNavRow(
-                    title = "App Language",
+                    title = "Global App Language (56 World Languages)",
                     value = selectedLanguage,
                     icon = Icons.Default.Language,
                     onClick = { showLanguageDialog = true }
@@ -767,74 +768,24 @@ fun MeToolkitScreen(
         )
     }
 
-    // --- THEME & WALLPAPER STUDIO DIALOG (19 Themes + Custom Gallery Photo) ---
+    // --- THEME & WALLPAPER STUDIO DIALOG (60 Liquid Glass Themes + Custom User Theme Builder + Gallery Wallpaper) ---
     if (showThemeStudioDialog) {
-        AlertDialog(
-            onDismissRequest = { showThemeStudioDialog = false },
-            containerColor = HybridCardBg,
-            title = { Text("Theme & Wallpaper Studio (19 Themes)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = {
-                            showThemeStudioDialog = false
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.Black)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Pick Custom Gallery Photo Background", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 280.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(StudioThemes) { themePalette ->
-                            val selected = activeTheme == themePalette.name
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selected) HybridEmerald.copy(alpha = 0.18f) else HybridCardAlt)
-                                    .clickable {
-                                        viewModel.selectTheme(themePalette.name)
-                                        viewModel.setCustomWallpaper(null)
-                                        showThemeStudioDialog = false
-                                    }
-                                    .padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clip(CircleShape)
-                                        .background(themePalette.primary)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text(
-                                    text = themePalette.name,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                if (selected) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = HybridEmerald)
-                                }
-                            }
-                        }
-                    }
-                }
+        ThemeStudio60Dialog(
+            activeTheme = activeTheme,
+            onSelectTheme = { pickedName ->
+                viewModel.selectTheme(pickedName)
+                viewModel.setCustomWallpaper(null)
             },
-            confirmButton = {
-                TextButton(onClick = { showThemeStudioDialog = false }) {
-                    Text("Close", color = HybridEmerald)
-                }
-            }
+            onPickGalleryWallpaper = {
+                photoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
+            onClearGalleryWallpaper = {
+                viewModel.setCustomWallpaper(null)
+            },
+            hasCustomWallpaper = customWallpaperUri != null,
+            onDismiss = { showThemeStudioDialog = false }
         )
     }
 
@@ -957,15 +908,15 @@ fun MeToolkitScreen(
         )
     }
 
-    // --- 36 APP LANGUAGES DIALOG ---
+    // --- 56 WORLD LANGUAGES DIALOG (Top 50+ Countries Around the World) ---
     if (showLanguageDialog) {
         AlertDialog(
             onDismissRequest = { showLanguageDialog = false },
             containerColor = HybridCardBg,
-            title = { Text("Select App Language (36 Languages)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            title = { Text("🌍 Global Languages (56 World Languages)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
             text = {
                 LazyColumn(
-                    modifier = Modifier.heightIn(max = 300.dp),
+                    modifier = Modifier.heightIn(max = 320.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(MultiLanguageHelper.SUPPORTED_LANGUAGES) { lang ->
@@ -978,12 +929,12 @@ fun MeToolkitScreen(
                                 .clickable {
                                     viewModel.selectLanguage(lang)
                                     showLanguageDialog = false
-                                    Toast.makeText(context, "Language set to $lang", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "🌍 $lang", Toast.LENGTH_SHORT).show()
                                 }
                                 .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(lang, color = Color.White, modifier = Modifier.weight(1f))
+                            Text(lang, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
                             if (active) {
                                 Icon(Icons.Default.Check, contentDescription = null, tint = HybridEmerald)
                             }

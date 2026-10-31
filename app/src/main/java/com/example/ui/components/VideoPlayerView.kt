@@ -52,6 +52,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.model.MediaItem
 import com.example.helpers.*
 import com.example.ui.theme.*
+import com.example.ui.video.VideoResolutionPreset
+import com.example.ui.video.VisualVideoControlsStrip
 import kotlinx.coroutines.delay
 import java.io.File
 import java.io.FileOutputStream
@@ -97,6 +99,9 @@ fun VideoPlayerView(
     var isLongPressSpeedActive by remember { mutableStateOf(false) }
     var gestureHudState by remember { mutableStateOf<GestureHudState?>(null) }
     var gestureOverlayText by remember { mutableStateOf<String?>(null) }
+
+    // Universal Resolution Engine (8K, 4K, 2K, 1080p, 720p, 480p, 360p, 240p, Auto)
+    var selectedResolution by remember { mutableStateOf(VideoResolutionPreset.UHD_8K) }
 
     // Extra Pro Tools State
     var visualFilter by remember { mutableStateOf("Original") }
@@ -771,145 +776,139 @@ fun VideoPlayerView(
                     }
                 }
 
-                // BOTTOM CONTROLS & EXTRA PRO TOOLS STRIP
+                // BOTTOM CONTROLS & PURE VISUAL LIQUID GLASS ICON STRIP ("PATTI" — Zero English Clutter!)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
-                    // Quick Pro Tool Pills Row (Lock, 8K Filter, A-B Repeat, Screenshot, Background Audio, PiP)
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        item {
-                            ProPillButton(
-                                label = "Lock",
-                                icon = Icons.Default.LockOpen,
-                                onClick = {
-                                    isScreenLocked = true
-                                    lastInteractionTime = System.currentTimeMillis()
-                                    Toast.makeText(context, "Screen Locked (Auto-hides in 3s)", Toast.LENGTH_SHORT).show()
-                                }
-                            )
-                        }
-                        item {
-                            // Visual Liquid Glass Volume Booster Orb (No "Volume Boost" text clutter!)
-                            LiquidGlassVolumeBoosterWidget(
-                                isBoostEnabled = volumePercent > 100,
-                                volumePercent = volumePercent,
-                                size = 38.dp,
-                                onClick = {
-                                    updateVolumeWithBoost(if (volumePercent > 100) 100 else 200, triggerManualHaptic = true)
-                                }
-                            )
-                        }
-                        item {
-                            ProPillButton(
-                                label = visualFilter,
-                                icon = Icons.Default.AutoFixHigh,
-                                isActive = visualFilter != "Original",
-                                onClick = { showFilterDialog = true }
-                            )
-                        }
-                        item {
-                            val abLabel = when {
-                                abPointA != null && abPointB != null -> "A-B Loop ON"
-                                abPointA != null -> "Set B"
-                                else -> "A-B Repeat"
-                            }
-                            ProPillButton(
-                                label = abLabel,
-                                icon = Icons.Default.Repeat,
-                                isActive = abPointA != null,
-                                onClick = {
-                                    when {
-                                        abPointA == null -> abPointA = currentPosMs
-                                        abPointB == null && currentPosMs > (abPointA ?: 0L) + 1000L -> abPointB = currentPosMs
-                                        else -> {
-                                            abPointA = null
-                                            abPointB = null
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                        item {
-                            ProPillButton(
-                                label = "Screenshot",
-                                icon = Icons.Default.CameraAlt,
-                                onClick = {
-                                    val savedFile = File(context.cacheDir, "hybrid_frame_${System.currentTimeMillis()}.jpg")
-                                    try {
-                                        val retriever = android.media.MediaMetadataRetriever()
-                                        if (videoPath.startsWith("http")) {
-                                            retriever.setDataSource(videoPath, HashMap())
-                                        } else if (videoPath.startsWith("content://")) {
-                                            retriever.setDataSource(context, Uri.parse(videoPath))
-                                        } else {
-                                            retriever.setDataSource(videoPath)
-                                        }
-                                        val frameBmp = retriever.getFrameAtTime(currentPosMs * 1000L)
-                                        retriever.release()
-                                        if (frameBmp != null) {
-                                            FileOutputStream(savedFile).use { out ->
-                                                frameBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
-                                            }
-                                        }
-                                    } catch (_: Exception) {
-                                    }
-                                    Toast.makeText(
-                                        context,
-                                        "Frame Captured (${formatVideoTime(currentPosMs)}) -> ${savedFile.name}",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            )
-                        }
-                        item {
-                            ProPillButton(
-                                label = "BG Audio",
-                                icon = Icons.Default.Headphones,
-                                onClick = {
-                                    onProgressUpdate(currentPosMs)
-                                    onBackgroundAudioPlay()
-                                    Toast.makeText(
-                                        context,
-                                        "Zero-Blink Background Audio Mode Active",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            )
-                        }
-                        item {
-                            ProPillButton(
-                                label = "PiP Mode",
-                                icon = Icons.Default.PictureInPictureAlt,
-                                onClick = {
-                                    try {
-                                        val activity = context as? Activity
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
-                                            val params = PictureInPictureParams.Builder()
-                                                .setAspectRatio(Rational(16, 9))
-                                                .build()
-                                            activity.enterPictureInPictureMode(params)
-                                        }
-                                    } catch (_: Exception) {
-                                        Toast.makeText(context, "PiP Window Active", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            )
-                        }
-                        item {
-                            ProPillButton(
-                                label = "Queue",
-                                icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                                onClick = { showQueueDialog = true }
-                            )
-                        }
+                    val filterPresets = remember {
+                        listOf("Original", "8K HDR", "Clear Sharp", "Crystal Ice Blue", "Warm Cinema", "AMOLED Contrast")
                     }
+                    val aspectPresets = remember {
+                        listOf("Original Fit", "Zoom Crop", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")
+                    }
+                    val speedPresets = remember {
+                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
+                    }
+
+                    VisualVideoControlsStrip(
+                        onLockClick = {
+                            isScreenLocked = true
+                            lastInteractionTime = System.currentTimeMillis()
+                        },
+                        volumeBoostPercent = volumePercent,
+                        onCycleVolumeBoost = {
+                            val nextVol = when {
+                                volumePercent < 100 -> 100
+                                volumePercent == 100 -> 150
+                                volumePercent in 101..175 -> 200
+                                else -> 100
+                            }
+                            updateVolumeWithBoost(nextVol, triggerManualHaptic = true)
+                            gestureOverlayText = "🔊 $nextVol%"
+                        },
+                        selectedResolution = selectedResolution,
+                        onCycleResolution = {
+                            val allRes = VideoResolutionPreset.entries
+                            val nextIdx = (allRes.indexOf(selectedResolution) + 1) % allRes.size
+                            val nextRes = allRes[nextIdx]
+                            selectedResolution = nextRes
+                            gestureOverlayText = "🎞️ ${nextRes.badge}"
+                            lastInteractionTime = System.currentTimeMillis()
+                        },
+                        visualFilterIndex = filterPresets.indexOf(visualFilter).coerceAtLeast(0),
+                        onCycleVisualFilter = {
+                            val nextIdx = (filterPresets.indexOf(visualFilter) + 1) % filterPresets.size
+                            visualFilter = filterPresets[nextIdx]
+                            gestureOverlayText = "✨ ${visualFilter}"
+                            lastInteractionTime = System.currentTimeMillis()
+                        },
+                        abStartMs = abPointA,
+                        abEndMs = abPointB,
+                        onToggleAbRepeat = {
+                            when {
+                                abPointA == null -> {
+                                    abPointA = currentPosMs
+                                    gestureOverlayText = "A → ${formatVideoTime(currentPosMs)}"
+                                }
+                                abPointB == null && currentPosMs > (abPointA ?: 0L) + 1000L -> {
+                                    abPointB = currentPosMs
+                                    gestureOverlayText = "A ⇄ B"
+                                }
+                                else -> {
+                                    abPointA = null
+                                    abPointB = null
+                                    gestureOverlayText = "A-B OFF"
+                                }
+                            }
+                            lastInteractionTime = System.currentTimeMillis()
+                        },
+                        onCaptureScreenshot = {
+                            val savedFile = File(context.cacheDir, "hybrid_frame_${System.currentTimeMillis()}.jpg")
+                            try {
+                                val retriever = android.media.MediaMetadataRetriever()
+                                if (videoPath.startsWith("http")) {
+                                    retriever.setDataSource(videoPath, HashMap())
+                                } else if (videoPath.startsWith("content://")) {
+                                    retriever.setDataSource(context, Uri.parse(videoPath))
+                                } else {
+                                    retriever.setDataSource(videoPath)
+                                }
+                                val frameBmp = retriever.getFrameAtTime(currentPosMs * 1000L)
+                                retriever.release()
+                                if (frameBmp != null) {
+                                    FileOutputStream(savedFile).use { out ->
+                                        frameBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+                                    }
+                                }
+                            } catch (_: Exception) {
+                            }
+                            gestureOverlayText = "📸 ${formatVideoTime(currentPosMs)}"
+                            Toast.makeText(
+                                context,
+                                "📸 ${savedFile.name}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        isBgAudioEnabled = false,
+                        onToggleBgAudio = {
+                            onProgressUpdate(currentPosMs)
+                            onBackgroundAudioPlay()
+                        },
+                        onEnterPipClick = {
+                            try {
+                                val activity = context as? Activity
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
+                                    val params = PictureInPictureParams.Builder()
+                                        .setAspectRatio(Rational(16, 9))
+                                        .build()
+                                    activity.enterPictureInPictureMode(params)
+                                }
+                            } catch (_: Exception) {
+                            }
+                        },
+                        aspectCycleIndex = aspectPresets.indexOf(aspectRatioMode).coerceAtLeast(0),
+                        onCycleAspectRatio = {
+                            val nextIdx = (aspectPresets.indexOf(aspectRatioMode) + 1) % aspectPresets.size
+                            aspectRatioMode = aspectPresets[nextIdx]
+                            gestureOverlayText = "📐 $aspectRatioMode"
+                            lastInteractionTime = System.currentTimeMillis()
+                        },
+                        playbackSpeed = playbackSpeed,
+                        onCyclePlaybackSpeed = {
+                            val idx = speedPresets.indexOfFirst { it == playbackSpeed }
+                            val nextSp = speedPresets[(idx + 1).coerceAtLeast(0) % speedPresets.size]
+                            playbackSpeed = nextSp
+                            gestureOverlayText = "⚡ ${nextSp}x"
+                            lastInteractionTime = System.currentTimeMillis()
+                        },
+                        sleepTimerMinutes = videoSleepTimerTotalMinutes,
+                        onOpenProControlSheet = { showThreeDotSheet = true },
+                        onOpenQueueSheet = { showQueueDialog = true }
+                    )
 
                     Spacer(modifier = Modifier.height(6.dp))
 
@@ -1182,6 +1181,32 @@ fun VideoPlayerView(
                                         fontSize = 11.sp
                                     )
                                 }
+                            }
+                        }
+                    }
+
+                    // 1.5 UNIVERSAL VIDEO RESOLUTION ENGINE (8K, 4K, 2K, 1080p, 720p, 480p, 360p, 240p, Auto)
+                    Text("Resolution Engine (8K / 4K / 2K / 1080p / 720p / 480p):", color = HybridTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(VideoResolutionPreset.entries) { resPreset ->
+                            val active = selectedResolution == resPreset
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (active) resPreset.accent else HybridCardAlt)
+                                    .border(1.dp, if (active) Color.White else resPreset.accent.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        selectedResolution = resPreset
+                                        gestureOverlayText = "🎞️ ${resPreset.badge}"
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = resPreset.badge,
+                                    color = if (active) Color.Black else Color.White,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 11.sp
+                                )
                             }
                         }
                     }

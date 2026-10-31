@@ -27,6 +27,7 @@ import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.components.VideoPlayerView
 import com.example.ui.screens.*
+import com.example.ui.share.ShareKaroTransferScreen
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 import kotlinx.coroutines.launch
@@ -99,6 +100,7 @@ class MainActivity : ComponentActivity() {
                 val navigationStack = remember { mutableStateListOf(ActiveScreen.MainTabs) }
                 val currentScreen = navigationStack.last()
                 var selectedTab by remember { mutableStateOf(MainBottomTab.VIDEO) }
+                var preselectedShareItem by remember { mutableStateOf<MediaItem?>(null) }
 
                 LaunchedEffect(currentScreen) {
                     viewModel.setForegroundVideoActive(currentScreen == ActiveScreen.VideoPlayer)
@@ -116,6 +118,9 @@ class MainActivity : ComponentActivity() {
                     if (navigationStack.size > 1) {
                         if (navigationStack.last() == ActiveScreen.PrivateFolder) {
                             viewModel.lockVault()
+                        }
+                        if (navigationStack.last() == ActiveScreen.TurboShare) {
+                            preselectedShareItem = null
                         }
                         navigationStack.removeAt(navigationStack.lastIndex)
                     } else if (selectedTab != MainBottomTab.VIDEO) {
@@ -140,64 +145,78 @@ class MainActivity : ComponentActivity() {
                             ActiveScreen.MainTabs -> {
                                 Scaffold(
                                     containerColor = if (customWallpaperUri != null) Color.Transparent else MaterialTheme.colorScheme.background,
+                                    contentWindowInsets = WindowInsets.systemBars,
                                     bottomBar = {
-                                        LiquidGlassBox(
+                                        Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                                            cornerRadius = 26.dp,
-                                            tintColor = HybridEmerald,
-                                            glassAlpha = 0.22f
+                                                .navigationBarsPadding()
+                                                .padding(horizontal = 16.dp, vertical = 8.dp)
                                         ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                                                horizontalArrangement = Arrangement.SpaceEvenly
+                                            LiquidGlassBox(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                cornerRadius = 28.dp,
+                                                tintColor = accentColor,
+                                                glassAlpha = 0.24f
                                             ) {
-                                                MainBottomTab.entries.forEach { tab ->
-                                                    val selected = selectedTab == tab
-                                                    val tabTint = when (tab) {
-                                                        MainBottomTab.VIDEO -> Color(0xFF00E676)
-                                                        MainBottomTab.MUSIC -> Color(0xFF00E5FF)
-                                                        MainBottomTab.SEARCH -> Color(0xFFFFD54F)
-                                                        MainBottomTab.ME -> Color(0xFFFF4081)
-                                                    }
-                                                    val icon = when (tab) {
-                                                        MainBottomTab.VIDEO -> if (selected) Icons.Filled.VideoLibrary else Icons.Outlined.VideoLibrary
-                                                        MainBottomTab.MUSIC -> if (selected) Icons.Filled.LibraryMusic else Icons.Outlined.LibraryMusic
-                                                        MainBottomTab.SEARCH -> if (selected) Icons.Filled.Search else Icons.Outlined.Search
-                                                        MainBottomTab.ME -> if (selected) Icons.Filled.Person else Icons.Outlined.Person
-                                                    }
-                                                    LiquidGlassBox(
-                                                        modifier = Modifier
-                                                            .weight(1f)
-                                                            .padding(horizontal = 4.dp)
-                                                            .testTag("nav_tab_${tab.name.lowercase()}"),
-                                                        cornerRadius = 20.dp,
-                                                        tintColor = if (selected) tabTint else Color.White,
-                                                        glassAlpha = if (selected) 0.28f else 0.05f,
-                                                        onClick = { selectedTab = tab }
-                                                    ) {
-                                                        Column(
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                                ) {
+                                                    MainBottomTab.entries.forEach { tab ->
+                                                        val selected = selectedTab == tab
+                                                        val tabTint = when (tab) {
+                                                            MainBottomTab.VIDEO -> Color(0xFF00E676)
+                                                            MainBottomTab.MUSIC -> Color(0xFF00E5FF)
+                                                            MainBottomTab.SEARCH -> Color(0xFFFFD54F)
+                                                            MainBottomTab.ME -> Color(0xFFFF4081)
+                                                        }
+                                                        val icon = when (tab) {
+                                                            MainBottomTab.VIDEO -> if (selected) Icons.Filled.VideoLibrary else Icons.Outlined.VideoLibrary
+                                                            MainBottomTab.MUSIC -> if (selected) Icons.Filled.GraphicEq else Icons.Outlined.MusicNote
+                                                            MainBottomTab.SEARCH -> if (selected) Icons.Filled.ManageSearch else Icons.Outlined.Search
+                                                            MainBottomTab.ME -> if (selected) Icons.Filled.AutoAwesomeMosaic else Icons.Outlined.DashboardCustomize
+                                                        }
+                                                        LiquidGlassBox(
                                                             modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .padding(vertical = 8.dp),
-                                                            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                                                                .weight(1f)
+                                                                .padding(horizontal = 5.dp)
+                                                                .testTag("nav_tab_${tab.name.lowercase()}"),
+                                                            cornerRadius = 22.dp,
+                                                            tintColor = if (selected) tabTint else Color.White,
+                                                            glassAlpha = if (selected) 0.34f else 0.06f,
+                                                            onClick = { selectedTab = tab }
                                                         ) {
-                                                            Icon(
-                                                                imageVector = icon,
-                                                                contentDescription = tab.label,
-                                                                tint = if (selected) tabTint else Color.White.copy(alpha = 0.72f),
-                                                                modifier = Modifier.size(22.dp)
-                                                            )
-                                                            Spacer(modifier = Modifier.height(3.dp))
-                                                            Text(
-                                                                text = tab.label,
-                                                                fontSize = 11.sp,
-                                                                color = if (selected) Color.White else HybridTextSecondary,
-                                                                fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium
-                                                            )
+                                                            Column(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(vertical = 9.dp),
+                                                                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = icon,
+                                                                    contentDescription = tab.label,
+                                                                    tint = if (selected) tabTint else Color.White.copy(alpha = 0.72f),
+                                                                    modifier = Modifier.size(if (selected) 25.dp else 22.dp)
+                                                                )
+                                                                Spacer(modifier = Modifier.height(4.dp))
+                                                                // Pure Visual Liquid Neon Indicator Pill (Language-Agnostic)
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .width(if (selected) 22.dp else 6.dp)
+                                                                        .height(3.5.dp)
+                                                                ) {
+                                                                    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                                                                        drawRoundRect(
+                                                                            color = if (selected) tabTint else Color.White.copy(alpha = 0.22f),
+                                                                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -226,6 +245,11 @@ class MainActivity : ComponentActivity() {
                                                         navigationStack.add(ActiveScreen.CleanerHub)
                                                     },
                                                     onOpenTurboShare = {
+                                                        preselectedShareItem = null
+                                                        navigationStack.add(ActiveScreen.TurboShare)
+                                                    },
+                                                    onHybridShareItem = { item ->
+                                                        preselectedShareItem = item
                                                         navigationStack.add(ActiveScreen.TurboShare)
                                                     }
                                                 )
@@ -240,6 +264,11 @@ class MainActivity : ComponentActivity() {
                                                         navigationStack.add(ActiveScreen.Equalizer)
                                                     },
                                                     onOpenTurboShare = {
+                                                        preselectedShareItem = null
+                                                        navigationStack.add(ActiveScreen.TurboShare)
+                                                    },
+                                                    onHybridShareItem = { item ->
+                                                        preselectedShareItem = item
                                                         navigationStack.add(ActiveScreen.TurboShare)
                                                     }
                                                 )
@@ -268,6 +297,7 @@ class MainActivity : ComponentActivity() {
                                                         navigationStack.add(ActiveScreen.PrivateFolder)
                                                     },
                                                     onOpenTurboShare = {
+                                                        preselectedShareItem = null
                                                         navigationStack.add(ActiveScreen.TurboShare)
                                                     },
                                                     onOpenMp3Converter = {
@@ -375,9 +405,13 @@ class MainActivity : ComponentActivity() {
                             }
 
                             ActiveScreen.TurboShare -> {
-                                TurboShareScreen(
+                                ShareKaroTransferScreen(
                                     allMedia = allMedia,
-                                    onBackClick = { navigationStack.removeAt(navigationStack.lastIndex) }
+                                    initialPreselectedItem = preselectedShareItem,
+                                    onBackClick = {
+                                        preselectedShareItem = null
+                                        navigationStack.removeAt(navigationStack.lastIndex)
+                                    }
                                 )
                             }
 

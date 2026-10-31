@@ -132,20 +132,10 @@ object Mp3ConverterHelper {
 }
 
 /**
- * 3. Multi-Language Support (36 Languages).
+ * 3. Multi-Language Support (56 World Languages across Top 50+ Countries).
  */
 object MultiLanguageHelper {
-    val SUPPORTED_LANGUAGES = listOf(
-        "English (Default)", "Hindi (हिन्दी)", "Spanish (Español)", "Arabic (العربية)",
-        "Portuguese (Português)", "Russian (Русский)", "Japanese (日本語)", "Korean (한국어)",
-        "German (Deutsch)", "French (Français)", "Indonesian (Bahasa)", "Turkish (Türkçe)",
-        "Vietnamese (Tiếng Việt)", "Thai (ไทย)", "Bengali (বাংলা)", "Urdu (اردو)",
-        "Tamil (தமிழ்)", "Telugu (తెలుగు)", "Marathi (मराठी)", "Gujarati (ગુજરાતી)",
-        "Punjabi (ਪੰਜਾਬੀ)", "Malayalam (മലയാളം)", "Kannada (ಕನ್ನಡ)", "Odia (ଓଡ଼ିଆ)",
-        "Italian (Italiano)", "Polish (Polski)", "Dutch (Nederlands)", "Ukrainian (Українська)",
-        "Persian (فارسی)", "Malay (Bahasa Melayu)", "Filipino (Tagalog)", "Swahili (Kiswahili)",
-        "Romanian (Română)", "Greek (Ελληνικά)", "Czech (Čeština)", "Swedish (Svenska)"
-    )
+    val SUPPORTED_LANGUAGES: List<String> = com.example.ui.i18n.WorldLanguageEngine.DISPLAY_NAMES
 }
 
 /**

@@ -39,9 +39,11 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
 import com.example.helpers.HybridCleanerHubHelper
+import com.example.helpers.WifiDirectTransferEngine
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.components.LiquidGlassShakeOrbWidget
+import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
@@ -52,6 +54,7 @@ fun VideoSectionScreen(
     onPlayVideo: (MediaItem) -> Unit,
     onOpenCleanerHub: () -> Unit,
     onOpenTurboShare: () -> Unit,
+    onHybridShareItem: (MediaItem) -> Unit = { _ -> onOpenTurboShare() },
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -70,6 +73,7 @@ fun VideoSectionScreen(
     var showSortDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
+    var actionTargetVideo by remember { mutableStateOf<MediaItem?>(null) }
 
     val pickVideosLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -627,6 +631,9 @@ fun VideoSectionScreen(
                                     },
                                     onLongClick = {
                                         if (!isSelected) selectedIds.add(video.id)
+                                    },
+                                    onMoreClick = {
+                                        actionTargetVideo = video
                                     }
                                 )
                             }
@@ -654,12 +661,8 @@ fun VideoSectionScreen(
                                     onLongClick = {
                                         if (!isSelected) selectedIds.add(video.id)
                                     },
-                                    onDeleteRequest = {
-                                        pendingDeleteItems = listOf(video)
-                                    },
-                                    onLockToVault = {
-                                        viewModel.toggleVaultLock(video)
-                                        Toast.makeText(context, "Moved to Privacy Vault", Toast.LENGTH_SHORT).show()
+                                    onMoreClick = {
+                                        actionTargetVideo = video
                                     }
                                 )
                             }
@@ -806,11 +809,10 @@ fun VideoSectionScreen(
                 }
 
                 TextButton(onClick = {
-                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, "Sharing ${selectedIds.size} media files via Hybrid Player")
+                    val selectedItems = videos.filter { it.id in selectedIds }
+                    if (selectedItems.isNotEmpty()) {
+                        WifiDirectTransferEngine.shareRealFilesViaSystem(context, selectedItems)
                     }
-                    context.startActivity(Intent.createChooser(shareIntent, "Share via Apps"))
                     selectedIds.clear()
                 }) {
                     Icon(Icons.Default.Share, contentDescription = null, tint = HybridCyan)
@@ -993,6 +995,35 @@ fun VideoSectionScreen(
             }
         )
     }
+
+    // --- 7-ACTION COMPREHENSIVE VIDEO OPTIONS SHEET ---
+    if (actionTargetVideo != null) {
+        val target = actionTargetVideo!!
+        val isFav = favorites.any { it.id == target.id }
+        MediaSevenActionDialog(
+            item = target,
+            isFavorite = isFav,
+            onDismiss = { actionTargetVideo = null },
+            onHybridShare = { vid ->
+                actionTargetVideo = null
+                onHybridShareItem(vid)
+            },
+            onToggleFavorite = { vid ->
+                viewModel.toggleFavorite(vid)
+            },
+            onLockInVault = { vid ->
+                viewModel.toggleVaultLock(vid)
+                Toast.makeText(context, "🔒 Moved to Privacy Vault", Toast.LENGTH_SHORT).show()
+            },
+            onPlayBackgroundAudio = { vid ->
+                viewModel.playMusic(vid)
+                Toast.makeText(context, "🎧 Playing Video as Background Audio", Toast.LENGTH_SHORT).show()
+            },
+            onPermanentDeleteConfirmed = { vid ->
+                viewModel.deletePermanently(vid)
+            }
+        )
+    }
 }
 
 /**
@@ -1059,11 +1090,8 @@ private fun VideoDetailedRowItem(
     progressFraction: Float,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onDeleteRequest: () -> Unit,
-    onLockToVault: () -> Unit
+    onMoreClick: () -> Unit
 ) {
-    var showMenu by remember { mutableStateOf(false) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1162,7 +1190,7 @@ private fun VideoDetailedRowItem(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "${video.resolution} | ${video.formattedSize}${if (video.isPartialDownload) " • Partial" else ""}",
+                text = "${video.resolution} • ${video.format} • ${video.formattedSize}${if (video.isPartialDownload) " • Partial" else ""}",
                 color = HybridTextSecondary,
                 fontSize = 11.sp
             )
@@ -1193,36 +1221,12 @@ private fun VideoDetailedRowItem(
             }
         }
 
-        Box {
-            IconButton(onClick = { showMenu = true }) {
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "Video Options",
-                    tint = HybridTextSecondary
-                )
-            }
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-                containerColor = HybridCardBg
-            ) {
-                DropdownMenuItem(
-                    text = { Text("Lock in Privacy Vault", color = Color.White) },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = HybridEmerald) },
-                    onClick = {
-                        showMenu = false
-                        onLockToVault()
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Delete / Recycle Bin", color = HybridCoralRed) },
-                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = HybridCoralRed) },
-                    onClick = {
-                        showMenu = false
-                        onDeleteRequest()
-                    }
-                )
-            }
+        IconButton(onClick = onMoreClick) {
+            Icon(
+                imageVector = Icons.Default.MoreVert,
+                contentDescription = "7 Video Actions",
+                tint = HybridTextSecondary
+            )
         }
     }
 }
@@ -1235,7 +1239,8 @@ private fun VideoGridCard(
     showBadges: Boolean,
     progressFraction: Float,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    onMoreClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1306,19 +1311,37 @@ private fun VideoGridCard(
             }
         }
         Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = video.cleanTitle,
-            color = Color.White,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = "${video.resolution} | ${video.formattedSize}",
-            color = HybridTextSecondary,
-            fontSize = 11.sp
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = video.cleanTitle,
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${video.resolution} • ${video.formattedSize}",
+                    color = HybridTextSecondary,
+                    fontSize = 11.sp
+                )
+            }
+            IconButton(
+                onClick = onMoreClick,
+                modifier = Modifier.size(30.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "7 Video Actions",
+                    tint = HybridTextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
     }
 }
 
