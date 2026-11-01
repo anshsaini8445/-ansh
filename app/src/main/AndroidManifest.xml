@@ -58,14 +58,17 @@
         <receiver
             android:name="com.example.helpers.MediaNotificationReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
-                <action android:name="com.example.helpers.ACTION_MEDIA_PREV" />
-                <action android:name="com.example.helpers.ACTION_MEDIA_REWIND_10" />
-                <action android:name="com.example.helpers.ACTION_MEDIA_PLAY_PAUSE" />
-                <action android:name="com.example.helpers.ACTION_MEDIA_FAST_FORWARD_10" />
-                <action android:name="com.example.helpers.ACTION_MEDIA_NEXT" />
-                <action android:name="com.example.helpers.ACTION_MEDIA_STOP" />
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+                <action android:name="com.example.action.MEDIA_SHUFFLE" />
+                <action android:name="com.example.action.MEDIA_PREV" />
+                <action android:name="com.example.action.MEDIA_REWIND_10S" />
+                <action android:name="com.example.action.MEDIA_PLAY_PAUSE" />
+                <action android:name="com.example.action.MEDIA_FFWD_10S" />
+                <action android:name="com.example.action.MEDIA_NEXT" />
+                <action android:name="com.example.action.MEDIA_REPEAT" />
+                <action android:name="com.example.action.MEDIA_STOP" />
             </intent-filter>
         </receiver>
 

@@ -1,11 +1,18 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.content.res.Configuration
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -30,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.MediaItem
+import com.example.helpers.PermanentDeleteHelper
 import com.example.ui.components.GuaranteedAlbumArt
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
@@ -51,17 +60,14 @@ private enum class AudioSubTab {
 
 /**
  * Clean, Multi-Language Music & Video-Audio Library Screen:
- * - Top Header shows ONLY App Icon + "Hybrid Player" (zero icon clutter rows).
- * - Labeled Sub-Tabs:
- *   1. All ("All" / "सभी")
- *   2. New ("New" / "नए गाने")
- *   3. Videos ("Videos" / "वीडियो गाने") — Play any device video directly as audio in the music player!
- *   4. Playlist ("Playlist" / "प्लेलिस्ट") — Favourite Songs + Custom Playlists
- *   5. Folders ("Folders" / "फ़ोल्डर") — "Video Songs" folder + all device audio folders
- * - Right side of Tab Bar: Sort (⇅) button with Oldest->Newest, Newest->Oldest, A->Z, Z->A,
- *   Shortest->Longest (5s+), and Longest->Shortest.
- * - Responsive orientation & tablet grid layout.
+ * - Prominent 1.5x Enlarged Top Header: App Icon (44.dp) + "Hybrid Player" (27.sp).
+ * - Labeled Sub-Tabs: All | New | Videos | Playlist | Folders + Multi-Select (Checklist) + Sort (⇅).
+ * - Multi-Select Batch Permanent Delete: Select 1 to 1000+ songs via long-press or checklist button
+ *   and permanently delete them from device storage in a single batch.
+ * - Floating Mini Now-Playing Dock sits cleanly at the bottom (bottom = 8.dp) right above the
+ *   Bottom Navigation Bar without overlapping the middle of the song list.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AudioLibraryScreen(
     viewModel: PlayerViewModel,
@@ -72,6 +78,7 @@ fun AudioLibraryScreen(
     onOpenFullMusicPlayer: () -> Unit = onOpenStudioPlayer,
     onOpenHybridShareForItem: (MediaItem) -> Unit = onHybridShareItem
 ) {
+    val context = LocalContext.current
     val musicItems by viewModel.musicItems.collectAsState()
     val videoItems by viewModel.videoItems.collectAsState()
     val favoriteItems by viewModel.favoriteItems.collectAsState()
@@ -101,12 +108,64 @@ fun AudioLibraryScreen(
     var newPlaylistName by remember { mutableStateOf("") }
     var sevenMenuTargetItem by remember { mutableStateOf<MediaItem?>(null) }
 
+    // Multi-select state for batch permanent delete (1 to 1000+ songs at once)
+    var multiSelectMode by remember { mutableStateOf(false) }
+    val selectedTrackIds = remember { mutableStateListOf<String>() }
+    var pendingBatchDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+
+    val batchDeleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            viewModel.deleteBatchPermanently(pendingBatchDeleteItems)
+            Toast.makeText(
+                context,
+                if (isHindi) "${pendingBatchDeleteItems.size} गाने हमेशा के लिए हटाए गए" else "Deleted ${pendingBatchDeleteItems.size} songs permanently",
+                Toast.LENGTH_SHORT
+            ).show()
+            pendingBatchDeleteItems = emptyList()
+            selectedTrackIds.clear()
+            multiSelectMode = false
+        }
+    }
+
+    fun executeBatchPermanentDelete(itemsToDelete: List<MediaItem>) {
+        if (itemsToDelete.isEmpty()) return
+        val unDeleted = mutableListOf<MediaItem>()
+        itemsToDelete.forEach { item ->
+            val deletedDirect = PermanentDeleteHelper.deletePermanently(context, item)
+            if (!deletedDirect) {
+                unDeleted.add(item)
+            }
+        }
+        viewModel.deleteBatchPermanently(itemsToDelete)
+        if (unDeleted.isNotEmpty()) {
+            val intentSender = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, unDeleted)
+            if (intentSender != null) {
+                pendingBatchDeleteItems = unDeleted
+                batchDeleteLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+                return
+            }
+        }
+        Toast.makeText(
+            context,
+            if (isHindi) "${itemsToDelete.size} गाने हमेशा के लिए हटाए गए" else "Deleted ${itemsToDelete.size} songs permanently",
+            Toast.LENGTH_SHORT
+        ).show()
+        selectedTrackIds.clear()
+        multiSelectMode = false
+    }
+
     val videoSongsFolderKey = "__VIDEO_SONGS_FOLDER__"
 
     BackHandler(
-        enabled = selectedFolderName != null || selectedPlaylistId != null || viewingFavoritesPlaylist || activeTab != AudioSubTab.ALL
+        enabled = multiSelectMode || selectedFolderName != null || selectedPlaylistId != null || viewingFavoritesPlaylist || activeTab != AudioSubTab.ALL
     ) {
         when {
+            multiSelectMode -> {
+                multiSelectMode = false
+                selectedTrackIds.clear()
+            }
             selectedFolderName != null -> selectedFolderName = null
             selectedPlaylistId != null -> selectedPlaylistId = null
             viewingFavoritesPlaylist -> viewingFavoritesPlaylist = false
@@ -175,11 +234,11 @@ fun AudioLibraryScreen(
             .background(Color.Transparent)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 1. Clean Top Header Bar — ONLY App Icon + "Hybrid Player" (matching Video Section)
+            // 1. Prominent 1.5x Enlarged Top Header Bar — App Icon (44.dp) + "Hybrid Player" (27.sp)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(54.dp)
+                    .height(62.dp)
                     .padding(horizontal = if (isTablet) 22.dp else 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -188,21 +247,117 @@ fun AudioLibraryScreen(
                     contentDescription = "Hybrid Player",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .size(32.dp)
-                        .clip(RoundedCornerShape(9.dp))
-                        .border(1.dp, HybridEmerald.copy(alpha = 0.6f), RoundedCornerShape(9.dp))
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(
+                            1.5.dp,
+                            Brush.linearGradient(listOf(HybridEmerald, HybridCyan)),
+                            RoundedCornerShape(12.dp)
+                        )
                 )
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(12.dp))
                 Text(
                     text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.headlineSmall,
                     color = Color.White,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 19.sp
+                    fontWeight = FontWeight.Black,
+                    fontSize = 27.sp,
+                    letterSpacing = 0.3.sp
                 )
             }
 
-            // 2. Clear Labeled Sub-Tabs Row: All | New | Videos | Playlist | Folders + Sort (⇅)
+            // Multi-Select Action Bar (Select All + Permanent Batch Delete for 1 to 1000+ songs)
+            if (multiSelectMode) {
+                LiquidGlassBox(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (isTablet) 20.dp else 12.dp, vertical = 4.dp),
+                    cornerRadius = 16.dp,
+                    tintColor = HybridCoralRed,
+                    glassAlpha = 0.28f
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    multiSelectMode = false
+                                    selectedTrackIds.clear()
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color.White)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isHindi) "${selectedTrackIds.size} चुने गए" else "${selectedTrackIds.size} Selected",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 14.sp
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    val allIds = currentDisplayedTracks.map { it.id }
+                                    if (selectedTrackIds.size == allIds.size) {
+                                        selectedTrackIds.clear()
+                                    } else {
+                                        selectedTrackIds.clear()
+                                        selectedTrackIds.addAll(allIds)
+                                    }
+                                }
+                            ) {
+                                Text(
+                                    text = if (selectedTrackIds.size == currentDisplayedTracks.size && currentDisplayedTracks.isNotEmpty()) {
+                                        if (isHindi) "सब हटाएं" else "Clear All"
+                                    } else {
+                                        if (isHindi) "सभी चुनें (${currentDisplayedTracks.size})" else "Select All (${currentDisplayedTracks.size})"
+                                    },
+                                    color = HybridCyan,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            Button(
+                                onClick = {
+                                    val combined = (musicItems + videoItems).distinctBy { it.id }
+                                    val itemsToDelete = combined.filter { it.id in selectedTrackIds }
+                                    executeBatchPermanentDelete(itemsToDelete)
+                                },
+                                enabled = selectedTrackIds.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = HybridCoralRed,
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.testTag("audio_batch_delete_btn")
+                            ) {
+                                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (isHindi) "हटाएं" else "Delete",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Clear Labeled Sub-Tabs Row: All | New | Videos | Playlist | Folders + Multi-Select + Sort (⇅)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -239,7 +394,7 @@ fun AudioLibraryScreen(
                         }
                     )
                     AudioLabeledTabChip(
-                        label = if (isHindi) "वीडियो गाने (${videoItems.size})" else "Videos (${videoItems.size})",
+                        label = if (isHindi) "वीडियो (${videoItems.size})" else "Videos (${videoItems.size})",
                         selected = activeTab == AudioSubTab.VIDEOS && selectedFolderName == null && !viewingFavoritesPlaylist,
                         testTag = "audio_tab_videos",
                         onClick = {
@@ -269,6 +424,22 @@ fun AudioLibraryScreen(
                         }
                     )
                 }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Multi-Select Checklist Button
+                LiquidGlassIconOrb(
+                    icon = Icons.Default.Checklist,
+                    contentDescription = if (isHindi) "कई गाने चुनें" else "Multi-Select Songs",
+                    tintColor = if (multiSelectMode) HybridCoralRed else HybridCyan,
+                    size = 36.dp,
+                    iconSize = 18.dp,
+                    testTag = "audio_multiselect_btn",
+                    onClick = {
+                        multiSelectMode = !multiSelectMode
+                        if (!multiSelectMode) selectedTrackIds.clear()
+                    }
+                )
 
                 Spacer(modifier = Modifier.width(6.dp))
 
@@ -337,7 +508,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 175.dp
+                            bottom = 92.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -380,7 +551,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 175.dp
+                            bottom = 92.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -436,7 +607,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 175.dp
+                            bottom = 92.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -450,14 +621,29 @@ fun AudioLibraryScreen(
                             }
                         } else {
                             items(playlistTracks, key = { it.id }) { track ->
+                                val isSelected = track.id in selectedTrackIds
                                 CleanAudioTrackRow(
                                     track = track,
                                     isCurrent = nowPlaying?.id == track.id,
                                     isPlaying = isPlaying && nowPlaying?.id == track.id,
                                     isHindi = isHindi,
+                                    multiSelectMode = multiSelectMode,
+                                    isSelected = isSelected,
                                     onPlay = {
-                                        viewModel.playMusic(track)
-                                        onOpenFullMusicPlayer()
+                                        if (multiSelectMode) {
+                                            if (isSelected) selectedTrackIds.remove(track.id)
+                                            else selectedTrackIds.add(track.id)
+                                        } else {
+                                            viewModel.playMusic(track)
+                                            onOpenFullMusicPlayer()
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (!multiSelectMode) {
+                                            multiSelectMode = true
+                                            selectedTrackIds.clear()
+                                            selectedTrackIds.add(track.id)
+                                        }
                                     },
                                     onOpenMenu = { sevenMenuTargetItem = track }
                                 )
@@ -476,7 +662,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 175.dp
+                            bottom = 92.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -490,14 +676,29 @@ fun AudioLibraryScreen(
                             }
                         } else {
                             items(currentDisplayedTracks, key = { it.id }) { track ->
+                                val isSelected = track.id in selectedTrackIds
                                 CleanAudioTrackRow(
                                     track = track,
                                     isCurrent = nowPlaying?.id == track.id,
                                     isPlaying = isPlaying && nowPlaying?.id == track.id,
                                     isHindi = isHindi,
+                                    multiSelectMode = multiSelectMode,
+                                    isSelected = isSelected,
                                     onPlay = {
-                                        viewModel.playMusic(track)
-                                        onOpenFullMusicPlayer()
+                                        if (multiSelectMode) {
+                                            if (isSelected) selectedTrackIds.remove(track.id)
+                                            else selectedTrackIds.add(track.id)
+                                        } else {
+                                            viewModel.playMusic(track)
+                                            onOpenFullMusicPlayer()
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (!multiSelectMode) {
+                                            multiSelectMode = true
+                                            selectedTrackIds.clear()
+                                            selectedTrackIds.add(track.id)
+                                        }
                                     },
                                     onOpenMenu = { sevenMenuTargetItem = track }
                                 )
@@ -508,13 +709,14 @@ fun AudioLibraryScreen(
             }
         }
 
-        // 4. Floating Mini Now-Playing Dock Bar (Above Bottom Nav Bar)
+        // 4. Floating Mini Now-Playing Dock Bar — Sits cleanly at bottom = 8.dp right above the Scaffold Nav Bar!
         val activeTrack = nowPlaying ?: sortedMusicItems.firstOrNull()
         if (activeTrack != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = if (isTablet) 24.dp else 12.dp, vertical = 92.dp)
+                    .padding(horizontal = if (isTablet) 24.dp else 12.dp)
+                    .padding(bottom = 8.dp)
                     .fillMaxWidth()
             ) {
                 LiquidGlassBox(
@@ -886,24 +1088,36 @@ private fun AudioFolderRowCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CleanAudioTrackRow(
     track: MediaItem,
     isCurrent: Boolean,
     isPlaying: Boolean,
     isHindi: Boolean,
+    multiSelectMode: Boolean = false,
+    isSelected: Boolean = false,
     onPlay: () -> Unit,
+    onLongClick: () -> Unit = {},
     onOpenMenu: () -> Unit
 ) {
-    val accent = if (isCurrent) HybridEmerald else Color.White
+    val accent = when {
+        isSelected -> HybridCoralRed
+        isCurrent -> HybridEmerald
+        else -> Color.White
+    }
     LiquidGlassBox(
         modifier = Modifier
             .fillMaxWidth()
+            .combinedClickable(
+                onClick = onPlay,
+                onLongClick = onLongClick
+            )
             .testTag("audio_track_row_${track.id}"),
         cornerRadius = 16.dp,
         tintColor = accent,
-        glassAlpha = if (isCurrent) 0.28f else 0.14f,
-        onClick = onPlay
+        glassAlpha = if (isCurrent || isSelected) 0.28f else 0.14f,
+        isActive = isSelected
     ) {
         Row(
             modifier = Modifier
@@ -911,6 +1125,18 @@ private fun CleanAudioTrackRow(
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (multiSelectMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onPlay() },
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = HybridCoralRed,
+                        checkmarkColor = Color.White
+                    )
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+            }
+
             Box(contentAlignment = Alignment.Center) {
                 GuaranteedAlbumArt(
                     mediaPath = track.path,

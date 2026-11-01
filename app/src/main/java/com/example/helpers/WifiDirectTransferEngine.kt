@@ -7,6 +7,8 @@ import android.os.Environment
 import androidx.core.content.FileProvider
 import com.example.data.model.MediaItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -15,12 +17,21 @@ import java.io.DataOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Locale
+
+data class DiscoveredPeerDevice(
+    val deviceName: String,
+    val ipAddress: String,
+    val port: Int = WifiDirectTransferEngine.DEFAULT_PORT
+)
 
 data class TransferItemProgress(
     val item: MediaItem,
@@ -44,11 +55,13 @@ data class TransferItemProgress(
 }
 
 /**
- * Real Local Wi-Fi / Hotspot TCP Socket & QR Code Matrix Engine for ShareKaro-style transfers.
+ * Real Local Wi-Fi / Hotspot TCP Socket, UDP Subnet Discovery & QR Code Matrix Engine.
+ * Zero fake/simulated peers: requires a real TCP handshake between Sender and Receiver phones.
  */
 object WifiDirectTransferEngine {
 
     const val DEFAULT_PORT = 49218
+    const val DISCOVERY_UDP_PORT = 49219
     private const val CHUNK_BUFFER_SIZE = 256 * 1024 // 256KB high-speed socket buffer
 
     /**
@@ -72,6 +85,106 @@ object WifiDirectTransferEngine {
         } catch (_: Exception) {
         }
         return "192.168.43.1"
+    }
+
+    /**
+     * Resolves a user-entered pairing code, QR payload ("HYBRIDSHARE|Name|IP|Port"), or raw IP
+     * into a target (DeviceName, IP, Port).
+     */
+    fun parsePairingInput(rawInput: String, localIp: String): DiscoveredPeerDevice? {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) return null
+        if (trimmed.startsWith("HYBRIDSHARE|", ignoreCase = true)) {
+            val parts = trimmed.split("|")
+            if (parts.size >= 3) {
+                val name = parts[1].ifBlank { "Receiver Phone" }
+                val ip = parts[2].trim()
+                val port = parts.getOrNull(3)?.toIntOrNull() ?: DEFAULT_PORT
+                if (ip.isNotEmpty()) {
+                    return DiscoveredPeerDevice(name, ip, port)
+                }
+            }
+        }
+        // If user entered the 1-3 digit pairing code (last octet of subnet IP), expand using local subnet prefix
+        if (trimmed.all { it.isDigit() } && trimmed.toIntOrNull() in 1..254) {
+            val prefix = localIp.substringBeforeLast('.', "192.168.43")
+            val fullIp = "$prefix.$trimmed"
+            return DiscoveredPeerDevice("Receiver ($fullIp)", fullIp, DEFAULT_PORT)
+        }
+        // Raw IPv4 address
+        if (trimmed.count { it == '.' } == 3) {
+            return DiscoveredPeerDevice("Receiver ($trimmed)", trimmed, DEFAULT_PORT)
+        }
+        return null
+    }
+
+    /**
+     * Broadcasts this Receiver phone's presence over UDP on the local Wi-Fi / Hotspot subnet
+     * so nearby Sender phones discover its real Device Name and IP automatically on their radar.
+     */
+    suspend fun broadcastReceiverPresence(
+        deviceName: String,
+        localIp: String,
+        tcpPort: Int = DEFAULT_PORT
+    ) = withContext(Dispatchers.IO) {
+        var socket: DatagramSocket? = null
+        try {
+            socket = DatagramSocket().apply { broadcast = true }
+            val payload = "HYBRIDSHARE|$deviceName|$localIp|$tcpPort"
+            val bytes = payload.toByteArray(Charsets.UTF_8)
+            val subnetPrefix = localIp.substringBeforeLast('.', "192.168.43")
+            val subnetBroadcast = InetAddress.getByName("$subnetPrefix.255")
+            val globalBroadcast = InetAddress.getByName("255.255.255.255")
+
+            while (isActive) {
+                runCatching {
+                    socket.send(DatagramPacket(bytes, bytes.size, subnetBroadcast, DISCOVERY_UDP_PORT))
+                }
+                runCatching {
+                    socket.send(DatagramPacket(bytes, bytes.size, globalBroadcast, DISCOVERY_UDP_PORT))
+                }
+                delay(850L)
+            }
+        } catch (_: Exception) {
+        } finally {
+            runCatching { socket?.close() }
+        }
+    }
+
+    /**
+     * Listens for UDP presence beacons from real Receiver phones on the local Wi-Fi / Hotspot.
+     */
+    suspend fun listenForReceiverBeacons(
+        localIp: String,
+        onPeerDiscovered: (DiscoveredPeerDevice) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        var socket: DatagramSocket? = null
+        try {
+            socket = DatagramSocket(null).apply {
+                reuseAddress = true
+                soTimeout = 1200
+                bind(InetSocketAddress(DISCOVERY_UDP_PORT))
+            }
+            val buffer = ByteArray(512)
+            while (isActive) {
+                try {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket.receive(packet)
+                    val msg = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                    val parsed = parsePairingInput(msg, localIp)
+                    val packetHost = packet.address?.hostAddress.orEmpty()
+                    val resolvedIp = if (parsed != null && parsed.ipAddress.isNotBlank()) parsed.ipAddress else packetHost
+                    if (parsed != null && resolvedIp.isNotBlank() && resolvedIp != localIp && resolvedIp != "127.0.0.1") {
+                        onPeerDiscovered(parsed.copy(ipAddress = resolvedIp))
+                    }
+                } catch (_: Exception) {
+                    // Timeout tick; continue listening while active
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            runCatching { socket?.close() }
+        }
     }
 
     /**
@@ -149,42 +262,56 @@ object WifiDirectTransferEngine {
     }
 
     /**
-     * Sends real files over a TCP socket to a peer device IP if reachable.
+     * Connects to a real Receiver phone over TCP socket, performs a live handshake (sending
+     * Sender's device name), and streams the selected media files with real byte progress.
      */
     suspend fun sendFilesOverTcpSocket(
+        senderDeviceName: String = "Sender Phone",
         targetIp: String,
         port: Int = DEFAULT_PORT,
         items: List<MediaItem>,
+        onHandshakeConnected: (receiverAckName: String) -> Unit = {},
         onProgress: (index: Int, transferred: Long, total: Long, speedMbPerSec: Float) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             Socket().use { socket ->
-                socket.connect(InetSocketAddress(targetIp, port), 1800)
-                DataOutputStream(BufferedOutputStream(socket.getOutputStream())).use { out ->
-                    out.writeInt(items.size)
-                    val buffer = ByteArray(CHUNK_BUFFER_SIZE)
-                    items.forEachIndexed { idx, media ->
-                        val file = File(media.path)
-                        val fileLen = if (file.exists()) file.length() else media.size.coerceAtLeast(1024L)
-                        out.writeUTF(file.name.ifBlank { "${media.cleanTitle}.mp4" })
-                        out.writeLong(fileLen)
-                        if (file.exists()) {
-                            var sent = 0L
-                            val startNs = System.nanoTime()
-                            FileInputStream(file).use { fis ->
-                                while (true) {
-                                    val read = fis.read(buffer)
-                                    if (read <= 0) break
-                                    out.write(buffer, 0, read)
-                                    sent += read
-                                    val elapsedSec = ((System.nanoTime() - startNs) / 1_000_000_000.0).coerceAtLeast(0.05)
-                                    val mbps = ((sent / (1024.0 * 1024.0)) / elapsedSec).toFloat()
+                socket.connect(InetSocketAddress(targetIp, port), 2500)
+                val out = DataOutputStream(BufferedOutputStream(socket.getOutputStream()))
+                val input = DataInputStream(BufferedInputStream(socket.getInputStream()))
+
+                // Handshake: Send Sender's Device Name & read Receiver's Device Name
+                out.writeUTF(senderDeviceName)
+                out.flush()
+                val receiverName = runCatching { input.readUTF() }.getOrDefault(targetIp)
+                withContext(Dispatchers.Main) {
+                    onHandshakeConnected(receiverName)
+                }
+
+                out.writeInt(items.size)
+                val buffer = ByteArray(CHUNK_BUFFER_SIZE)
+                items.forEachIndexed { idx, media ->
+                    val file = File(media.path)
+                    val fileLen = if (file.exists()) file.length() else media.size.coerceAtLeast(1024L)
+                    out.writeUTF(file.name.ifBlank { "${media.cleanTitle}.mp4" })
+                    out.writeLong(fileLen)
+                    if (file.exists()) {
+                        var sent = 0L
+                        val startNs = System.nanoTime()
+                        FileInputStream(file).use { fis ->
+                            while (true) {
+                                val read = fis.read(buffer)
+                                if (read <= 0) break
+                                out.write(buffer, 0, read)
+                                sent += read
+                                val elapsedSec = ((System.nanoTime() - startNs) / 1_000_000_000.0).coerceAtLeast(0.05)
+                                val mbps = ((sent / (1024.0 * 1024.0)) / elapsedSec).toFloat()
+                                withContext(Dispatchers.Main) {
                                     onProgress(idx, sent, fileLen, mbps)
                                 }
                             }
                         }
-                        out.flush()
                     }
+                    out.flush()
                 }
             }
             true
@@ -198,8 +325,9 @@ object WifiDirectTransferEngine {
      */
     suspend fun startReceiverSocketServer(
         context: Context,
+        receiverDeviceName: String = "Receiver Phone",
         port: Int = DEFAULT_PORT,
-        onClientConnected: (peerIp: String) -> Unit,
+        onClientConnected: (peerNameAndIp: String) -> Unit,
         onFileProgress: (fileName: String, transferred: Long, total: Long, speedMbPerSec: Float) -> Unit,
         onFileSaved: (File) -> Unit
     ) = withContext(Dispatchers.IO) {
@@ -208,13 +336,24 @@ object WifiDirectTransferEngine {
             server = ServerSocket()
             server.reuseAddress = true
             server.bind(InetSocketAddress(port))
-            val client = server.accept()
-            val peerIp = client.inetAddress?.hostAddress ?: "Connected Peer"
-            onClientConnected(peerIp)
+            while (isActive) {
+                val client = server.accept()
+                val peerIp = client.inetAddress?.hostAddress ?: "Connected Peer"
+                val input = DataInputStream(BufferedInputStream(client.getInputStream()))
+                val out = DataOutputStream(BufferedOutputStream(client.getOutputStream()))
 
-            val destDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
-            DataInputStream(BufferedInputStream(client.getInputStream())).use { input ->
-                val count = input.readInt().coerceIn(1, 200)
+                val senderName = runCatching { input.readUTF() }.getOrDefault(peerIp)
+                runCatching {
+                    out.writeUTF(receiverDeviceName)
+                    out.flush()
+                }
+
+                withContext(Dispatchers.Main) {
+                    onClientConnected("$senderName ($peerIp)")
+                }
+
+                val destDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+                val count = input.readInt().coerceIn(1, 500)
                 val buffer = ByteArray(CHUNK_BUFFER_SIZE)
                 for (i in 0 until count) {
                     val fileName = input.readUTF()
@@ -231,13 +370,17 @@ object WifiDirectTransferEngine {
                             received += r
                             val elapsedSec = ((System.nanoTime() - startNs) / 1_000_000_000.0).coerceAtLeast(0.05)
                             val mbps = ((received / (1024.0 * 1024.0)) / elapsedSec).toFloat()
-                            onFileProgress(fileName, received, totalSize, mbps)
+                            withContext(Dispatchers.Main) {
+                                onFileProgress(fileName, received, totalSize, mbps)
+                            }
                         }
                     }
-                    onFileSaved(outFile)
+                    withContext(Dispatchers.Main) {
+                        onFileSaved(outFile)
+                    }
                 }
+                client.close()
             }
-            client.close()
         } catch (_: Exception) {
         } finally {
             try {

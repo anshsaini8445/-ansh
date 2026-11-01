@@ -131,7 +131,7 @@ fun SmartSearchScreen(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = if (isTablet) 22.dp else 14.dp)
-            .padding(top = 10.dp, bottom = 92.dp)
+            .padding(top = 8.dp, bottom = 6.dp)
     ) {
         // 1. Upper Scrollable Results Area (Fills all space above the bottom search dock)
         LazyVerticalGrid(
@@ -141,7 +141,7 @@ fun SmartSearchScreen(
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(bottom = 12.dp)
+            contentPadding = PaddingValues(bottom = 8.dp)
         ) {
             if (query.isBlank() && recentSearches.isNotEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {

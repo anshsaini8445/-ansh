@@ -66,7 +66,13 @@ object PermanentDeleteHelper {
             if (item.path.startsWith("content://")) {
                 return Uri.parse(item.path)
             }
-            val numericId = item.id.removePrefix("ms_v_").removePrefix("ms_a_").toLongOrNull()
+            val numericId = item.id
+                .removePrefix("vid_")
+                .removePrefix("aud_")
+                .removePrefix("ms_v_")
+                .removePrefix("ms_a_")
+                .removePrefix("pending_file_")
+                .toLongOrNull()
             val baseUri = if (item.isVideo) {
                 MediaStore.Video.Media.EXTERNAL_CONTENT_URI
             } else {
@@ -111,66 +117,80 @@ object PermanentDeleteHelper {
     }
 
     /**
-     * Permanently deletes the file from the entire phone storage (File system + ContentResolver + Cache).
+     * Permanently deletes a single file from the entire phone storage (File system + ContentResolver + Cache).
      */
     fun deletePermanently(context: Context, item: MediaItem): Boolean {
+        return deleteBatchPermanently(context, listOf(item)) > 0
+    }
+
+    /**
+     * Permanently deletes 1 to 1000+ selected media items at once from phone storage + MediaStore + Cache.
+     */
+    fun deleteBatchPermanently(context: Context, items: List<MediaItem>): Int {
+        if (items.isEmpty()) return 0
+        val targetIdSet = items.map { it.id }.toSet()
+
         // 1. Remove from recycle bin if present
-        val current = getRecycledItems(context).filterNot { it.mediaItem.id == item.id }
+        val current = getRecycledItems(context).filterNot { it.mediaItem.id in targetIdSet }
         saveRecycledItems(context, current)
 
-        // 2. Record both ID and path as permanently deleted
+        // 2. Record all IDs and paths as permanently deleted in a single batch commit
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val deletedIds = prefs.getStringSet(KEY_PERMANENTLY_DELETED_IDS, emptySet())?.toMutableSet() ?: mutableSetOf()
         val deletedPaths = prefs.getStringSet(KEY_PERMANENTLY_DELETED_PATHS, emptySet())?.toMutableSet() ?: mutableSetOf()
-        deletedIds.add(item.id)
-        if (item.path.isNotBlank()) {
-            deletedPaths.add(item.path)
+        for (item in items) {
+            deletedIds.add(item.id)
+            if (item.path.isNotBlank()) {
+                deletedPaths.add(item.path)
+            }
         }
         prefs.edit()
             .putStringSet(KEY_PERMANENTLY_DELETED_IDS, deletedIds)
             .putStringSet(KEY_PERMANENTLY_DELETED_PATHS, deletedPaths)
             .apply()
 
-        var physicallyDeleted = false
-
-        // 3. Delete physical file from phone storage
-        try {
-            if (!item.path.startsWith("http") && !item.path.startsWith("content://")) {
-                val file = File(item.path)
-                if (file.exists() && file.delete()) {
-                    physicallyDeleted = true
+        var deletedCount = 0
+        for (item in items) {
+            var itemDeleted = false
+            // 3. Delete physical file from phone storage
+            try {
+                if (!item.path.startsWith("http") && !item.path.startsWith("content://")) {
+                    val file = File(item.path)
+                    if (file.exists() && file.delete()) {
+                        itemDeleted = true
+                    }
                 }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
-        }
 
-        // 4. Delete from Android MediaStore ContentResolver
-        try {
-            val mediaStoreUri = resolveMediaStoreUri(context, item)
-            if (mediaStoreUri != null) {
-                val rows = context.contentResolver.delete(mediaStoreUri, null, null)
-                if (rows > 0) physicallyDeleted = true
-            }
-            if (!item.path.startsWith("content://")) {
-                val baseUri = if (item.isVideo) {
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                } else {
-                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            // 4. Delete from Android MediaStore ContentResolver
+            try {
+                val mediaStoreUri = resolveMediaStoreUri(context, item)
+                if (mediaStoreUri != null) {
+                    val rows = context.contentResolver.delete(mediaStoreUri, null, null)
+                    if (rows > 0) itemDeleted = true
                 }
-                val rows = context.contentResolver.delete(
-                    baseUri,
-                    "${MediaStore.MediaColumns.DATA}=?",
-                    arrayOf(item.path)
-                )
-                if (rows > 0) physicallyDeleted = true
+                if (!item.path.startsWith("content://")) {
+                    val baseUri = if (item.isVideo) {
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    } else {
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                    }
+                    val rows = context.contentResolver.delete(
+                        baseUri,
+                        "${MediaStore.MediaColumns.DATA}=?",
+                        arrayOf(item.path)
+                    )
+                    if (rows > 0) itemDeleted = true
+                }
+            } catch (_: SecurityException) {
+            } catch (_: Exception) {
             }
-        } catch (_: SecurityException) {
-            // Android 11+ Scoped Storage may require MediaStore.createDeleteRequest confirmation
-        } catch (_: Exception) {
+            if (itemDeleted) deletedCount++
         }
 
         com.example.data.scanner.DeepMediaScanner.invalidateMemoryCache()
-        return physicallyDeleted
+        return deletedCount
     }
 
     fun emptyRecycleBinPermanently(context: Context) {

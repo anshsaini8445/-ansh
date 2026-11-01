@@ -76,15 +76,16 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.MediaItem
+import com.example.helpers.DiscoveredPeerDevice
 import com.example.helpers.WifiDirectTransferEngine
 import com.example.ui.components.GuaranteedAlbumArt
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.cos
@@ -93,8 +94,8 @@ import kotlin.math.sin
 private enum class HybridShareStage {
     HOME_CHOICE,          // Entry screen: SEND or RECEIVE
     SEND_MEDIA_PICKER,    // Step 1 of Send: Pick Videos & Songs
-    SEND_CONNECT_RADAR,   // Step 2 of Send: Scan QR / Tap Device Name on Radar
-    RECEIVE_LIVE_QR,      // Step 1 of Receive: Immediate Live QR Code + Radar with Device Names
+    SEND_CONNECT_RADAR,   // Step 2 of Send: Scan QR / Enter Receiver Pairing Code or Tap Discovered Receiver on Radar
+    RECEIVE_LIVE_QR,      // Step 1 of Receive: Immediate Live QR Code + UDP Broadcast + TCP Server
     CONNECTED_TRANSFER    // Connected high-speed transfer screen with MB/s & item progress list
 }
 
@@ -144,17 +145,23 @@ fun ShareKaroTransferScreen(
         "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
     }
     val localIpAddress = remember { WifiDirectTransferEngine.getLocalWifiIpAddress() }
+    val localPairingCode = remember(localIpAddress) {
+        localIpAddress.substringAfterLast('.', "1")
+    }
     val transferPort = WifiDirectTransferEngine.DEFAULT_PORT
 
     var connectedDeviceName by remember { mutableStateOf("") }
-    var targetReceiverIp by remember { mutableStateOf(localIpAddress) }
-    var showQrScannerInput by remember { mutableStateOf(false) }
+    var showQrScannerInput by remember { mutableStateOf(true) }
     var scannedCodeInput by remember { mutableStateOf("") }
+    var isConnectingHandshake by remember { mutableStateOf(false) }
+    var connectionErrorText by remember { mutableStateOf<String?>(null) }
 
     // Live transfer telemetry
     var currentSpeedMbps by remember { mutableFloatStateOf(0f) }
     val transferItems = remember { mutableStateListOf<TransferQueueEntry>() }
-    var receiverServerRunning by remember { mutableStateOf(false) }
+
+    // Real discovered Receiver phones on local Wi-Fi / Hotspot via UDP beacon (NO fake devices!)
+    val discoveredPeers = remember { mutableStateListOf<DiscoveredPeerDevice>() }
 
     val liveQrPayload = remember(localDeviceName, localIpAddress) {
         "HYBRIDSHARE|$localDeviceName|$localIpAddress|$transferPort"
@@ -163,109 +170,129 @@ fun ShareKaroTransferScreen(
         WifiDirectTransferEngine.generateLiveQrMatrix(liveQrPayload, 0)
     }
 
-    // Nearby device names discovered on local subnet / Wi-Fi Direct radar
-    val nearbyDeviceNames = remember(localDeviceName) {
-        listOf(
-            "$localDeviceName (Direct)",
-            "Galaxy S24 Ultra",
-            "Redmi Note 13 Pro"
-        )
-    }
-
-    // Start real TCP socket receiver when entering RECEIVE_LIVE_QR
+    // When in RECEIVE_LIVE_QR: run real TCP ServerSocket AND broadcast UDP presence beacon
     LaunchedEffect(stage) {
-        if (stage == HybridShareStage.RECEIVE_LIVE_QR && !receiverServerRunning) {
-            receiverServerRunning = true
-            WifiDirectTransferEngine.startReceiverSocketServer(
-                context = context,
-                port = transferPort,
-                onClientConnected = { clientIp ->
-                    connectedDeviceName = clientIp
-                    currentSpeedMbps = 44.8f
-                    stage = HybridShareStage.CONNECTED_TRANSFER
-                },
-                onFileProgress = { fileName, transferred, total, speedMbps ->
-                    val progress = if (total > 0L) (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 1f
-                    currentSpeedMbps = speedMbps.coerceAtLeast(32.5f)
-                    val idx = transferItems.indexOfFirst { it.id == fileName }
-                    val entry = TransferQueueEntry(
-                        id = fileName,
-                        title = fileName,
-                        sizeText = "High Speed Direct",
-                        isVideo = fileName.endsWith(".mp4", true) || fileName.endsWith(".mkv", true),
-                        progress = progress,
-                        statusText = if (progress >= 1f) "Completed • 100%" else "${(progress * 100).toInt()}%"
-                    )
-                    if (idx >= 0) {
-                        transferItems[idx] = entry
-                    } else {
-                        transferItems.add(entry)
+        if (stage == HybridShareStage.RECEIVE_LIVE_QR) {
+            launch {
+                WifiDirectTransferEngine.broadcastReceiverPresence(
+                    deviceName = localDeviceName,
+                    localIp = localIpAddress,
+                    tcpPort = transferPort
+                )
+            }
+            launch {
+                WifiDirectTransferEngine.startReceiverSocketServer(
+                    context = context,
+                    receiverDeviceName = localDeviceName,
+                    port = transferPort,
+                    onClientConnected = { clientNameAndIp ->
+                        connectedDeviceName = clientNameAndIp
+                        currentSpeedMbps = 0f
+                        stage = HybridShareStage.CONNECTED_TRANSFER
+                        Toast.makeText(
+                            context,
+                            if (isHindi) "सफलतापूर्वक कनेक्ट हो गया: $clientNameAndIp" else "Connected Successfully: $clientNameAndIp",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onFileProgress = { fileName, transferred, total, speedMbps ->
+                        val progress = if (total > 0L) (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 1f
+                        currentSpeedMbps = speedMbps
+                        val idx = transferItems.indexOfFirst { it.id == fileName }
+                        val entry = TransferQueueEntry(
+                            id = fileName,
+                            title = fileName,
+                            sizeText = String.format(Locale.US, "%.1f MB", total / (1024.0 * 1024.0)),
+                            isVideo = fileName.endsWith(".mp4", true) || fileName.endsWith(".mkv", true) || fileName.endsWith(".webm", true),
+                            progress = progress,
+                            statusText = if (progress >= 1f) "Received • 100%" else "Receiving • ${(progress * 100).toInt()}%"
+                        )
+                        if (idx >= 0) {
+                            transferItems[idx] = entry
+                        } else {
+                            transferItems.add(entry)
+                        }
+                    },
+                    onFileSaved = { savedFile ->
+                        Toast.makeText(context, "Saved: ${savedFile.name}", Toast.LENGTH_SHORT).show()
                     }
-                },
-                onFileSaved = { savedFile ->
-                    Toast.makeText(context, "Saved: ${savedFile.name}", Toast.LENGTH_SHORT).show()
+                )
+            }
+        } else if (stage == HybridShareStage.SEND_CONNECT_RADAR) {
+            discoveredPeers.clear()
+            connectionErrorText = null
+            WifiDirectTransferEngine.listenForReceiverBeacons(
+                localIp = localIpAddress,
+                onPeerDiscovered = { peer ->
+                    val existingIdx = discoveredPeers.indexOfFirst { it.ipAddress == peer.ipAddress }
+                    if (existingIdx >= 0) {
+                        discoveredPeers[existingIdx] = peer
+                    } else {
+                        discoveredPeers.add(peer)
+                    }
                 }
             )
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            receiverServerRunning = false
-        }
-    }
-
-    fun startConnectedSendSession(peerName: String, receiverIp: String) {
+    fun connectAndSendToRealPeer(peer: DiscoveredPeerDevice) {
         val chosenMedia = allMedia.filter { it.id in selectedIds }
         if (chosenMedia.isEmpty()) return
-        connectedDeviceName = peerName
-        transferItems.clear()
-        chosenMedia.forEach { item ->
-            transferItems.add(
+        if (isConnectingHandshake) return
+
+        isConnectingHandshake = true
+        connectionErrorText = null
+
+        scope.launch {
+            val preparedQueue = chosenMedia.map { item ->
                 TransferQueueEntry(
                     id = item.id,
                     title = item.cleanTitle,
                     sizeText = item.formattedSize,
                     isVideo = item.isVideo,
                     progress = 0f,
-                    statusText = "Connecting..."
+                    statusText = "Waiting..."
                 )
-            )
-        }
-        stage = HybridShareStage.CONNECTED_TRANSFER
+            }
 
-        scope.launch {
-            if (receiverIp.isNotBlank() && receiverIp != localIpAddress && receiverIp != "127.0.0.1") {
-                WifiDirectTransferEngine.sendFilesOverTcpSocket(
-                    targetIp = receiverIp,
-                    port = transferPort,
-                    items = chosenMedia,
-                    onProgress = { idx, transferred, total, speedMbps ->
-                        val progress = if (total > 0L) (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 1f
-                        currentSpeedMbps = speedMbps.coerceAtLeast(38.4f)
-                        if (idx in transferItems.indices) {
-                            val old = transferItems[idx]
-                            transferItems[idx] = old.copy(
-                                progress = progress,
-                                statusText = if (progress >= 1f) "Sent • 100%" else "Sending • ${(progress * 100).toInt()}%"
-                            )
-                        }
-                    }
-                )
-            } else {
-                for (i in transferItems.indices) {
-                    var p = 0f
-                    while (p < 1f) {
-                        delay(55L)
-                        p = (p + 0.14f).coerceAtMost(1f)
-                        currentSpeedMbps = 42.5f + ((i * 7 + (p * 20).toInt()) % 18)
-                        val current = transferItems[i]
-                        transferItems[i] = current.copy(
-                            progress = p,
-                            statusText = if (p >= 1f) "Completed • 100%" else "${(p * 100).toInt()}% • ${String.format(Locale.US, "%.1f", currentSpeedMbps)} MB/s"
+            val success = WifiDirectTransferEngine.sendFilesOverTcpSocket(
+                senderDeviceName = localDeviceName,
+                targetIp = peer.ipAddress,
+                port = peer.port,
+                items = chosenMedia,
+                onHandshakeConnected = { receiverAckName ->
+                    isConnectingHandshake = false
+                    connectedDeviceName = "$receiverAckName (${peer.ipAddress})"
+                    transferItems.clear()
+                    transferItems.addAll(preparedQueue)
+                    stage = HybridShareStage.CONNECTED_TRANSFER
+                    Toast.makeText(
+                        context,
+                        if (isHindi) "कनेक्ट हो गया! ट्रांसफर शुरू..." else "Connected Successfully! Sending files...",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onProgress = { idx, transferred, total, speedMbps ->
+                    val progress = if (total > 0L) (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 1f
+                    currentSpeedMbps = speedMbps
+                    if (idx in transferItems.indices) {
+                        val old = transferItems[idx]
+                        transferItems[idx] = old.copy(
+                            progress = progress,
+                            statusText = if (progress >= 1f) "Sent • 100%" else "Sending • ${(progress * 100).toInt()}%"
                         )
                     }
                 }
+            )
+
+            isConnectingHandshake = false
+            if (!success && stage != HybridShareStage.CONNECTED_TRANSFER) {
+                connectionErrorText = if (isHindi) {
+                    "रिसीवर फ़ोन (${peer.ipAddress}) से कनेक्ट नहीं हो सका। सुनिश्चित करें कि दूसरे फ़ोन पर 'Receive' खुला है और दोनों एक ही Wi-Fi/Hotspot पर हैं।"
+                } else {
+                    "Could not connect to Receiver (${peer.ipAddress}). Make sure the other phone has 'Receive' open on the same Wi-Fi / Hotspot."
+                }
+            } else if (success) {
                 currentSpeedMbps = 0f
             }
         }
@@ -322,7 +349,7 @@ fun ShareKaroTransferScreen(
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(
-                        text = localDeviceName,
+                        text = "$localDeviceName • IP: $localIpAddress",
                         style = MaterialTheme.typography.labelSmall,
                         color = accent
                     )
@@ -452,7 +479,7 @@ fun ShareKaroTransferScreen(
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
-                                text = "Live QR • Radar",
+                                text = "Live QR • Auto Radar",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color.White.copy(alpha = 0.72f)
                             )
@@ -489,9 +516,13 @@ fun ShareKaroTransferScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Direct High-Speed Media Transfer",
+                                text = if (isHindi) {
+                                    "कनेक्ट होने के बाद ही हाई-स्पीड ट्रांसफर शुरू होता है"
+                                } else {
+                                    "Real P2P Handshake • Transfers only after Receiver connects"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.65f)
+                                color = Color.White.copy(alpha = 0.68f)
                             )
                         }
                     }
@@ -683,7 +714,7 @@ fun ShareKaroTransferScreen(
             }
 
             // =====================================================================
-            // 3. SEND STEP 2: QR SCANNER AT TOP + RADAR WITH DEVICE NAMES BELOW
+            // 3. SEND STEP 2: CONNECT TO REAL RECEIVER (PAIRING CODE / QR / RADAR)
             // =====================================================================
             HybridShareStage.SEND_CONNECT_RADAR -> {
                 LiquidGlassBox(
@@ -696,46 +727,57 @@ fun ShareKaroTransferScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp)
+                            .padding(14.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(48.dp)
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(12.dp))
                                     .background(accent.copy(alpha = 0.2f)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.QrCodeScanner,
-                                    contentDescription = "Scan QR Code",
+                                    contentDescription = "Connect to Receiver",
                                     tint = accent,
-                                    modifier = Modifier.size(26.dp)
+                                    modifier = Modifier.size(24.dp)
                                 )
                             }
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Scan Receiver QR Code",
+                                    text = if (isHindi) "रिसीवर फ़ोन से कनेक्ट करें" else "Connect to Receiver Phone",
                                     style = MaterialTheme.typography.titleMedium,
                                     color = Color.White,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                                 Text(
-                                    text = "Connect via QR code or tap a Device Name on the Radar below",
+                                    text = if (isHindi) {
+                                        "रडार पर दिख रहे रिसीवर फ़ोन को टैप करें या उसका कोड/IP डालें"
+                                    } else {
+                                        "Tap a discovered Receiver below or enter Receiver's Pairing Code / IP"
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White.copy(alpha = 0.7f)
+                                    color = Color.White.copy(alpha = 0.72f)
                                 )
                             }
                         }
 
                         if (showQrScannerInput) {
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
                             OutlinedTextField(
                                 value = scannedCodeInput,
-                                onValueChange = { scannedCodeInput = it },
+                                onValueChange = {
+                                    scannedCodeInput = it
+                                    connectionErrorText = null
+                                },
                                 singleLine = true,
-                                label = { Text("Receiver Device Name or IP") },
+                                label = {
+                                    Text(
+                                        if (isHindi) "रिसीवर पेयरिंग कोड (जैसे 104) या IP पता" else "Receiver Pairing Code (e.g. 104) or IP Address"
+                                    )
+                                },
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = accent,
                                     unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
@@ -744,28 +786,52 @@ fun ShareKaroTransferScreen(
                                 ),
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            if (connectionErrorText != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = connectionErrorText!!,
+                                    color = Color(0xFFFF5252),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                             Spacer(modifier = Modifier.height(8.dp))
                             Button(
                                 onClick = {
-                                    val target = scannedCodeInput.trim().ifBlank { "Receiver Device" }
-                                    targetReceiverIp = target
-                                    startConnectedSendSession(target, target)
+                                    val peer = WifiDirectTransferEngine.parsePairingInput(scannedCodeInput, localIpAddress)
+                                    if (peer == null) {
+                                        connectionErrorText = if (isHindi) {
+                                            "कृपया सही पेयरिंग कोड या रिसीवर IP दर्ज करें"
+                                        } else {
+                                            "Enter a valid Receiver Pairing Code or IP address"
+                                        }
+                                    } else {
+                                        connectAndSendToRealPeer(peer)
+                                    }
                                 },
+                                enabled = !isConnectingHandshake,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = accent,
                                     contentColor = Color.Black
                                 ),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Connect & Send Now", fontWeight = FontWeight.ExtraBold)
+                                Text(
+                                    text = if (isConnectingHandshake) {
+                                        if (isHindi) "कनेक्ट हो रहा है..." else "Connecting Handshake..."
+                                    } else {
+                                        if (isHindi) "कनेक्ट करें और भेजें" else "Connect & Send Now"
+                                    },
+                                    fontWeight = FontWeight.ExtraBold
+                                )
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // Radar showing ONLY nearby Device Names
+                // Radar showing ONLY real discovered Receiver phones on the local network
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -773,17 +839,18 @@ fun ShareKaroTransferScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     DeviceNameRadarView(
-                        deviceNames = nearbyDeviceNames,
+                        discoveredPeers = discoveredPeers,
+                        isHindi = isHindi,
                         accentColor = accent,
-                        onDeviceNameClick = { clickedDeviceName ->
-                            startConnectedSendSession(clickedDeviceName, targetReceiverIp)
+                        onPeerClick = { peer ->
+                            connectAndSendToRealPeer(peer)
                         }
                     )
                 }
             }
 
             // =====================================================================
-            // 4. RECEIVE: LIVE QR CODE AT TOP + RADAR WITH DEVICE NAMES BELOW
+            // 4. RECEIVE: LIVE QR CODE AT TOP + PAIRING CODE + RADAR WAITING FOR SENDER
             // =====================================================================
             HybridShareStage.RECEIVE_LIVE_QR -> {
                 LiquidGlassBox(
@@ -810,7 +877,7 @@ fun ShareKaroTransferScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Live Receive QR Code",
+                                text = if (isHindi) "लाइव रिसीव QR और पेयरिंग कोड" else "Live Receive QR & Pairing Code",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = Color.White,
                                 fontWeight = FontWeight.ExtraBold
@@ -820,7 +887,7 @@ fun ShareKaroTransferScreen(
 
                         Box(
                             modifier = Modifier
-                                .size(184.dp)
+                                .size(176.dp)
                                 .clip(RoundedCornerShape(18.dp))
                                 .background(Color.White)
                                 .padding(10.dp),
@@ -832,19 +899,30 @@ fun ShareKaroTransferScreen(
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = localDeviceName,
                             style = MaterialTheme.typography.titleSmall,
                             color = secondary,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (isHindi) {
+                                "पेयरिंग कोड: $localPairingCode  •  IP: $localIpAddress"
+                            } else {
+                                "Pairing Code: $localPairingCode  •  IP: $localIpAddress"
+                            },
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Radar below showing ONLY Device Names
+                // Radar below waiting for real Sender connection
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -852,28 +930,11 @@ fun ShareKaroTransferScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     DeviceNameRadarView(
-                        deviceNames = nearbyDeviceNames,
+                        discoveredPeers = emptyList(),
+                        isHindi = isHindi,
+                        waitingForSenderMode = true,
                         accentColor = secondary,
-                        onDeviceNameClick = { senderName ->
-                            connectedDeviceName = senderName
-                            currentSpeedMbps = 46.2f
-                            if (transferItems.isEmpty()) {
-                                val sample = allMedia.firstOrNull()
-                                if (sample != null) {
-                                    transferItems.add(
-                                        TransferQueueEntry(
-                                            id = sample.id,
-                                            title = sample.cleanTitle,
-                                            sizeText = sample.formattedSize,
-                                            isVideo = sample.isVideo,
-                                            progress = 1f,
-                                            statusText = "Received • 100%"
-                                        )
-                                    )
-                                }
-                            }
-                            stage = HybridShareStage.CONNECTED_TRANSFER
-                        }
+                        onPeerClick = {}
                     )
                 }
             }
@@ -905,7 +966,11 @@ fun ShareKaroTransferScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Connected • $connectedDeviceName",
+                                    text = if (isHindi) {
+                                        "कनेक्टेड • $connectedDeviceName"
+                                    } else {
+                                        "Connected Successfully • $connectedDeviceName"
+                                    },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = Color(0xFF00E676),
                                     fontWeight = FontWeight.ExtraBold,
@@ -954,7 +1019,7 @@ fun ShareKaroTransferScreen(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = "Transfer Progress List",
+                    text = if (isHindi) "फ़ाइल ट्रांसफर सूची" else "Transfer Progress List",
                     style = MaterialTheme.typography.titleSmall,
                     color = Color.White,
                     fontWeight = FontWeight.Bold
@@ -1054,9 +1119,11 @@ private fun LiveQrMatrixCanvas(
 
 @Composable
 private fun DeviceNameRadarView(
-    deviceNames: List<String>,
+    discoveredPeers: List<DiscoveredPeerDevice>,
+    isHindi: Boolean,
+    waitingForSenderMode: Boolean = false,
     accentColor: Color,
-    onDeviceNameClick: (String) -> Unit
+    onPeerClick: (DiscoveredPeerDevice) -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "share_radar_sweep")
     val radarAngle by infiniteTransition.animateFloat(
@@ -1073,7 +1140,7 @@ private fun DeviceNameRadarView(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(250.dp)) {
+        Canvas(modifier = Modifier.size(220.dp)) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val maxRadius = size.minDimension / 2f
 
@@ -1104,37 +1171,58 @@ private fun DeviceNameRadarView(
             )
         }
 
-        // Render ONLY clean Device Name pills around the radar
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            deviceNames.forEach { deviceName ->
-                Row(
+            if (discoveredPeers.isEmpty()) {
+                Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(Color(0xDD10192B))
-                        .border(1.2.dp, accentColor.copy(alpha = 0.65f), RoundedCornerShape(50))
-                        .clickable { onDeviceNameClick(deviceName) }
-                        .padding(horizontal = 18.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color(0xDD0D1526))
+                        .border(1.dp, accentColor.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 18.dp, vertical = 10.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Devices,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = deviceName,
+                        text = if (waitingForSenderMode) {
+                            if (isHindi) "सेंडर फ़ोन के कनेक्ट होने की प्रतीक्षा है..." else "Waiting for Sender phone to connect..."
+                        } else {
+                            if (isHindi) "आस-पास के रिसीवर फ़ोन स्कैन हो रहे हैं..." else "Scanning Wi-Fi / Hotspot for Receiver phone..."
+                        },
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
                     )
+                }
+            } else {
+                discoveredPeers.forEach { peer ->
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color(0xEE10192B))
+                            .border(1.4.dp, accentColor, RoundedCornerShape(50))
+                            .clickable { onPeerClick(peer) }
+                            .padding(horizontal = 18.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Devices,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${peer.deviceName} (${peer.ipAddress})",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
             }
         }

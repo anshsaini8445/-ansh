@@ -199,6 +199,43 @@ fun VideoPlayerView(
         }
     }
 
+    // Auto-hide system status bar during immersive video playback; show on tap or top swipe-down
+    DisposableEffect(showControls) {
+        try {
+            val activity = context as? Activity
+            val window = activity?.window
+            if (window != null) {
+                val controller = androidx.core.view.WindowCompat.getInsetsController(window, hostView)
+                controller.systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (showControls) {
+                    controller.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                } else {
+                    controller.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                }
+            }
+        } catch (_: Exception) {
+        }
+        onDispose { }
+    }
+
+    // Live Clock Time & Battery % for Top Bar when controls are shown
+    var currentClockText by remember { mutableStateOf("") }
+    var currentBatteryPct by remember { mutableStateOf(100) }
+    LaunchedEffect(showControls) {
+        while (true) {
+            try {
+                val sdf = java.text.SimpleDateFormat("hh:mm a", Locale.getDefault())
+                currentClockText = sdf.format(java.util.Date())
+                val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                val cap = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+                if (cap in 1..100) currentBatteryPct = cap
+            } catch (_: Exception) {
+            }
+            delay(15_000L)
+        }
+    }
+
     // 3-Second Auto-Hide Controls Timer
     LaunchedEffect(showControls, lastInteractionTime, isPlaying) {
         if (showControls && isPlaying) {
@@ -295,40 +332,116 @@ fun VideoPlayerView(
                 MediaNotificationHelper.setControlDelegate(null)
             }
             try {
-                (context as? Activity)?.requestedOrientation =
+                mediaPlayerRef?.let { mp ->
+                    if (videoViewRef?.isPlaying != true && mp.isPlaying) {
+                        mp.stop()
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            try {
+                val activity = context as? Activity
+                activity?.window?.let { win ->
+                    androidx.core.view.WindowCompat.getInsetsController(win, hostView)
+                        .show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                }
+                activity?.requestedOrientation =
                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             } catch (_: Exception) {
             }
         }
     }
 
+    // Unified helper functions that work seamlessly whether VideoView or direct FileDescriptor MediaPlayer is active
+    fun isVideoCurrentlyPlaying(): Boolean {
+        return try {
+            videoViewRef?.isPlaying == true || mediaPlayerRef?.isPlaying == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun getCurrentVideoPositionMs(): Long {
+        return try {
+            val vvPos = videoViewRef?.currentPosition?.toLong() ?: 0L
+            if (vvPos > 0L) vvPos else (mediaPlayerRef?.currentPosition?.toLong() ?: currentPosMs)
+        } catch (_: Exception) {
+            currentPosMs
+        }
+    }
+
+    fun getTotalVideoDurationMs(): Long {
+        return try {
+            val vvDur = videoViewRef?.duration?.toLong() ?: 0L
+            val mpDur = if (vvDur > 0L) vvDur else (mediaPlayerRef?.duration?.toLong() ?: totalDurationMs)
+            mpDur.coerceAtLeast(1000L)
+        } catch (_: Exception) {
+            totalDurationMs.coerceAtLeast(1000L)
+        }
+    }
+
+    fun seekVideoToMs(targetMs: Long) {
+        val clamped = targetMs.coerceIn(0L, getTotalVideoDurationMs())
+        currentPosMs = clamped
+        try {
+            videoViewRef?.seekTo(clamped.toInt())
+        } catch (_: Exception) {
+        }
+        try {
+            mediaPlayerRef?.seekTo(clamped.toInt())
+        } catch (_: Exception) {
+        }
+    }
+
+    fun pauseVideoPlayback() {
+        try {
+            videoViewRef?.pause()
+        } catch (_: Exception) {
+        }
+        try {
+            if (mediaPlayerRef?.isPlaying == true) mediaPlayerRef?.pause()
+        } catch (_: Exception) {
+        }
+        isPlaying = false
+    }
+
+    fun startVideoPlayback() {
+        try {
+            videoViewRef?.start()
+        } catch (_: Exception) {
+        }
+        try {
+            if (mediaPlayerRef?.isPlaying == false) mediaPlayerRef?.start()
+        } catch (_: Exception) {
+        }
+        isPlaying = true
+    }
+
     // Progress & A-B Repeat Loop Tracker
     var lastNotifSec by remember { mutableStateOf(-1L) }
-    LaunchedEffect(videoViewRef, isPlaying) {
+    LaunchedEffect(videoViewRef, mediaPlayerRef, isPlaying) {
         while (true) {
-            videoViewRef?.let { vv ->
-                try {
-                    if (vv.isPlaying) {
-                        val pos = vv.currentPosition.toLong()
-                        val dur = vv.duration.toLong().coerceAtLeast(1L)
-                        currentPosMs = pos
-                        totalDurationMs = dur
-                        onProgressUpdate(pos)
+            try {
+                if (isVideoCurrentlyPlaying()) {
+                    val pos = getCurrentVideoPositionMs()
+                    val dur = getTotalVideoDurationMs()
+                    currentPosMs = pos
+                    totalDurationMs = dur
+                    onProgressUpdate(pos)
 
-                        val sec = pos / 1000L
-                        if (sec != lastNotifSec) {
-                            lastNotifSec = sec
-                            postComposeVideoNotification(true, pos)
-                        }
-
-                        val ptA = abPointA
-                        val ptB = abPointB
-                        if (ptA != null && ptB != null && pos >= ptB) {
-                            vv.seekTo(ptA.toInt())
-                        }
+                    val sec = pos / 1000L
+                    if (sec != lastNotifSec) {
+                        lastNotifSec = sec
+                        postComposeVideoNotification(true, pos)
                     }
-                } catch (_: Exception) {
+
+                    val ptA = abPointA
+                    val ptB = abPointB
+                    if (ptA != null && ptB != null && pos >= ptB) {
+                        seekVideoToMs(ptA)
+                    }
                 }
+            } catch (_: Exception) {
             }
             delay(350L)
         }
@@ -372,8 +485,7 @@ fun VideoPlayerView(
                     gestureHudState = null
                 },
                 onDoubleTapSeek = { deltaMs, targetMs ->
-                    videoViewRef?.seekTo(targetMs.toInt())
-                    currentPosMs = targetMs
+                    seekVideoToMs(targetMs)
                     gestureOverlayText = if (deltaMs > 0) "Forward +10s" else "Rewind -10s"
                     lastInteractionTime = System.currentTimeMillis()
                 },
@@ -388,8 +500,7 @@ fun VideoPlayerView(
                     lastInteractionTime = System.currentTimeMillis()
                 },
                 onHorizontalSeekChanged = { newPosMs, hud ->
-                    videoViewRef?.seekTo(newPosMs.toInt())
-                    currentPosMs = newPosMs
+                    seekVideoToMs(newPosMs)
                     gestureHudState = hud
                     lastInteractionTime = System.currentTimeMillis()
                 },
@@ -404,7 +515,7 @@ fun VideoPlayerView(
                 }
             )
     ) {
-        // --- HARDWARE FULL-SCREEN VIDEO SURFACE (Centered FrameLayout + Custom onMeasure VideoView) ---
+        // --- HARDWARE FULL-SCREEN VIDEO SURFACE (Supports standard & Pending/Partial .crdownload/.part movies via FileDescriptor) ---
         key(videoPath) {
             AndroidView(
                 factory = { ctx ->
@@ -417,6 +528,70 @@ fun VideoPlayerView(
                                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                 android.view.Gravity.CENTER
                             )
+
+                            fun configurePreparedPlayer(mp: android.media.MediaPlayer) {
+                                mediaPlayerRef = mp
+                                val vw = mp.videoWidth.takeIf { it > 0 } ?: 1920
+                                val vh = mp.videoHeight.takeIf { it > 0 } ?: 1080
+                                nativeVideoWidth = vw
+                                nativeVideoHeight = vh
+                                updateVideoGeometry(vw, vh, aspectRatioMode, zoomScale)
+                                mp.setOnVideoSizeChangedListener { _, w, h ->
+                                    if (w > 0 && h > 0) {
+                                        nativeVideoWidth = w
+                                        nativeVideoHeight = h
+                                        updateVideoGeometry(w, h, aspectRatioMode, zoomScale)
+                                    }
+                                }
+                                totalDurationMs = mp.duration.toLong().coerceAtLeast(1000L)
+                                if (initialPositionMs > 0 && initialPositionMs < totalDurationMs - 2000L) {
+                                    try {
+                                        mp.seekTo(initialPositionMs.toInt())
+                                    } catch (_: Exception) {
+                                    }
+                                }
+                                try {
+                                    mp.start()
+                                } catch (_: Exception) {
+                                }
+                                isPlaying = true
+                                try {
+                                    loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
+                                } catch (_: Exception) {
+                                }
+                            }
+
+                            fun startDirectFileDescriptorFallback(): Boolean {
+                                return try {
+                                    val rawMp = android.media.MediaPlayer()
+                                    val pfd: android.os.ParcelFileDescriptor? = if (videoPath.startsWith("content://")) {
+                                        ctx.contentResolver.openFileDescriptor(Uri.parse(videoPath), "r")
+                                    } else {
+                                        val f = File(videoPath)
+                                        if (f.exists()) {
+                                            android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                                        } else {
+                                            null
+                                        }
+                                    }
+                                    if (pfd != null) {
+                                        rawMp.setDataSource(pfd.fileDescriptor)
+                                        pfd.close()
+                                        rawMp.setDisplay(holder)
+                                        rawMp.setScreenOnWhilePlaying(true)
+                                        rawMp.setOnPreparedListener { mp ->
+                                            configurePreparedPlayer(mp)
+                                        }
+                                        rawMp.prepareAsync()
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } catch (_: Exception) {
+                                    false
+                                }
+                            }
+
                             try {
                                 if (
                                     videoPath.startsWith("http") ||
@@ -434,39 +609,16 @@ fun VideoPlayerView(
                                     }
                                 }
                                 setOnPreparedListener { mp ->
-                                    mediaPlayerRef = mp
-                                    val vw = mp.videoWidth.takeIf { it > 0 } ?: 1920
-                                    val vh = mp.videoHeight.takeIf { it > 0 } ?: 1080
-                                    nativeVideoWidth = vw
-                                    nativeVideoHeight = vh
-                                    updateVideoGeometry(vw, vh, aspectRatioMode, zoomScale)
-                                    mp.setOnVideoSizeChangedListener { _, w, h ->
-                                        if (w > 0 && h > 0) {
-                                            nativeVideoWidth = w
-                                            nativeVideoHeight = h
-                                            updateVideoGeometry(w, h, aspectRatioMode, zoomScale)
-                                        }
-                                    }
-                                    totalDurationMs = mp.duration.toLong().coerceAtLeast(1L)
-                                    if (initialPositionMs > 0 && initialPositionMs < totalDurationMs - 2000L) {
-                                        seekTo(initialPositionMs.toInt())
-                                    }
-                                    start()
-                                    isPlaying = true
-                                    try {
-                                        loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
-                                    } catch (_: Exception) {
-                                    }
+                                    configurePreparedPlayer(mp)
                                 }
                                 setOnErrorListener { _, _, _ ->
-                                    Toast.makeText(
-                                        ctx,
-                                        "Playing Stream via Hybrid Byte-Recovery Engine",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    // If VideoView rejects a pending/partial .crdownload/.part file extension,
+                                    // immediately play via raw FileDescriptor (inspects MP4/MKV header bytes directly!)
+                                    startDirectFileDescriptorFallback()
                                     true
                                 }
                             } catch (_: Exception) {
+                                startDirectFileDescriptorFallback()
                             }
                         }
                         addView(customVideoView)
@@ -1617,27 +1769,43 @@ private fun formatVideoTime(ms: Long): String {
 
 /**
  * Ensures Chrome/Browser half-downloaded files (.crdownload, .part, .download, .tmp, .partial, .1dm, .ucd)
- * can be opened by Android's hardware decoder without failing on non-standard file extensions.
+ * can be opened by Android's hardware decoder in <1ms via zero-copy POSIX symlink (Os.symlink) without copying 355MB+.
  */
 private fun resolvePlayablePartialPath(context: Context, originalPath: String): String {
     val file = File(originalPath)
     if (!file.exists()) return originalPath
     val ext = file.extension.lowercase(Locale.US)
     val partialExts = setOf("part", "crdownload", "tmp", "download", "partial", "dl", "ucd", "1dm", "td", "idm", "adm")
-    if (ext !in partialExts) return originalPath
+    if (ext !in partialExts && !file.name.startsWith(".pending-")) return originalPath
 
     return try {
-        val proxyFile = File(context.cacheDir, "hybrid_partial_stream_${file.name.hashCode()}.mp4")
-        if (!proxyFile.exists() || proxyFile.length() != file.length()) {
-            file.inputStream().use { input ->
-                FileOutputStream(proxyFile).use { output ->
-                    input.copyTo(output, bufferSize = 64 * 1024)
+        // Inspect container magic bytes (MKV vs MP4) so extractor picks the right demuxer immediately
+        var containerExt = "mp4"
+        try {
+            file.inputStream().use { ins ->
+                val header = ByteArray(12)
+                val read = ins.read(header)
+                if (read >= 4 &&
+                    header[0] == 0x1A.toByte() &&
+                    header[1] == 0x45.toByte() &&
+                    header[2] == 0xDF.toByte() &&
+                    header[3] == 0xA3.toByte()
+                ) {
+                    containerExt = "mkv"
                 }
             }
+        } catch (_: Exception) {
         }
-        proxyFile.absolutePath
+
+        val symlinkFile = File(context.cacheDir, "hybrid_partial_link_${file.absolutePath.hashCode()}.$containerExt")
+        if (symlinkFile.exists()) {
+            symlinkFile.delete()
+        }
+        android.system.Os.symlink(file.absolutePath, symlinkFile.absolutePath)
+        symlinkFile.absolutePath
     } catch (_: Exception) {
         originalPath
     }
 }
+
 

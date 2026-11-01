@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.app.Activity
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,8 +29,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.MediaItem
+import com.example.ui.components.GuaranteedAlbumArt
+import com.example.ui.components.LiquidGlassBox
+import com.example.ui.components.VideoPlayerView
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+
+private enum class VaultCategoryTab {
+    ALL, VIDEOS, AUDIO
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,17 +53,30 @@ fun PrivateFolderScreen(
     val isUnlocked by viewModel.vaultUnlocked.collectAsState()
     val isDecoyVault by viewModel.isDecoyVault.collectAsState()
     val privateItems by viewModel.privateItems.collectAsState()
+    val allPublicMedia by viewModel.allMediaItems.collectAsState()
     val lockoutSeconds by viewModel.vaultLockoutSeconds.collectAsState()
     val intruderLogs by viewModel.intruderLogs.collectAsState()
     val globalFlagSecure by viewModel.globalFlagSecure.collectAsState()
+    val selectedLanguage by viewModel.selectedLanguage.collectAsState()
+
+    val isHindi = remember(selectedLanguage) {
+        selectedLanguage.contains("Hindi", ignoreCase = true) ||
+            selectedLanguage.contains("हिन्दी")
+    }
 
     var pinDigits by remember { mutableStateOf("") }
     var setupStep by remember { mutableStateOf(1) }
     var setupFirstPin by remember { mutableStateOf("") }
     var keypadErrorMessage by remember { mutableStateOf<String?>(null) }
     var showIntruderDialog by remember { mutableStateOf(false) }
+    var showAddMediaToVaultDialog by remember { mutableStateOf(false) }
+    var vaultCategoryTab by remember { mutableStateOf(VaultCategoryTab.ALL) }
 
-    // Apply FLAG_SECURE to block screenshots while inside Privacy Vault (keep on if globalFlagSecure is active)
+    // Built-in Full Video Player & Full Audio Player inside the Private Vault!
+    var activeVaultVideo by remember { mutableStateOf<MediaItem?>(null) }
+    var showVaultFullAudioPlayer by remember { mutableStateOf(false) }
+
+    // Apply FLAG_SECURE to block screenshots while inside Privacy Vault
     DisposableEffect(globalFlagSecure) {
         val activity = context as? Activity
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -69,7 +90,51 @@ fun PrivateFolderScreen(
     LaunchedEffect(isUnlocked) {
         if (!isUnlocked) {
             pinDigits = ""
+            activeVaultVideo = null
+            showVaultFullAudioPlayer = false
         }
+    }
+
+    // If playing a locked video inside the Private Vault, render the full built-in VideoPlayerView!
+    if (isUnlocked && activeVaultVideo != null) {
+        val currentVideo = activeVaultVideo!!
+        val vaultVideos = remember(privateItems, isDecoyVault) {
+            if (isDecoyVault) emptyList() else privateItems.filter { it.isVideo }
+        }
+        BackHandler {
+            activeVaultVideo = null
+        }
+        VideoPlayerView(
+            videoPath = currentVideo.path,
+            initialPositionMs = 0L,
+            onProgressUpdate = { posMs ->
+                viewModel.saveVideoProgress(currentVideo.id, posMs)
+            },
+            onBackClick = { activeVaultVideo = null },
+            accentColor = accentColor,
+            videoTitle = currentVideo.cleanTitle,
+            allVideos = vaultVideos.ifEmpty { listOf(currentVideo) },
+            onSelectVideo = { nextVid -> activeVaultVideo = nextVid },
+            onBackgroundAudioPlay = {
+                viewModel.playMusic(currentVideo)
+                activeVaultVideo = null
+                showVaultFullAudioPlayer = true
+            }
+        )
+        return
+    }
+
+    // If playing a locked song inside the Private Vault, render the full built-in MusicPlayerScreen!
+    if (isUnlocked && showVaultFullAudioPlayer) {
+        BackHandler {
+            showVaultFullAudioPlayer = false
+        }
+        MusicPlayerScreen(
+            viewModel = viewModel,
+            onBackClick = { showVaultFullAudioPlayer = false },
+            accentColor = accentColor
+        )
+        return
     }
 
     Scaffold(
@@ -77,9 +142,10 @@ fun PrivateFolderScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "Privacy Vault (FLAG_SECURE)",
+                        text = if (isHindi) "प्राइवेट वॉल्ट (Private Vault)" else "Privacy Vault (FLAG_SECURE)",
                         color = Color.White,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 18.sp
                     )
                 },
                 navigationIcon = {
@@ -95,6 +161,15 @@ fun PrivateFolderScreen(
                     }
                 },
                 actions = {
+                    if (isUnlocked && !isDecoyVault) {
+                        IconButton(onClick = { showAddMediaToVaultDialog = true }) {
+                            Icon(
+                                Icons.Default.AddCircleOutline,
+                                contentDescription = "Add Media to Vault",
+                                tint = HybridCyan
+                            )
+                        }
+                    }
                     if (intruderLogs.isNotEmpty()) {
                         IconButton(onClick = { showIntruderDialog = true }) {
                             Icon(Icons.Default.Warning, contentDescription = "Intruder Logs", tint = HybridCoralRed)
@@ -117,7 +192,6 @@ fun PrivateFolderScreen(
                 .padding(innerPadding)
         ) {
             if (!isPinSet) {
-                // PIN Setup Flow
                 VaultPinPadSection(
                     title = if (setupStep == 1) "Create Real Vault PIN (4 Digits)" else "Confirm Your Real PIN",
                     subtitle = "Tip: Entering '0000' later opens an Empty Decoy Vault to protect your privacy.",
@@ -153,7 +227,6 @@ fun PrivateFolderScreen(
                     }
                 )
             } else if (!isUnlocked) {
-                // Unlock Flow (Supports Real SHA-256 PIN, "0000" Decoy PIN, and Brute-Force Cooldown Lockout)
                 val isLockedOut = lockoutSeconds > 0
                 VaultPinPadSection(
                     title = if (isLockedOut) "🛡️ Brute-Force Lockout (${lockoutSeconds}s)" else "Enter Privacy Vault PIN",
@@ -185,42 +258,91 @@ fun PrivateFolderScreen(
                     }
                 )
             } else {
-                // Vault Unlocked Content (Empty if Decoy Mode "0000" was used!)
-                val visibleItems = if (isDecoyVault) emptyList() else privateItems
+                val allVaultItems = if (isDecoyVault) emptyList() else privateItems
+                val vaultVideos = remember(allVaultItems) { allVaultItems.filter { it.isVideo } }
+                val vaultAudios = remember(allVaultItems) { allVaultItems.filter { !it.isVideo } }
+                val visibleItems = when (vaultCategoryTab) {
+                    VaultCategoryTab.ALL -> allVaultItems
+                    VaultCategoryTab.VIDEOS -> vaultVideos
+                    VaultCategoryTab.AUDIO -> vaultAudios
+                }
 
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(16.dp)
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(14.dp))
                             .background(HybridCardBg)
-                            .border(1.dp, HybridCardBorder, RoundedCornerShape(12.dp))
+                            .border(1.dp, HybridCardBorder, RoundedCornerShape(14.dp))
                             .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Security,
-                            contentDescription = null,
-                            tint = HybridEmerald
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                tint = HybridEmerald
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = if (isDecoyVault) {
+                                    "Decoy Vault Active (0000) • Real Files Hidden"
+                                } else {
+                                    if (isHindi) "वॉल्ट अनलॉक • बिल्ट-इन वीडियो और ऑडियो प्लेयर" else "Built-in Vault Video & Audio Player Ready"
+                                },
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (!isDecoyVault) {
+                            TextButton(onClick = { showAddMediaToVaultDialog = true }) {
+                                Text(
+                                    text = if (isHindi) "+ जोड़ें" else "+ Add Media",
+                                    color = HybridEmerald,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Category Tabs inside Vault: All | Videos | Audio
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        VaultFilterChip(
+                            modifier = Modifier.weight(1f),
+                            label = if (isHindi) "सभी (${allVaultItems.size})" else "All (${allVaultItems.size})",
+                            selected = vaultCategoryTab == VaultCategoryTab.ALL,
+                            accent = HybridEmerald,
+                            onClick = { vaultCategoryTab = VaultCategoryTab.ALL }
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = if (isDecoyVault) {
-                                "Decoy Vault Active (0000) • Real Files Hidden"
-                            } else {
-                                "Real Vault Unlocked • Screenshot Protection Active"
-                            },
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
+                        VaultFilterChip(
+                            modifier = Modifier.weight(1f),
+                            label = if (isHindi) "वीडियो (${vaultVideos.size})" else "Videos (${vaultVideos.size})",
+                            selected = vaultCategoryTab == VaultCategoryTab.VIDEOS,
+                            accent = HybridCyan,
+                            onClick = { vaultCategoryTab = VaultCategoryTab.VIDEOS }
+                        )
+                        VaultFilterChip(
+                            modifier = Modifier.weight(1f),
+                            label = if (isHindi) "गाने (${vaultAudios.size})" else "Songs (${vaultAudios.size})",
+                            selected = vaultCategoryTab == VaultCategoryTab.AUDIO,
+                            accent = HybridGold,
+                            onClick = { vaultCategoryTab = VaultCategoryTab.AUDIO }
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     if (visibleItems.isEmpty()) {
                         Box(
@@ -236,13 +358,17 @@ fun PrivateFolderScreen(
                                 )
                                 Spacer(modifier = Modifier.height(10.dp))
                                 Text(
-                                    text = "No Protected Files in Vault",
+                                    text = if (isHindi) "वॉल्ट में कोई फ़ाइल नहीं है" else "No Protected Files in Vault",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 17.sp
                                 )
                                 Text(
-                                    text = "Use the 3-dot menu on any video or song to lock it here.",
+                                    text = if (isHindi) {
+                                        "किसी भी वीडियो या गाने के 3-डॉट मेनू से या '+ Add Media' बटन से यहाँ लॉक करें।"
+                                    } else {
+                                        "Tap '+ Add Media' above or use the 3-dot menu on any video or song to lock it here."
+                                    },
                                     color = HybridTextSecondary,
                                     fontSize = 13.sp,
                                     textAlign = TextAlign.Center
@@ -250,42 +376,81 @@ fun PrivateFolderScreen(
                             }
                         }
                     } else {
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(bottom = 24.dp)
+                        ) {
                             items(visibleItems, key = { it.id }) { item ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(HybridCardBg)
-                                        .border(1.dp, HybridCardBorder, RoundedCornerShape(14.dp))
-                                        .clickable {
-                                            if (item.isVideo) onPlayVideo(item) else onPlayMusic(item)
+                                val itemAccent = if (item.isVideo) HybridCyan else HybridEmerald
+                                LiquidGlassBox(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    cornerRadius = 16.dp,
+                                    tintColor = itemAccent,
+                                    glassAlpha = 0.20f,
+                                    onClick = {
+                                        if (item.isVideo) {
+                                            activeVaultVideo = item
+                                        } else {
+                                            viewModel.playMusic(item)
+                                            showVaultFullAudioPlayer = true
                                         }
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = if (item.isVideo) Icons.Default.Movie else Icons.Default.MusicNote,
-                                        contentDescription = null,
-                                        tint = HybridEmerald
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = item.cleanTitle,
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${item.formattedDuration} • ${item.formattedSize}",
-                                            color = HybridTextSecondary,
-                                            fontSize = 12.sp
-                                        )
                                     }
-                                    TextButton(onClick = { viewModel.toggleVaultLock(item) }) {
-                                        Text("Unlock", color = HybridCyan, fontWeight = FontWeight.Bold)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        GuaranteedAlbumArt(
+                                            mediaPath = item.path,
+                                            title = item.cleanTitle,
+                                            isVideo = item.isVideo,
+                                            modifier = Modifier.size(50.dp),
+                                            cornerRadius = 12.dp,
+                                            accentColor = itemAccent
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = item.cleanTitle,
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${if (item.isVideo) "Video" else "Audio"} • ${item.formattedDuration} • ${item.formattedSize}",
+                                                color = HybridTextSecondary,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                if (item.isVideo) {
+                                                    activeVaultVideo = item
+                                                } else {
+                                                    viewModel.playMusic(item)
+                                                    showVaultFullAudioPlayer = true
+                                                }
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.PlayCircleFilled,
+                                                contentDescription = "Play inside Vault",
+                                                tint = itemAccent,
+                                                modifier = Modifier.size(28.dp)
+                                            )
+                                        }
+                                        TextButton(onClick = { viewModel.toggleVaultLock(item) }) {
+                                            Text(
+                                                text = if (isHindi) "अनलॉक" else "Unlock",
+                                                color = HybridGold,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 12.sp
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -294,6 +459,84 @@ fun PrivateFolderScreen(
                 }
             }
         }
+    }
+
+    if (showAddMediaToVaultDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddMediaToVaultDialog = false },
+            containerColor = HybridCardBg,
+            title = {
+                Text(
+                    text = if (isHindi) "वॉल्ट में वीडियो या गाने लॉक करें" else "Lock Videos or Songs in Vault",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                if (allPublicMedia.isEmpty()) {
+                    Text("No public media found.", color = HybridTextSecondary)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 340.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(allPublicMedia, key = { it.id }) { media ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.White.copy(alpha = 0.06f))
+                                    .clickable {
+                                        viewModel.toggleVaultLock(media)
+                                        Toast.makeText(
+                                            context,
+                                            "Locked in Vault: ${media.cleanTitle}",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                    .padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (media.isVideo) Icons.Default.Movie else Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = if (media.isVideo) HybridCyan else HybridEmerald,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = media.cleanTitle,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${media.formattedDuration} • ${media.formattedSize}",
+                                        color = HybridTextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Lock",
+                                    tint = HybridGold,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAddMediaToVaultDialog = false }) {
+                    Text(if (isHindi) "बंद करें" else "Done", color = HybridEmerald, fontWeight = FontWeight.ExtraBold)
+                }
+            }
+        )
     }
 
     if (showIntruderDialog) {
@@ -333,6 +576,32 @@ fun PrivateFolderScreen(
                     Text("Clear Logs", color = HybridCoralRed)
                 }
             }
+        )
+    }
+}
+
+@Composable
+private fun VaultFilterChip(
+    modifier: Modifier = Modifier,
+    label: String,
+    selected: Boolean,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) accent.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
+            .border(1.dp, if (selected) accent else Color.White.copy(alpha = 0.16f), RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = if (selected) accent else Color.White,
+            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold,
+            fontSize = 12.sp
         )
     }
 }

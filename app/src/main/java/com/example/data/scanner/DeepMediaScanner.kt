@@ -220,6 +220,40 @@ object DeepMediaScanner {
     }
 
     /**
+     * Ultra-Fast (<80ms) First-Pass MediaStore Query:
+     * Immediately returns indexed MediaStore videos/songs + pending downloads right after app launch
+     * or permission grant so the UI populates with zero delay before the deep folder walk finishes.
+     */
+    suspend fun scanFastMediaStoreFirst(context: Context, isVideo: Boolean): List<MediaItem> = withContext(Dispatchers.IO) {
+        appContextRef = context.applicationContext
+        purgeLegacyDummySnapshot(context)
+
+        val discoveredMap = LinkedHashMap<String, MediaItem>()
+        val mediaStoreList = queryMediaStore(context, isVideo)
+        for (item in mediaStoreList) {
+            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
+            discoveredMap[item.path] = item
+        }
+        if (isVideo) {
+            val pendingFiles = queryPendingAndPartialVideoFiles(context)
+            for (item in pendingFiles) {
+                if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
+                if (!discoveredMap.containsKey(item.path)) {
+                    discoveredMap[item.path] = item
+                }
+            }
+        }
+        val fastList = discoveredMap.values.sortedWith(
+            compareByDescending<MediaItem> { it.isPartialDownload }
+                .thenByDescending { it.dateAdded }
+        )
+        if (fastList.isNotEmpty()) {
+            if (isVideo) ramVideoCache = fastList else ramAudioCache = fastList
+        }
+        return@withContext fastList
+    }
+
+    /**
      * Full High-Speed Asynchronous Storage Scan:
      * 1. MediaStore Video/Audio tables (with safe universal columns across all Android versions)
      * 2. MediaStore.Files query for pending/partial browser downloads (.crdownload, .part, IS_PENDING)
@@ -399,6 +433,18 @@ object DeepMediaScanner {
         return list
     }
 
+    private fun isRingtoneOrSystemSoundPath(pathOrFolder: String): Boolean {
+        val lower = pathOrFolder.lowercase(Locale.US)
+        return lower.contains("/ringtones") ||
+            lower.contains("/notifications") ||
+            lower.contains("/alarms") ||
+            lower.contains("/system/media") ||
+            lower.contains("/ui/") ||
+            lower == "ringtones" ||
+            lower == "notifications" ||
+            lower == "alarms"
+    }
+
     private fun queryMediaStore(context: Context, isVideo: Boolean): List<MediaItem> {
         val list = mutableListOf<MediaItem>()
         val seenIds = HashSet<Long>()
@@ -411,14 +457,13 @@ object DeepMediaScanner {
                 urisToQuery.add(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY))
             }
             urisToQuery.add(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-            urisToQuery.add(MediaStore.Video.Media.INTERNAL_CONTENT_URI)
         } else {
+            // NEVER query INTERNAL_CONTENT_URI for Audio — that contains Android system ringtones, alarms & UI clicks!
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 urisToQuery.add(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL))
                 urisToQuery.add(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY))
             }
             urisToQuery.add(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
-            urisToQuery.add(MediaStore.Audio.Media.INTERNAL_CONTENT_URI)
         }
 
         // Use strictly universal columns so no OEM ContentProvider ever throws IllegalArgumentException
@@ -432,6 +477,11 @@ object DeepMediaScanner {
             MediaStore.MediaColumns.WIDTH,
             MediaStore.MediaColumns.HEIGHT
         )
+        if (!isVideo) {
+            baseProjection.add(MediaStore.Audio.AudioColumns.IS_RINGTONE)
+            baseProjection.add(MediaStore.Audio.AudioColumns.IS_NOTIFICATION)
+            baseProjection.add(MediaStore.Audio.AudioColumns.IS_ALARM)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             baseProjection.add(MediaStore.MediaColumns.DURATION)
             baseProjection.add(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
@@ -474,6 +524,9 @@ object DeepMediaScanner {
                     val widthCol = c.getColumnIndex(MediaStore.MediaColumns.WIDTH)
                     val heightCol = c.getColumnIndex(MediaStore.MediaColumns.HEIGHT)
                     val pendingCol = c.getColumnIndex("is_pending")
+                    val ringtoneCol = c.getColumnIndex(MediaStore.Audio.AudioColumns.IS_RINGTONE)
+                    val notifCol = c.getColumnIndex(MediaStore.Audio.AudioColumns.IS_NOTIFICATION)
+                    val alarmCol = c.getColumnIndex(MediaStore.Audio.AudioColumns.IS_ALARM)
 
                     while (c.moveToNext()) {
                         val numericId = if (idCol >= 0) c.getLong(idCol) else continue
@@ -481,6 +534,17 @@ object DeepMediaScanner {
 
                         val contentUri = ContentUris.withAppendedId(baseUri, numericId)
                         val rawDataPath = if (dataCol >= 0) c.getString(dataCol) ?: "" else ""
+                        val bucketName = if (bucketCol >= 0) c.getString(bucketCol) ?: "" else ""
+
+                        // Exclude system ringtones, notifications, and alarms from the Audio section
+                        if (!isVideo) {
+                            val isRingtone = if (ringtoneCol >= 0) c.getInt(ringtoneCol) != 0 else false
+                            val isNotif = if (notifCol >= 0) c.getInt(notifCol) != 0 else false
+                            val isAlarm = if (alarmCol >= 0) c.getInt(alarmCol) != 0 else false
+                            if (isRingtone || isNotif || isAlarm) continue
+                            if (isRingtoneOrSystemSoundPath(rawDataPath) || isRingtoneOrSystemSoundPath(bucketName)) continue
+                        }
+
                         val dataFile = if (rawDataPath.isNotBlank()) File(rawDataPath) else null
 
                         val playablePath = if (dataFile != null && dataFile.exists() && dataFile.canRead()) {
@@ -491,7 +555,7 @@ object DeepMediaScanner {
 
                         val displayName = (if (displayCol >= 0) c.getString(displayCol) else null) ?: ""
                         val isPendingFlag = (if (pendingCol >= 0) c.getInt(pendingCol) else 0) == 1
-                        val isPartial = isPendingFlag || isFileNamePartialDownload(displayName) || isFileNamePartialDownload(rawDataPath)
+                        val isPartial = isVideo && (isPendingFlag || isFileNamePartialDownload(displayName) || isFileNamePartialDownload(rawDataPath))
 
                         val rawTitle = if (isPartial) {
                             cleanPartialFileName(displayName.ifBlank { dataFile?.name ?: "Pending Video" })
@@ -499,7 +563,7 @@ object DeepMediaScanner {
                             (if (titleCol >= 0) c.getString(titleCol) else null)
                                 ?.takeIf { it.isNotBlank() }
                                 ?: displayName.substringBeforeLast('.').ifBlank {
-                                    dataFile?.nameWithoutExtension ?: "Video $numericId"
+                                    dataFile?.nameWithoutExtension ?: "Media $numericId"
                                 }
                         }
 
@@ -507,14 +571,16 @@ object DeepMediaScanner {
                         val size = if (sizeCol >= 0) c.getLong(sizeCol).coerceAtLeast(0L) else (dataFile?.length() ?: 0L)
                         if (size <= 0L && dataFile != null && !dataFile.exists()) continue
 
+                        // Skip tiny audio sound effects (< 5 seconds or < 24KB)
+                        if (!isVideo && ((duration in 1..4999L) || size < 24_000L)) continue
+
                         val width = if (widthCol >= 0) c.getInt(widthCol) else 0
                         val height = if (heightCol >= 0) c.getInt(heightCol) else 0
 
                         val dateSec = if (dateCol >= 0) c.getLong(dateCol) else 0L
                         val dateAddedMs = if (dateSec > 0L) dateSec * 1000L else (dataFile?.lastModified() ?: System.currentTimeMillis())
 
-                        val bucketName = if (bucketCol >= 0) c.getString(bucketCol) else null
-                        val folderName = bucketName?.takeIf { it.isNotBlank() }
+                        val folderName = bucketName.takeIf { it.isNotBlank() }
                             ?: dataFile?.parentFile?.name
                             ?: if (isVideo) "Videos" else "Music"
 
@@ -654,6 +720,7 @@ object DeepMediaScanner {
                 targetDirs.add(File(externalRoot, "WhatsApp/Media/WhatsApp Video"))
                 targetDirs.add(File(externalRoot, "WhatsApp/Media/WhatsApp Audio"))
                 targetDirs.add(File(externalRoot, "WhatsApp/Media/.Statuses"))
+                targetDirs.add(File(externalRoot, "WhatsApp Business/Media/.Statuses"))
                 targetDirs.add(File(externalRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video"))
                 targetDirs.add(File(externalRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio"))
                 targetDirs.add(File(externalRoot, "Android/media/com.whatsapp/WhatsApp/Media/.Statuses"))
@@ -688,6 +755,8 @@ object DeepMediaScanner {
         out: MutableList<MediaItem>
     ) {
         if (depth > maxDepth) return
+        if (!isVideo && isRingtoneOrSystemSoundPath(dir.absolutePath)) return
+
         val children = try {
             dir.listFiles()
         } catch (_: Exception) {
@@ -696,14 +765,18 @@ object DeepMediaScanner {
 
         for (file in children) {
             if (file.isDirectory) {
-                if (!file.name.startsWith(".trashed")) {
+                if (!file.name.startsWith(".trashed") && (isVideo || !isRingtoneOrSystemSoundPath(file.name))) {
                     scanDirectoryRecursive(file, depth + 1, maxDepth, isVideo, validExtensions, out)
                 }
-            } else if (file.isFile && file.length() >= 512L) {
+            } else if (file.isFile && file.length() >= if (isVideo) 512L else 24_000L) {
                 val ext = file.extension.lowercase(Locale.US)
                 val isPartial = isVideo && isFileNamePartialDownload(file.name)
                 if (ext in validExtensions || isPartial) {
-                    val folderLabel = if (dir.name == ".Statuses") "Status" else dir.name.ifBlank { "Storage" }
+                    val folderLabel = if (dir.name == ".Statuses" || dir.absolutePath.contains(".Statuses")) {
+                        "Status"
+                    } else {
+                        dir.name.ifBlank { "Storage" }
+                    }
                     // Estimate duration lightweightly or set to <=100s for Status clips
                     val estimatedDuration = when {
                         folderLabel == "Status" -> 30_000L

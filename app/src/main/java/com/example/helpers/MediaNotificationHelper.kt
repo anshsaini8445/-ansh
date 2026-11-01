@@ -312,6 +312,9 @@ object MediaNotificationHelper {
     ): Notification {
         ensureChannel(context)
         val session = getOrCreateMediaSession(context)
+        if (!session.isActive) {
+            session.isActive = true
+        }
         val artwork = extractOrCreateArtwork(mediaPath, title, isVideo)
 
         val safeDuration = if (durationMs > 0L) durationMs else 180_000L
@@ -322,6 +325,7 @@ object MediaNotificationHelper {
             1 -> "Repeat All"
             else -> "Order"
         }
+        val repeatIconRes = if (repeatMode == 2) R.drawable.ic_notif_repeat_one else R.drawable.ic_notif_repeat
         val shuffleLabel = if (isShuffle) "Shuffle ON" else "Shuffle OFF"
 
         // Update MediaSession metadata & seekbar state
@@ -358,14 +362,14 @@ object MediaNotificationHelper {
                 PlaybackState.CustomAction.Builder(
                     ACTION_MEDIA_SHUFFLE,
                     shuffleLabel,
-                    android.R.drawable.ic_menu_sort_by_size
+                    R.drawable.ic_notif_shuffle
                 ).build()
             )
             .addCustomAction(
                 PlaybackState.CustomAction.Builder(
                     ACTION_MEDIA_REPEAT,
                     repeatLabel,
-                    android.R.drawable.ic_menu_rotate
+                    repeatIconRes
                 ).build()
             )
 
@@ -398,7 +402,7 @@ object MediaNotificationHelper {
         }
 
         builder
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notif_play)
             .setLargeIcon(artwork)
             .setContentTitle(title)
             .setContentText("$subtitle • ${if (isShuffle) "🔀" else "▶"} $repeatLabel")
@@ -413,7 +417,7 @@ object MediaNotificationHelper {
             // 1. Leftmost (Ulte Haath): Shuffle (🔀)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, android.R.drawable.ic_menu_sort_by_size),
+                    Icon.createWithResource(context, R.drawable.ic_notif_shuffle),
                     shuffleLabel,
                     shufflePending
                 ).build()
@@ -421,7 +425,7 @@ object MediaNotificationHelper {
             // 2. Previous Track (⏮)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, android.R.drawable.ic_media_previous),
+                    Icon.createWithResource(context, R.drawable.ic_notif_prev),
                     "Previous",
                     prevPending
                 ).build()
@@ -431,7 +435,7 @@ object MediaNotificationHelper {
                 Notification.Action.Builder(
                     Icon.createWithResource(
                         context,
-                        if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+                        if (isPlaying) R.drawable.ic_notif_pause else R.drawable.ic_notif_play
                     ),
                     if (isPlaying) "Pause" else "Play",
                     playPausePending
@@ -440,7 +444,7 @@ object MediaNotificationHelper {
             // 4. Next Track (⏭)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, android.R.drawable.ic_media_next),
+                    Icon.createWithResource(context, R.drawable.ic_notif_next),
                     "Next",
                     nextPending
                 ).build()
@@ -448,7 +452,7 @@ object MediaNotificationHelper {
             // 5. Rightmost (Seedhe Haath): Repeat (🔁 / 🔂 / Order)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, android.R.drawable.ic_menu_rotate),
+                    Icon.createWithResource(context, repeatIconRes),
                     repeatLabel,
                     repeatPending
                 ).build()

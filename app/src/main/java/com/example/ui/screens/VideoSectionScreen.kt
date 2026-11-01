@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -45,11 +46,13 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
+import com.example.helpers.PermanentDeleteHelper
 import com.example.helpers.WifiDirectTransferEngine
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.persona.DemographicMode
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
 
@@ -65,6 +68,7 @@ fun VideoSectionScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val videos by viewModel.videoItems.collectAsState()
     val history by viewModel.historyItems.collectAsState()
     val favorites by viewModel.favoriteItems.collectAsState()
@@ -81,7 +85,15 @@ fun VideoSectionScreen(
             Locale.getDefault().language == "hi"
     }
 
-    var activeSubTab by remember { mutableStateOf("Video") } // "Video" | "Folder" | "Status" | "Favourite"
+    val subTabKeys = remember { listOf("Video", "Folder", "Status", "Favourite") }
+    val subTabPagerState = rememberPagerState(initialPage = 0, pageCount = { subTabKeys.size })
+    val activeSubTab = subTabKeys[subTabPagerState.currentPage]
+    fun switchSubTab(target: String) {
+        val targetIndex = subTabKeys.indexOf(target).coerceAtLeast(0)
+        coroutineScope.launch {
+            subTabPagerState.animateScrollToPage(targetIndex)
+        }
+    }
     var openedFolderName by remember { mutableStateOf<String?>(null) }
     var isViewingFavouriteFolder by remember { mutableStateOf(false) }
     var showStatusReelsOverlay by remember { mutableStateOf(false) }
@@ -101,6 +113,12 @@ fun VideoSectionScreen(
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        viewModel.loadMedia()
+    }
+
+    val systemBatchDeleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
     ) {
         viewModel.loadMedia()
     }
@@ -170,7 +188,7 @@ fun VideoSectionScreen(
         BackHandler {
             showStatusReelsOverlay = false
             if (activeSubTab == "Status") {
-                activeSubTab = "Folder"
+                switchSubTab("Folder")
             }
         }
     } else if (openedFolderName != null || isViewingFavouriteFolder) {
@@ -186,12 +204,12 @@ fun VideoSectionScreen(
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // --- CLEAN TOP BAR: ONLY App Icon + "Hybrid Player" (No right-side clutter icons!) ---
+            // --- 1. PROMINENT 1.5x ENLARGED TOP BAR: App Icon (44.dp) + "Hybrid Player" (27.sp) ---
             if (isMultiSelectMode) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .height(60.dp)
                         .background(HybridCardBg)
                         .padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -200,7 +218,7 @@ fun VideoSectionScreen(
                     Text(
                         text = if (isHindi) "${selectedIds.size} चुने गए" else "${selectedIds.size} Selected",
                         color = HybridEmerald,
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.ExtraBold,
                         fontSize = 16.sp,
                         maxLines = 1
                     )
@@ -214,7 +232,7 @@ fun VideoSectionScreen(
                             }
                         }) {
                             Text(
-                                text = if (isHindi) "सभी" else "All",
+                                text = if (isHindi) "सभी (${sortedVideos.size})" else "All (${sortedVideos.size})",
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold
                             )
@@ -232,7 +250,7 @@ fun VideoSectionScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .height(62.dp)
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -241,23 +259,151 @@ fun VideoSectionScreen(
                         contentDescription = "Hybrid Player",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
-                            .size(32.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(
+                                1.5.dp,
+                                Brush.linearGradient(listOf(Color(0xFFFF2A4B), HybridEmerald)),
+                                RoundedCornerShape(12.dp)
+                            )
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
                     Text(
                         text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
                         color = Color.White,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 27.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 0.3.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            // --- CLEAR LABELED SUB-TABS ROW (English / Hindi Labels so every user understands each tab) ---
+            // --- 2. WATCH HISTORY RIGHT BELOW "HYBRID PLAYER" HEADER (WHEN HISTORY EXISTS) ---
+            if (historyVideos.isNotEmpty() && !isMultiSelectMode && openedFolderName == null && !isViewingFavouriteFolder) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.clickable { isHistoryCollapsed = !isHistoryCollapsed }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.History,
+                                contentDescription = null,
+                                tint = personaMode.primaryAccent,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = if (isHindi) "हाल ही में देखे गए (${historyVideos.size})" else "History (${historyVideos.size})",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Icon(
+                                imageVector = if (isHistoryCollapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                                contentDescription = null,
+                                tint = HybridTextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                viewModel.clearHistory()
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "हिस्ट्री साफ़ की गई" else "Watch History Cleared",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = null,
+                                tint = HybridTextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    if (!isHistoryCollapsed) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(historyVideos, key = { "top_hist_${it.first.id}" }) { (video, posMs) ->
+                                val progressFraction = if (video.duration > 0) {
+                                    (posMs.toFloat() / video.duration.toFloat()).coerceIn(0.12f, 1f)
+                                } else 0.35f
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = 128.dp, height = 68.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(HybridCardBg)
+                                        .border(1.dp, HybridCardBorder, RoundedCornerShape(10.dp))
+                                        .clickable { onPlayVideo(video) }
+                                ) {
+                                    GuaranteedVideoThumbnail(
+                                        video = video,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    colors = listOf(Color.Transparent, Color(0xCC000000))
+                                                )
+                                            )
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(end = 5.dp, bottom = 6.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(Color(0x99000000))
+                                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                                    ) {
+                                        Text(
+                                            text = "▶ ${video.formattedDuration}",
+                                            color = Color.White,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(3.dp)
+                                            .align(Alignment.BottomCenter)
+                                            .background(Color(0x44FFFFFF))
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(progressFraction)
+                                                .fillMaxHeight()
+                                                .background(personaMode.primaryAccent)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- 3. CLEAR LABELED SUB-TABS ROW (Video | Folder | Status | Favourite + Multi-Select + Sort + Grid) ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -267,7 +413,7 @@ fun VideoSectionScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
@@ -285,7 +431,7 @@ fun VideoSectionScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable {
-                                    activeSubTab = tabKey
+                                    switchSubTab(tabKey)
                                     openedFolderName = null
                                     isViewingFavouriteFolder = false
                                     if (tabKey == "Status") {
@@ -325,14 +471,31 @@ fun VideoSectionScreen(
                     }
                 }
 
-                // Compact Sort & View Toggle Icons
+                // Multi-Select Checklist, Sort & View Toggle Icons
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     IconButton(
+                        onClick = {
+                            if (selectedIds.isNotEmpty()) {
+                                selectedIds.clear()
+                            } else if (sortedVideos.isNotEmpty()) {
+                                selectedIds.add(sortedVideos.first().id)
+                            }
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Checklist,
+                            contentDescription = if (isHindi) "कई वीडियो चुनें" else "Multi-Select Videos",
+                            tint = if (isMultiSelectMode) HybridCoralRed else HybridTextSecondary,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                    IconButton(
                         onClick = { showSortDialog = true },
-                        modifier = Modifier.size(34.dp)
+                        modifier = Modifier.size(32.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.SwapVert,
@@ -343,7 +506,7 @@ fun VideoSectionScreen(
                     }
                     IconButton(
                         onClick = { viewModel.toggleVideoViewMode() },
-                        modifier = Modifier.size(34.dp)
+                        modifier = Modifier.size(32.dp)
                     ) {
                         Icon(
                             imageVector = if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
@@ -371,7 +534,7 @@ fun VideoSectionScreen(
                         .clickable {
                             openedFolderName = null
                             isViewingFavouriteFolder = false
-                            activeSubTab = "Folder"
+                            switchSubTab("Folder")
                         }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -392,16 +555,17 @@ fun VideoSectionScreen(
                 }
             }
 
-            // --- MAIN CONTENT AREA ---
-            Box(
+            // --- 4. HORIZONTAL PAGER ACROSS THE 4 SUB-TABS (Swipe Left/Right or Tap Tabs!) ---
+            HorizontalPager(
+                state = subTabPagerState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-            ) {
-                when (activeSubTab) {
+            ) { page ->
+                val pageTab = subTabKeys[page]
+                when (pageTab) {
                     "Video" -> {
                         if (sortedVideos.isEmpty()) {
-                            // Clean, minimal empty state (no big "100% Real Device Video Scanner" card!)
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -493,127 +657,6 @@ fun VideoSectionScreen(
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
-                                // Collapsible Watch History Carousel
-                                if (historyVideos.isNotEmpty() && openedFolderName == null && !isViewingFavouriteFolder) {
-                                    item(key = "scrollable_history_section") {
-                                        Column(modifier = Modifier.fillMaxWidth()) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                    modifier = Modifier.clickable { isHistoryCollapsed = !isHistoryCollapsed }
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.History,
-                                                        contentDescription = null,
-                                                        tint = personaMode.primaryAccent,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                    Text(
-                                                        text = if (isHindi) "हाल ही में देखे गए (${historyVideos.size})" else "History (${historyVideos.size})",
-                                                        color = Color.White,
-                                                        fontSize = 13.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                    Icon(
-                                                        imageVector = if (isHistoryCollapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
-                                                        contentDescription = null,
-                                                        tint = HybridTextSecondary,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        viewModel.clearHistory()
-                                                        Toast.makeText(
-                                                            context,
-                                                            if (isHindi) "हिस्ट्री साफ़ की गई" else "Watch History Cleared",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
-                                                    },
-                                                    modifier = Modifier.size(28.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.DeleteOutline,
-                                                        contentDescription = null,
-                                                        tint = HybridTextSecondary,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                            }
-
-                                            if (!isHistoryCollapsed) {
-                                                Spacer(modifier = Modifier.height(4.dp))
-                                                LazyRow(
-                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                                ) {
-                                                    items(historyVideos, key = { "hist_${it.first.id}" }) { (video, posMs) ->
-                                                        val progressFraction = if (video.duration > 0) {
-                                                            (posMs.toFloat() / video.duration.toFloat()).coerceIn(0.12f, 1f)
-                                                        } else 0.35f
-
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(width = 132.dp, height = 72.dp)
-                                                                .clip(RoundedCornerShape(10.dp))
-                                                                .background(HybridCardBg)
-                                                                .border(1.dp, HybridCardBorder, RoundedCornerShape(10.dp))
-                                                                .clickable { onPlayVideo(video) }
-                                                        ) {
-                                                            GuaranteedVideoThumbnail(
-                                                                video = video,
-                                                                modifier = Modifier.fillMaxSize()
-                                                            )
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .fillMaxSize()
-                                                                    .background(
-                                                                        Brush.verticalGradient(
-                                                                            colors = listOf(Color.Transparent, Color(0xCC000000))
-                                                                        )
-                                                                    )
-                                                            )
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .align(Alignment.BottomEnd)
-                                                                    .padding(end = 5.dp, bottom = 6.dp)
-                                                                    .clip(RoundedCornerShape(4.dp))
-                                                                    .background(Color(0x99000000))
-                                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = "▶ ${video.formattedDuration}",
-                                                                    color = Color.White,
-                                                                    fontSize = 8.sp,
-                                                                    fontWeight = FontWeight.SemiBold
-                                                                )
-                                                            }
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .height(3.dp)
-                                                                    .align(Alignment.BottomCenter)
-                                                                    .background(Color(0x44FFFFFF))
-                                                            ) {
-                                                                Box(
-                                                                    modifier = Modifier
-                                                                        .fillMaxWidth(progressFraction)
-                                                                        .fillMaxHeight()
-                                                                        .background(personaMode.primaryAccent)
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
                                 items(sortedVideos, key = { it.id }) { video ->
                                     val isSelected = video.id in selectedIds
                                     VideoDetailedRowItem(
@@ -685,7 +728,7 @@ fun VideoSectionScreen(
                                     onClick = {
                                         isViewingFavouriteFolder = true
                                         openedFolderName = null
-                                        activeSubTab = "Video"
+                                        switchSubTab("Video")
                                     }
                                 )
                             }
@@ -699,7 +742,7 @@ fun VideoSectionScreen(
                                     onOpenFolder = {
                                         isViewingFavouriteFolder = false
                                         openedFolderName = folderName
-                                        activeSubTab = "Video"
+                                        switchSubTab("Video")
                                     },
                                     onPlayDirectVideo = onPlayVideo
                                 )
@@ -708,7 +751,6 @@ fun VideoSectionScreen(
                     }
 
                     "Status" -> {
-                        // Also render Status Reels directly inside the Status tab
                         StatusReelsVerticalPagerView(
                             reelVideos = statusReelVideos,
                             favorites = favorites,
@@ -736,7 +778,7 @@ fun VideoSectionScreen(
                             },
                             onClose = {
                                 showStatusReelsOverlay = false
-                                activeSubTab = "Folder"
+                                switchSubTab("Folder")
                             }
                         )
                     }
@@ -1016,19 +1058,29 @@ fun VideoSectionScreen(
                     }
                     OutlinedButton(
                         onClick = {
-                            pendingDeleteItems.forEach { viewModel.deletePermanently(it) }
+                            val batchToDelete = pendingDeleteItems.toList()
+                            val sysPending = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, batchToDelete)
+                            viewModel.deleteBatchPermanently(batchToDelete)
                             pendingDeleteItems = emptyList()
                             selectedIds.clear()
+                            if (sysPending != null) {
+                                try {
+                                    systemBatchDeleteLauncher.launch(
+                                        androidx.activity.result.IntentSenderRequest.Builder(sysPending.intentSender).build()
+                                    )
+                                } catch (_: Exception) {
+                                }
+                            }
                             Toast.makeText(
                                 context,
-                                if (isHindi) "हमेशा के लिए हटा दिया गया" else "Deleted Permanently",
+                                if (isHindi) "${batchToDelete.size} वीडियो हमेशा के लिए हटा दिए गए" else "Deleted ${batchToDelete.size} Video(s) Permanently",
                                 Toast.LENGTH_SHORT
                             ).show()
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = if (isHindi) "हमेशा के लिए हटाएं" else "Delete Permanently",
+                            text = if (isHindi) "हमेशा के लिए हटाएं (Permanent Delete)" else "Delete Permanently",
                             color = HybridCoralRed,
                             fontWeight = FontWeight.Bold
                         )

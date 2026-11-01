@@ -170,9 +170,9 @@ class PlayerViewModel(application: Application) :
     private val _audioVolumePercent = MutableStateFlow(readCurrentSystemVolumePercent())
     val audioVolumePercent: StateFlow<Int> = _audioVolumePercent.asStateFlow()
 
-    // --- Double-Shake (2x Shake to Next Track + Vibration) Engine ---
+    // --- Double-Shake (2x Shake to Next Track + Vibration) Engine (OFF by default until user enables) ---
     private val _doubleShakeEnabled = MutableStateFlow(
-        prefs.getBoolean("permanent_double_shake_enabled", true)
+        prefs.getBoolean("permanent_double_shake_enabled_v2", false)
     )
     val doubleShakeEnabled: StateFlow<Boolean> = _doubleShakeEnabled.asStateFlow()
 
@@ -185,6 +185,7 @@ class PlayerViewModel(application: Application) :
     val isForegroundVideoActive: StateFlow<Boolean> = _isForegroundVideoActive.asStateFlow()
 
     private var firstShakeTimestampMs: Long = 0L
+    private var firstShakeDirectionSign: Int = 0
     private var lastDoubleShakeTriggerMs: Long = 0L
     private val gravityFilter = FloatArray(3) { 0f }
     private var gravityInitialized = false
@@ -343,6 +344,7 @@ class PlayerViewModel(application: Application) :
     }
 
     init {
+        MediaNotificationHelper.setControlDelegate(this)
         loadMedia()
         checkVaultPinStatus()
         registerDoubleShakeSensor()
@@ -421,7 +423,7 @@ class PlayerViewModel(application: Application) :
         }
     }
 
-    // --- Hardware Accelerometer Double-Shake Registration & High-Pass Gravity Filtered Detection ---
+    // --- Hardware Accelerometer Double-Shake Registration & Anti-Pocket / Anti-Walking Filter ---
     private fun registerDoubleShakeSensor() {
         try {
             if (accelerometer != null) {
@@ -443,7 +445,7 @@ class PlayerViewModel(application: Application) :
             gravityFilter[2] = z
             gravityInitialized = true
         }
-        val alpha = 0.82f
+        val alpha = 0.85f
         gravityFilter[0] = alpha * gravityFilter[0] + (1f - alpha) * x
         gravityFilter[1] = alpha * gravityFilter[1] + (1f - alpha) * y
         gravityFilter[2] = alpha * gravityFilter[2] + (1f - alpha) * z
@@ -453,16 +455,25 @@ class PlayerViewModel(application: Application) :
         val linearZ = z - gravityFilter[2]
         val linearMagnitude = sqrt(linearX * linearX + linearY * linearY + linearZ * linearZ)
 
-        val linearThreshold = when (_shakeSensitivity.value) {
-            "High" -> 8.2f
-            "Firm" -> 14.5f
-            else -> 10.8f
+        // Anti-Walking / Anti-Pocket Filter:
+        // Requires deliberate lateral wrist snap (X-axis dominant over Y-axis vertical walking bounce)
+        // plus a sharp direction reversal on the second shake.
+        val lateralThreshold = when (_shakeSensitivity.value) {
+            "High" -> 12.8f
+            "Firm" -> 18.5f
+            else -> 15.5f
         }
 
-        if (linearMagnitude > linearThreshold) {
+        val absX = kotlin.math.abs(linearX)
+        val absY = kotlin.math.abs(linearY)
+        val isIntentionalLateralSnap = absX > lateralThreshold && absX > absY * 1.15f && linearMagnitude > lateralThreshold
+
+        if (isIntentionalLateralSnap) {
             val now = System.currentTimeMillis()
+            val currentSign = if (linearX >= 0f) 1 else -1
+
             // 1. Check Emergency Panic Shake inside Unlocked Privacy Vault
-            if (_vaultUnlocked.value && _panicShakeVaultLock.value && now - lastDoubleShakeTriggerMs > 900L) {
+            if (_vaultUnlocked.value && _panicShakeVaultLock.value && now - lastDoubleShakeTriggerMs > 1100L) {
                 lastDoubleShakeTriggerMs = now
                 triggerDoubleShakeVibration(isSingleTick = false)
                 lockVault()
@@ -474,17 +485,19 @@ class PlayerViewModel(application: Application) :
                 return
             }
 
-            // 2. Check Double-Shake to Skip Song (Active when music/background audio is loaded & not in foreground video)
+            // 2. Check Double-Shake to Skip Song (Only when explicitly enabled by user & not in foreground video)
             if (!_doubleShakeEnabled.value || _isForegroundVideoActive.value || _nowPlaying.value == null) return
-            if (now - lastDoubleShakeTriggerMs < 950L) return
+            if (now - lastDoubleShakeTriggerMs < 1300L) return
 
             val gap = now - firstShakeTimestampMs
-            if (gap in 140L..900L) {
+            if (gap in 160L..680L && firstShakeDirectionSign != 0 && currentSign != firstShakeDirectionSign) {
                 firstShakeTimestampMs = 0L
+                firstShakeDirectionSign = 0
                 lastDoubleShakeTriggerMs = now
                 executeDoubleShakeNextSong()
-            } else if (gap > 900L) {
+            } else if (gap > 680L || firstShakeTimestampMs == 0L) {
                 firstShakeTimestampMs = now
+                firstShakeDirectionSign = currentSign
                 triggerDoubleShakeVibration(isSingleTick = true)
             }
         }
@@ -541,7 +554,7 @@ class PlayerViewModel(application: Application) :
 
     fun setDoubleShakeEnabled(enabled: Boolean) {
         _doubleShakeEnabled.value = enabled
-        prefs.edit().putBoolean("permanent_double_shake_enabled", enabled).apply()
+        prefs.edit().putBoolean("permanent_double_shake_enabled_v2", enabled).apply()
         if (enabled) {
             triggerDoubleShakeVibration(isSingleTick = false)
         }
@@ -555,10 +568,28 @@ class PlayerViewModel(application: Application) :
 
     fun setForegroundVideoActive(active: Boolean) {
         _isForegroundVideoActive.value = active
+        if (!active) {
+            MediaNotificationHelper.setControlDelegate(this)
+            if (_nowPlaying.value != null) {
+                syncMediaNotification()
+            }
+        }
     }
 
     fun loadMedia() {
         viewModelScope.launch {
+            // Stage 1: Emit fast MediaStore results (<80ms) so videos/songs appear immediately after permission grant
+            val fastVideos = DeepMediaScanner.scanFastMediaStoreFirst(getApplication(), isVideo = true)
+            val fastMusic = DeepMediaScanner.scanFastMediaStoreFirst(getApplication(), isVideo = false)
+            if (fastVideos.isNotEmpty() || _videoItems.value.isEmpty()) {
+                _videoItems.value = fastVideos
+            }
+            if (fastMusic.isNotEmpty() || _musicItems.value.isEmpty()) {
+                _musicItems.value = fastMusic
+            }
+            _allMediaItems.value = _videoItems.value + _musicItems.value
+
+            // Stage 2: Full deep directory + WhatsApp Status + partial download scan
             val videos = repository.getAvailableMedia(isVideo = true)
             val music = repository.getAvailableMedia(isVideo = false)
             _videoItems.value = videos
@@ -617,6 +648,11 @@ class PlayerViewModel(application: Application) :
 
     fun deletePermanently(item: MediaItem) {
         PermanentDeleteHelper.deletePermanently(getApplication(), item)
+        loadMedia()
+    }
+
+    fun deleteBatchPermanently(items: List<MediaItem>) {
+        PermanentDeleteHelper.deleteBatchPermanently(getApplication(), items)
         loadMedia()
     }
 

@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.Crossfade
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -128,6 +129,12 @@ class MainActivity : ComponentActivity() {
                     } else if (selectedTab != MainBottomTab.VIDEO) {
                         selectedTab = MainBottomTab.VIDEO
                     }
+                }
+
+                var showBrandIntro by remember { mutableStateOf(true) }
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(1800L)
+                    showBrandIntro = false
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -483,7 +490,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // --- REALISTIC 3D ARTICULATED PUPPY & PENGUIN COMPANION OVERLAY ---
-                    if (currentScreen == ActiveScreen.MainTabs) {
+                    if (currentScreen == ActiveScreen.MainTabs && !showBrandIntro) {
                         RealisticCompanionOverlay(
                             enabled = companionEnabled,
                             breedName = companionBreed,
@@ -495,6 +502,18 @@ class MainActivity : ComponentActivity() {
                             onHideForSession = {
                                 viewModel.setCompanionEnabled(false)
                             }
+                        )
+                    }
+
+                    // --- FAST 1.8s LARGE HYBRID PLAYER BRANDED SPLASH OVERLAY ---
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showBrandIntro,
+                        enter = androidx.compose.animation.fadeIn(),
+                        exit = androidx.compose.animation.fadeOut()
+                    ) {
+                        HybridFastSplashOverlay(
+                            accentColor = accentColor,
+                            onDismissNow = { showBrandIntro = false }
                         )
                     }
                 }
@@ -530,4 +549,107 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+@Composable
+private fun HybridFastSplashOverlay(
+    accentColor: Color,
+    onDismissNow: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF050811),
+                        Color(0xFF0A1424),
+                        Color(0xFF050811)
+                    )
+                )
+            ),
+        contentAlignment = androidx.compose.ui.Alignment.Center
+    ) {
+        LiquidGlassBox(
+            modifier = Modifier
+                .fillMaxWidth(0.88f)
+                .widthIn(max = 420.dp),
+            cornerRadius = 32.dp,
+            tintColor = accentColor,
+            glassAlpha = 0.22f,
+            onClick = onDismissNow
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 32.dp),
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+            ) {
+                // Large 136.dp Glowing Hybrid Player App Icon
+                Surface(
+                    modifier = Modifier.size(136.dp),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(32.dp),
+                    color = Color(0xFF0D1322),
+                    border = androidx.compose.foundation.BorderStroke(2.5.dp, accentColor.copy(alpha = 0.75f)),
+                    shadowElevation = 18.dp
+                ) {
+                    androidx.compose.foundation.Image(
+                        painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_foreground),
+                        contentDescription = "Hybrid Player Logo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Text(
+                    text = "Hybrid Player",
+                    color = Color.White,
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.6.sp
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = "ULTRA HD MEDIA ENGINE • LIQUID GLASS STUDIO",
+                    color = accentColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 1.1.sp
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Feature Showcase Pills
+                val features = listOf(
+                    "⚡ 8K / 4K Ultra-Fast Video & Pending Movie Playback",
+                    "🎵 200% Volume Boost • 3D Visualizer • Pro Equalizer",
+                    "🚀 High-Speed Wi-Fi Direct Share & Dual-PIN Vault"
+                )
+                features.forEach { featureText ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                        color = Color.White.copy(alpha = 0.07f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+                    ) {
+                        Text(
+                            text = featureText,
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 
