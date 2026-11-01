@@ -142,7 +142,7 @@ fun VideoPlayerView(
     }
 
     val displayTitle = remember(videoTitle, videoPath) {
-        if (videoTitle.isNotBlank()) videoTitle else File(videoPath).nameWithoutExtension.ifEmpty { "8K Studio Video" }
+        if (videoTitle.isNotBlank()) videoTitle else File(videoPath).nameWithoutExtension.ifEmpty { "Video Player" }
     }
 
     fun applyBrightnessToWindow(newPct: Int) {
@@ -213,7 +213,7 @@ fun VideoPlayerView(
         MediaNotificationHelper.showOrUpdateNotification(
             context = context,
             title = displayTitle,
-            subtitle = "Hybrid 8K Video • $visualFilter",
+            subtitle = "Hybrid Video Player",
             mediaPath = videoPath,
             isVideo = true,
             isPlaying = playingState,
@@ -662,7 +662,11 @@ fun VideoPlayerView(
 
                     Spacer(modifier = Modifier.width(12.dp))
 
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 10.dp)
+                    ) {
                         Text(
                             text = displayTitle,
                             color = Color.White,
@@ -671,30 +675,32 @@ fun VideoPlayerView(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        val sleepTag = if (videoSleepRemainingSeconds > 0) {
-                            " • 🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}"
-                        } else ""
-                        Text(
-                            text = "8K Engine • $visualFilter • $aspectRatioMode • ${String.format(Locale.US, "%.2fx", playbackSpeed)}$sleepTag",
-                            color = HybridEmerald,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (videoSleepRemainingSeconds > 0) {
+                            Text(
+                                text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
+                                color = HybridGold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                        }
                     }
 
-                    // Audio Track Switcher Quick Icon
+                    // Background Audio Quick Icon
                     IconButton(
-                        onClick = { showAudioTrackDialog = true },
+                        onClick = {
+                            onProgressUpdate(currentPosMs)
+                            onBackgroundAudioPlay()
+                        },
                         modifier = Modifier
                             .size(40.dp)
                             .clip(CircleShape)
                             .background(HybridTranslucentControl)
                     ) {
-                        Icon(Icons.Default.Audiotrack, contentDescription = "Audio Track", tint = Color.White)
+                        Icon(Icons.Default.Headphones, contentDescription = "Background Audio", tint = Color.White)
                     }
 
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     // Subtitles (.srt/.vtt/.ass) Quick Icon
                     IconButton(
@@ -711,9 +717,9 @@ fun VideoPlayerView(
                         )
                     }
 
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
-                    // 3-Dot Pro Player Menu
+                    // 3-Dot Player Menu
                     IconButton(
                         onClick = { showThreeDotSheet = true },
                         modifier = Modifier
@@ -721,16 +727,33 @@ fun VideoPlayerView(
                             .clip(CircleShape)
                             .background(HybridTranslucentControl)
                     ) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Pro Tools Menu", tint = Color.White)
+                        Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = Color.White)
                     }
                 }
 
-                // CENTER PLAY / PAUSE & SEEK BUTTONS (Translucent Borderless Dark Circles #33000000)
+                // CENTER PLAY / PAUSE, -10s / +10s SEEK & PREV / NEXT BUTTONS
                 Row(
                     modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (allVideos.size > 1) {
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                val idx = allVideos.indexOfFirst { it.path == videoPath }
+                                val prevIdx = if (idx > 0) idx - 1 else allVideos.lastIndex
+                                onSelectVideo(allVideos[prevIdx])
+                            },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(HybridTranslucentControl)
+                        ) {
+                            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous Video", tint = Color.White, modifier = Modifier.size(26.dp))
+                        }
+                    }
+
                     IconButton(
                         onClick = {
                             lastInteractionTime = System.currentTimeMillis()
@@ -738,6 +761,7 @@ fun VideoPlayerView(
                                 val target = (vv.currentPosition - 10_000).coerceAtLeast(0)
                                 vv.seekTo(target)
                                 currentPosMs = target.toLong()
+                                gestureOverlayText = "⏪ -10s"
                             }
                         },
                         modifier = Modifier
@@ -764,13 +788,13 @@ fun VideoPlayerView(
                         modifier = Modifier
                             .size(68.dp)
                             .clip(CircleShape)
-                            .background(HybridTranslucentControl)
+                            .background(HybridEmerald.copy(alpha = 0.88f))
                     ) {
                         Icon(
                             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = "Play/Pause",
-                            tint = Color.White,
-                            modifier = Modifier.size(40.dp)
+                            tint = Color.Black,
+                            modifier = Modifier.size(38.dp)
                         )
                     }
 
@@ -781,6 +805,7 @@ fun VideoPlayerView(
                                 val target = (vv.currentPosition + 10_000).coerceAtMost(vv.duration.coerceAtLeast(1))
                                 vv.seekTo(target)
                                 currentPosMs = target.toLong()
+                                gestureOverlayText = "⏩ +10s"
                             }
                         },
                         modifier = Modifier
@@ -790,9 +815,26 @@ fun VideoPlayerView(
                     ) {
                         Icon(Icons.Default.Forward10, contentDescription = "Forward 10s", tint = Color.White, modifier = Modifier.size(30.dp))
                     }
+
+                    if (allVideos.size > 1) {
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                val idx = allVideos.indexOfFirst { it.path == videoPath }
+                                val nextIdx = if (idx >= 0) (idx + 1) % allVideos.size else 0
+                                onSelectVideo(allVideos[nextIdx])
+                            },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(HybridTranslucentControl)
+                        ) {
+                            Icon(Icons.Default.SkipNext, contentDescription = "Next Video", tint = Color.White, modifier = Modifier.size(26.dp))
+                        }
+                    }
                 }
 
-                // BOTTOM CONTROLS & PURE VISUAL LIQUID GLASS ICON STRIP ("PATTI" — Zero English Clutter!)
+                // BOTTOM CONTROLS & CLEAN ICON STRIP (Zero "8K" Clutter, Zero Duplicates)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -801,10 +843,10 @@ fun VideoPlayerView(
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
                     val filterPresets = remember {
-                        listOf("Original", "8K HDR", "Clear Sharp", "Crystal Ice Blue", "Warm Cinema", "AMOLED Contrast")
+                        listOf("Original", "Clear Sharp", "Crystal Ice Blue", "Warm Cinema", "AMOLED Contrast")
                     }
                     val aspectPresets = remember {
-                        listOf("Original Fit", "Zoom Crop", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")
+                        listOf("Full Screen", "Zoom Crop", "Original Fit", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")
                     }
                     val speedPresets = remember {
                         listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
@@ -923,7 +965,18 @@ fun VideoPlayerView(
                         },
                         sleepTimerMinutes = videoSleepTimerTotalMinutes,
                         onOpenProControlSheet = { showThreeDotSheet = true },
-                        onOpenQueueSheet = { showQueueDialog = true }
+                        onOpenQueueSheet = { showQueueDialog = true },
+                        onRotateOrientation = {
+                            val activity = context as? Activity
+                            if (orientationLabel == "Landscape") {
+                                orientationLabel = "Portrait"
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            } else {
+                                orientationLabel = "Landscape"
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            }
+                            lastInteractionTime = System.currentTimeMillis()
+                        }
                     )
 
                     Spacer(modifier = Modifier.height(6.dp))
@@ -1110,7 +1163,7 @@ fun VideoPlayerView(
         )
     }
 
-    // --- 3-DOT PRO PLAYER MENU (Houses Hidden Sleep Timer + All Working Pro Features) ---
+    // --- CLEAN, NON-CLIPPED 3-DOT MENU (Sleep Timer + Distinct Features — Zero Duplicate Controls, Zero 8K Clutter) ---
     if (showThreeDotSheet) {
         AlertDialog(
             onDismissRequest = { showThreeDotSheet = false },
@@ -1121,7 +1174,12 @@ fun VideoPlayerView(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("8K Pro Player & Sleep Timer", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp)
+                    Text(
+                        text = "Player Tools & Sleep Timer",
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp
+                    )
                     if (videoSleepRemainingSeconds > 0) {
                         Text(
                             text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
@@ -1133,172 +1191,102 @@ fun VideoPlayerView(
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // 1. HIDDEN SLEEP TIMER SECTION INSIDE 3-DOT MENU
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // 1. SLEEP TIMER (Clean 2-row grid so nothing ever clips on any phone width)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(14.dp))
                             .background(HybridCardAlt)
-                            .border(1.dp, if (videoSleepRemainingSeconds > 0) HybridGold else HybridCardBorder, RoundedCornerShape(12.dp))
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                            .border(
+                                1.dp,
+                                if (videoSleepRemainingSeconds > 0) HybridGold else HybridCardBorder,
+                                RoundedCornerShape(14.dp)
+                            )
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Bedtime, contentDescription = null, tint = HybridGold, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = if (videoSleepRemainingSeconds > 0) {
-                                        "Sleep Timer Active (${formatVideoTime(videoSleepRemainingSeconds * 1000L)})"
-                                    } else {
-                                        "Video Sleep Timer (Auto-Pause)"
-                                    },
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Bedtime, contentDescription = null, tint = HybridGold, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (videoSleepRemainingSeconds > 0) {
+                                    "Sleep Timer: ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}"
+                                } else {
+                                    "Sleep Timer (Auto-Pause)"
+                                },
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
 
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            val timerPresets = listOf(0 to "Off", 10 to "10m", 15 to "15m", 30 to "30m", 45 to "45m", 60 to "60m", -1 to "End of Clip")
-                            items(timerPresets) { (mins, label) ->
+                        val timerRow1 = listOf(0 to "Off", 10 to "10m", 15 to "15m", 30 to "30m")
+                        val timerRow2 = listOf(45 to "45m", 60 to "60m", -1 to "End of Video")
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            timerRow1.forEach { (mins, label) ->
                                 val selected = (mins == 0 && videoSleepRemainingSeconds == 0) ||
-                                    (mins > 0 && videoSleepTimerTotalMinutes == mins) ||
-                                    (mins == -1 && videoSleepTimerTotalMinutes == -1)
+                                    (mins > 0 && videoSleepTimerTotalMinutes == mins)
                                 Box(
                                     modifier = Modifier
+                                        .weight(1f)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected) HybridGold else Color(0x33FFFFFF))
+                                        .background(if (selected) HybridGold else Color(0x28FFFFFF))
                                         .clickable {
                                             videoSleepTimerTotalMinutes = mins
-                                            videoSleepRemainingSeconds = when {
-                                                mins == 0 -> 0
-                                                mins == -1 -> ((totalDurationMs - currentPosMs) / 1000L).toInt().coerceAtLeast(5)
-                                                else -> mins * 60
-                                            }
-                                            Toast.makeText(
-                                                context,
-                                                if (mins == 0) "Video Sleep Timer Off" else "🌙 Video Sleep Timer set: $label",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
+                                            videoSleepRemainingSeconds = if (mins == 0) 0 else mins * 60
                                         }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        .padding(vertical = 7.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     Text(
                                         text = label,
                                         color = if (selected) Color.Black else Color.White,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 11.sp
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            timerRow2.forEach { (mins, label) ->
+                                val selected = (mins > 0 && videoSleepTimerTotalMinutes == mins) ||
+                                    (mins == -1 && videoSleepTimerTotalMinutes == -1)
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (selected) HybridGold else Color(0x28FFFFFF))
+                                        .clickable {
+                                            videoSleepTimerTotalMinutes = mins
+                                            videoSleepRemainingSeconds = if (mins == -1) {
+                                                ((totalDurationMs - currentPosMs) / 1000L).toInt().coerceAtLeast(5)
+                                            } else {
+                                                mins * 60
+                                            }
+                                        }
+                                        .padding(vertical = 7.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = if (selected) Color.Black else Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        maxLines = 1
                                     )
                                 }
                             }
                         }
                     }
 
-                    // 1.5 UNIVERSAL VIDEO RESOLUTION ENGINE (8K, 4K, 2K, 1080p, 720p, 480p, 360p, 240p, Auto)
-                    Text("Resolution Engine (8K / 4K / 2K / 1080p / 720p / 480p):", color = HybridTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(VideoResolutionPreset.entries) { resPreset ->
-                            val active = selectedResolution == resPreset
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (active) resPreset.accent else HybridCardAlt)
-                                    .border(1.dp, if (active) Color.White else resPreset.accent.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        selectedResolution = resPreset
-                                        gestureOverlayText = "🎞️ ${resPreset.badge}"
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = resPreset.badge,
-                                    color = if (active) Color.Black else Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-
-                    // 2. PLAYBACK SPEED (0.25x - 4.0x)
-                    Text("Playback Speed (0.25x – 4.0x):", color = HybridTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f)) { sp ->
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (playbackSpeed == sp) HybridEmerald else HybridCardAlt)
-                                    .clickable { playbackSpeed = sp }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = "${sp}x",
-                                    color = if (playbackSpeed == sp) Color.Black else Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-
-                    // 3. ASPECT RATIO & SCREEN FIT
-                    Text("Aspect Ratio & Screen Crop:", color = HybridTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(listOf("Full Screen", "Zoom Crop", "Original Fit", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")) { ratio ->
-                            val active = aspectRatioMode == ratio
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (active) HybridCyan else HybridCardAlt)
-                                    .clickable { aspectRatioMode = ratio }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = ratio,
-                                    color = if (active) Color.Black else Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-
-                    // 4. REAL WORKING PRO ACTION TILES
+                    // 2. DISTINCT ACTION TILES (No duplicate speed/aspect rows)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = {
-                                val activity = context as? Activity
-                                when (orientationLabel) {
-                                    "Auto" -> {
-                                        orientationLabel = "Landscape"
-                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                                    }
-                                    "Landscape" -> {
-                                        orientationLabel = "Portrait"
-                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                                    }
-                                    else -> {
-                                        orientationLabel = "Auto"
-                                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                                    }
-                                }
-                                Toast.makeText(context, "Orientation: $orientationLabel", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
-                        ) {
-                            Icon(Icons.Default.ScreenRotation, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Rotate: $orientationLabel", color = Color.White, fontSize = 11.sp, maxLines = 1)
-                        }
-
                         OutlinedButton(
                             onClick = {
                                 showThreeDotSheet = false
@@ -1306,35 +1294,43 @@ fun VideoPlayerView(
                                 onBackgroundAudioPlay()
                             },
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                         ) {
-                            Icon(Icons.Default.Headphones, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("BG Audio Play", color = Color.White, fontSize = 11.sp, maxLines = 1)
-                        }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = {
-                                showThreeDotSheet = false
-                                showFilterDialog = true
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
-                        ) {
-                            Text("Filter: $visualFilter", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                            Icon(Icons.Default.Headphones, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("BG Audio", color = Color.White, fontSize = 12.sp, maxLines = 1)
                         }
 
                         OutlinedButton(
                             onClick = {
+                                when {
+                                    abPointA == null -> {
+                                        abPointA = currentPosMs
+                                        gestureOverlayText = "Loop A Set"
+                                    }
+                                    abPointB == null && currentPosMs > (abPointA ?: 0L) + 1000L -> {
+                                        abPointB = currentPosMs
+                                        gestureOverlayText = "A-B Loop Active"
+                                    }
+                                    else -> {
+                                        abPointA = null
+                                        abPointB = null
+                                        gestureOverlayText = "A-B Loop Off"
+                                    }
+                                }
                                 showThreeDotSheet = false
-                                showMediaInfoDialog = true
                             },
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                         ) {
-                            Text("Codec & File Info", color = HybridGold, fontSize = 11.sp, maxLines = 1)
+                            Icon(Icons.Default.Repeat, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            val abText = when {
+                                abPointA != null && abPointB != null -> "Clear A-B"
+                                abPointA != null -> "Set Point B"
+                                else -> "A-B Repeat"
+                            }
+                            Text(abText, color = Color.White, fontSize = 12.sp, maxLines = 1)
                         }
                     }
 
@@ -1345,9 +1341,11 @@ fun VideoPlayerView(
                                 showAudioTrackDialog = true
                             },
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                         ) {
-                            Text("Audio Track", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                            Icon(Icons.Default.Audiotrack, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Audio Track", color = Color.White, fontSize = 12.sp, maxLines = 1)
                         }
 
                         OutlinedButton(
@@ -1356,9 +1354,39 @@ fun VideoPlayerView(
                                 showSubtitleDialog = true
                             },
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                         ) {
-                            Text("Subtitles (.SRT)", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                            Icon(Icons.Default.Subtitles, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Subtitles", color = Color.White, fontSize = 12.sp, maxLines = 1)
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                showThreeDotSheet = false
+                                showFilterDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Palette, contentDescription = null, tint = Color(0xFFD500F9), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Color Filter", color = Color.White, fontSize = 12.sp, maxLines = 1)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                showThreeDotSheet = false
+                                showMediaInfoDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Info, contentDescription = null, tint = HybridGold, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("File Info", color = HybridGold, fontSize = 12.sp, maxLines = 1)
                         }
                     }
                 }

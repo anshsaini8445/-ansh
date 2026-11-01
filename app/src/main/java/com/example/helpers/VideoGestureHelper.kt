@@ -375,11 +375,21 @@ fun Modifier.detectVideoPlayerGestures(
                 var activeMode = LockedGestureMode.NONE
                 var startTouchX = 0f
                 var seekOriginMs = 0L
+                var startBrightness = 75
+                var startVolume = 100
+                var startSpeed = 1.0f
+                var totalDragDx = 0f
+                var totalDragDy = 0f
 
                 detectDragGestures(
                     onDragStart = { startOffset ->
                         startTouchX = startOffset.x
                         seekOriginMs = getCurrentPositionMs()
+                        startBrightness = getBrightness()
+                        startVolume = getVolume()
+                        startSpeed = getPlaybackSpeed()
+                        totalDragDx = 0f
+                        totalDragDy = 0f
                         activeMode = if (getIsLongPressSpeedActive()) {
                             LockedGestureMode.DYNAMIC_SPEED_SLIDE
                         } else {
@@ -404,40 +414,43 @@ fun Modifier.detectVideoPlayerGestures(
                         change.consume()
                         val w = size.width.toFloat().coerceAtLeast(1f)
                         val h = size.height.toFloat().coerceAtLeast(1f)
+                        totalDragDx += dragAmount.x
+                        totalDragDy += dragAmount.y
 
                         if (activeMode == LockedGestureMode.NONE) {
-                            activeMode = VideoGestureHelper.resolveGestureMode(
-                                startX = startTouchX,
-                                viewportWidth = w,
-                                dragDx = dragAmount.x,
-                                dragDy = dragAmount.y,
-                                isLongPressSpeedActive = getIsLongPressSpeedActive()
-                            )
+                            if (abs(totalDragDx) > 8f || abs(totalDragDy) > 8f) {
+                                activeMode = VideoGestureHelper.resolveGestureMode(
+                                    startX = startTouchX,
+                                    viewportWidth = w,
+                                    dragDx = totalDragDx,
+                                    dragDy = totalDragDy,
+                                    isLongPressSpeedActive = getIsLongPressSpeedActive()
+                                )
+                            }
                         }
 
                         when (activeMode) {
                             LockedGestureMode.VERTICAL_BRIGHTNESS -> {
-                                val current = getBrightness()
-                                val (next, pulse) = VideoGestureHelper.computeBrightnessStep(
-                                    currentBrightness = current,
-                                    dragDy = dragAmount.y,
-                                    viewportHeight = h
+                                val prev = getBrightness()
+                                val deltaPct = ((-totalDragDy / h) * 125f).toInt()
+                                val next = (startBrightness + deltaPct).coerceIn(2, 100)
+                                val pulse = VideoGestureHelper.detectThresholdCrossing(
+                                    previous = prev,
+                                    current = next,
+                                    minBound = 2,
+                                    maxBound = 100,
+                                    midThresholds = setOf(50),
+                                    boostThreshold = null
                                 )
                                 if (pulse != null) {
                                     VideoGestureHelper.triggerHapticPulse(context, hostView, pulse)
-                                }
-                                val subLabel = when (next) {
-                                    2 -> "Minimum Night Mode (2%)"
-                                    50 -> "Balanced Studio (50%)"
-                                    100 -> "Maximum Peak Brightness (100%)"
-                                    else -> "Vertical Left Swipe"
                                 }
                                 onBrightnessChanged(
                                     next,
                                     GestureHudState(
                                         mode = LockedGestureMode.VERTICAL_BRIGHTNESS,
                                         titleText = "Brightness $next%",
-                                        subText = subLabel,
+                                        subText = "Slide Up / Down",
                                         progressFraction = (next / 100f).coerceIn(0.02f, 1f),
                                         thresholdReached = next in VideoGestureHelper.BRIGHTNESS_THRESHOLDS
                                     )
@@ -445,28 +458,27 @@ fun Modifier.detectVideoPlayerGestures(
                             }
 
                             LockedGestureMode.VERTICAL_VOLUME -> {
-                                val current = getVolume()
-                                val (next, pulse) = VideoGestureHelper.computeVolumeStep(
-                                    currentVolume = current,
-                                    dragDy = dragAmount.y,
-                                    viewportHeight = h
+                                val prev = getVolume()
+                                val deltaPct = ((-totalDragDy / h) * 160f).toInt()
+                                val next = (startVolume + deltaPct).coerceIn(0, 200)
+                                val pulse = VideoGestureHelper.detectThresholdCrossing(
+                                    previous = prev,
+                                    current = next,
+                                    minBound = 0,
+                                    maxBound = 200,
+                                    midThresholds = setOf(50, 150),
+                                    boostThreshold = 100
                                 )
                                 if (pulse != null) {
                                     VideoGestureHelper.triggerHapticPulse(context, hostView, pulse)
                                 }
                                 val isBoost = next > 100
-                                val subLabel = when (next) {
-                                    0 -> "Muted (0%)"
-                                    100 -> "Standard Max (100% Threshold)"
-                                    200 -> "MAX 200% Hardware Loudness Boost!"
-                                    else -> if (isBoost) "Hardware LoudnessEnhancer Boost" else "Standard Audio Range"
-                                }
                                 onVolumeChanged(
                                     next,
                                     GestureHudState(
                                         mode = LockedGestureMode.VERTICAL_VOLUME,
-                                        titleText = if (isBoost) "Boost Volume $next%" else "Volume $next%",
-                                        subText = subLabel,
+                                        titleText = "Volume $next%",
+                                        subText = if (isBoost) "200% Boost Active" else "Slide Up / Down",
                                         progressFraction = (next / 200f).coerceIn(0f, 1f),
                                         isBoostZone = isBoost,
                                         thresholdReached = next in VideoGestureHelper.VOLUME_THRESHOLDS
@@ -475,14 +487,18 @@ fun Modifier.detectVideoPlayerGestures(
                             }
 
                             LockedGestureMode.HORIZONTAL_SEEK -> {
-                                val current = getCurrentPositionMs()
+                                val prevPos = getCurrentPositionMs()
                                 val total = getDurationMs().coerceAtLeast(1000L)
-                                val (nextPos, pulse) = VideoGestureHelper.computeHorizontalSeekStep(
-                                    currentPositionMs = current,
-                                    durationMs = total,
-                                    dragDx = dragAmount.x,
-                                    viewportWidth = w
-                                )
+                                // Smooth slow-or-fast horizontal finger scrubbing across video
+                                val maxScrubSpanMs = 120_000L.coerceAtMost((total * 0.85f).toLong().coerceAtLeast(15_000L))
+                                val deltaMs = ((totalDragDx / w) * maxScrubSpanMs).toLong()
+                                val nextPos = (seekOriginMs + deltaMs).coerceIn(0L, total)
+                                val pulse = when {
+                                    (nextPos == 0L && prevPos > 0L) ||
+                                        (nextPos == total && prevPos < total) -> HapticPulseType.BOUNDARY_LIMIT
+                                    (nextPos / VideoGestureHelper.SEEK_HAPTIC_STEP_MS) != (prevPos / VideoGestureHelper.SEEK_HAPTIC_STEP_MS) -> HapticPulseType.STEP_TICK
+                                    else -> null
+                                }
                                 if (pulse != null) {
                                     VideoGestureHelper.triggerHapticPulse(context, hostView, pulse)
                                 }
@@ -493,7 +509,7 @@ fun Modifier.detectVideoPlayerGestures(
                                     GestureHudState(
                                         mode = LockedGestureMode.HORIZONTAL_SEEK,
                                         titleText = "${VideoGestureHelper.formatTimestamp(nextPos)} / ${VideoGestureHelper.formatTimestamp(total)}",
-                                        subText = "Scrubbing ($diffPrefix)",
+                                        subText = diffPrefix,
                                         progressFraction = (nextPos.toFloat() / total.toFloat()).coerceIn(0f, 1f),
                                         thresholdReached = pulse != null
                                     )
@@ -501,12 +517,10 @@ fun Modifier.detectVideoPlayerGestures(
                             }
 
                             LockedGestureMode.DYNAMIC_SPEED_SLIDE -> {
-                                val currentSpd = getPlaybackSpeed()
-                                val (nextSpd, pulse) = VideoGestureHelper.computeDynamicSpeedStep(
-                                    currentSpeed = currentSpd,
-                                    dragDx = dragAmount.x,
-                                    viewportWidth = w
-                                )
+                                val prevSpd = getPlaybackSpeed()
+                                val deltaSpd = (totalDragDx / w) * 4.0f
+                                val nextSpd = (startSpeed + deltaSpd).coerceIn(0.25f, 4.0f)
+                                val pulse = if ((prevSpd * 2f).toInt() != (nextSpd * 2f).toInt()) HapticPulseType.STEP_TICK else null
                                 if (pulse != null) {
                                     VideoGestureHelper.triggerHapticPulse(context, hostView, pulse)
                                 }
@@ -515,9 +529,9 @@ fun Modifier.detectVideoPlayerGestures(
                                     true,
                                     GestureHudState(
                                         mode = LockedGestureMode.DYNAMIC_SPEED_SLIDE,
-                                        titleText = String.format(Locale.US, "⏩ Speed %.2fx", nextSpd),
+                                        titleText = String.format(Locale.US, "⏩ %.2fx", nextSpd),
                                         subText = "Slide Left / Right",
-                                        progressFraction = (nextSpd / 8.0f).coerceIn(0f, 1f),
+                                        progressFraction = (nextSpd / 4.0f).coerceIn(0f, 1f),
                                         thresholdReached = pulse != null
                                     )
                                 )

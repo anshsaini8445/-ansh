@@ -1,700 +1,1032 @@
 package com.example.ui.screens
 
-import android.graphics.Bitmap
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.*
+import android.content.res.Configuration
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
-import com.example.data.scanner.DeepMediaScanner
+import com.example.ui.components.GuaranteedAlbumArt
 import com.example.ui.components.LiquidGlassBox
-import com.example.ui.components.LiquidGlassEqualizerWidget
 import com.example.ui.components.LiquidGlassIconOrb
-import com.example.ui.components.LiquidGlassShakeOrbWidget
-import com.example.ui.components.LiquidGlassVolumeBoosterWidget
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
-private enum class AudioVisualCategory(val key: String, val icon: ImageVector, val color: Color) {
-    SONGS("Songs", Icons.Default.MusicNote, Color(0xFF00E676)),
-    FOLDERS("Folders", Icons.Default.Folder, Color(0xFF00E5FF)),
-    ALBUMS("Albums", Icons.Default.Album, Color(0xFFD500F9)),
-    ARTISTS("Artists", Icons.Default.MicExternalOn, Color(0xFFFFEA00)),
-    FAVORITES("Favorites", Icons.Default.Favorite, Color(0xFFFF1744))
+private enum class AudioSubTab {
+    ALL, NEW, VIDEOS, PLAYLIST, FOLDERS
 }
 
+/**
+ * Clean, Multi-Language Music & Video-Audio Library Screen:
+ * - Top Header shows ONLY App Icon + "Hybrid Player" (zero icon clutter rows).
+ * - Labeled Sub-Tabs:
+ *   1. All ("All" / "सभी")
+ *   2. New ("New" / "नए गाने")
+ *   3. Videos ("Videos" / "वीडियो गाने") — Play any device video directly as audio in the music player!
+ *   4. Playlist ("Playlist" / "प्लेलिस्ट") — Favourite Songs + Custom Playlists
+ *   5. Folders ("Folders" / "फ़ोल्डर") — "Video Songs" folder + all device audio folders
+ * - Right side of Tab Bar: Sort (⇅) button with Oldest->Newest, Newest->Oldest, A->Z, Z->A,
+ *   Shortest->Longest (5s+), and Longest->Shortest.
+ * - Responsive orientation & tablet grid layout.
+ */
 @Composable
 fun AudioLibraryScreen(
     viewModel: PlayerViewModel,
-    onOpenStudioPlayer: (MediaItem) -> Unit,
-    onOpenEqualizer: () -> Unit,
-    onOpenTurboShare: () -> Unit,
+    onOpenStudioPlayer: () -> Unit = {},
+    onOpenEqualizer: () -> Unit = {},
+    onOpenTurboShare: () -> Unit = {},
     onHybridShareItem: (MediaItem) -> Unit = { _ -> onOpenTurboShare() },
-    modifier: Modifier = Modifier
+    onOpenFullMusicPlayer: () -> Unit = onOpenStudioPlayer,
+    onOpenHybridShareForItem: (MediaItem) -> Unit = onHybridShareItem
 ) {
-    val context = LocalContext.current
-    val tracks by viewModel.musicItems.collectAsState()
-    val favorites by viewModel.favoriteItems.collectAsState()
+    val musicItems by viewModel.musicItems.collectAsState()
+    val videoItems by viewModel.videoItems.collectAsState()
+    val favoriteItems by viewModel.favoriteItems.collectAsState()
+    val playlists by viewModel.playlists.collectAsState()
     val nowPlaying by viewModel.nowPlaying.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
-    val doubleShakeEnabled by viewModel.doubleShakeEnabled.collectAsState()
-    val eqBands by viewModel.equalizerBands.collectAsState()
-    val is200Boost by viewModel.is200BoostEnabled.collectAsState()
-    val audioVolumePct by viewModel.audioVolumePercent.collectAsState()
-    val personaMode by viewModel.demographicMode.collectAsState()
+    val audioSortOrder by viewModel.audioSortOrder.collectAsState()
+    val selectedLanguage by viewModel.selectedLanguage.collectAsState()
 
-    var selectedCategory by remember { mutableStateOf("Songs") }
-    var selectedGroupFilter by remember { mutableStateOf<String?>(null) }
-    var menuTargetTrack by remember { mutableStateOf<MediaItem?>(null) }
+    val isHindi = remember(selectedLanguage) {
+        selectedLanguage.contains("Hindi", ignoreCase = true) ||
+            selectedLanguage.contains("हिन्दी")
+    }
 
-    val pickAudioLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            viewModel.importPickedMedia(uris, isVideo = false)
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val isTablet = configuration.screenWidthDp >= 600
+    val gridColumns = if (isTablet || isLandscape) 2 else 1
+
+    var activeTab by remember { mutableStateOf(AudioSubTab.ALL) }
+    var selectedFolderName by remember { mutableStateOf<String?>(null) }
+    var selectedPlaylistId by remember { mutableStateOf<Long?>(null) }
+    var viewingFavoritesPlaylist by remember { mutableStateOf(false) }
+
+    var showSortDialog by remember { mutableStateOf(false) }
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
+    var sevenMenuTargetItem by remember { mutableStateOf<MediaItem?>(null) }
+
+    val videoSongsFolderKey = "__VIDEO_SONGS_FOLDER__"
+
+    BackHandler(
+        enabled = selectedFolderName != null || selectedPlaylistId != null || viewingFavoritesPlaylist || activeTab != AudioSubTab.ALL
+    ) {
+        when {
+            selectedFolderName != null -> selectedFolderName = null
+            selectedPlaylistId != null -> selectedPlaylistId = null
+            viewingFavoritesPlaylist -> viewingFavoritesPlaylist = false
+            activeTab != AudioSubTab.ALL -> activeTab = AudioSubTab.ALL
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) {
-        viewModel.loadMedia()
+    fun sortTracks(list: List<MediaItem>): List<MediaItem> {
+        return when (audioSortOrder) {
+            "OldToNew" -> list.sortedBy { it.dateAdded }
+            "AtoZ" -> list.sortedBy { it.cleanTitle.lowercase() }
+            "ZtoA" -> list.sortedByDescending { it.cleanTitle.lowercase() }
+            "ShortToLong" -> list.filter { it.duration >= 5_000L || it.duration == 0L }.sortedBy { it.duration }
+            "LongToShort" -> list.sortedByDescending { it.duration }
+            else -> list.sortedByDescending { it.dateAdded }
+        }
     }
 
-    val displayedTracks = remember(tracks, favorites, selectedCategory, selectedGroupFilter) {
+    val sortedMusicItems = remember(musicItems, audioSortOrder) {
+        sortTracks(musicItems)
+    }
+
+    val newSongsItems = remember(musicItems) {
+        musicItems.sortedByDescending { it.dateAdded }.take(40)
+    }
+
+    val sortedVideoAudioItems = remember(videoItems, audioSortOrder) {
+        sortTracks(videoItems)
+    }
+
+    val favoriteAudioAndVideoTracks = remember(favoriteItems, audioSortOrder) {
+        sortTracks(favoriteItems)
+    }
+
+    val groupedAudioFolders = remember(musicItems) {
+        musicItems.groupBy { it.folderName.ifBlank { "Music" } }
+            .entries
+            .sortedByDescending { it.value.size }
+    }
+
+    val currentDisplayedTracks = remember(
+        activeTab,
+        sortedMusicItems,
+        newSongsItems,
+        sortedVideoAudioItems,
+        selectedFolderName,
+        viewingFavoritesPlaylist,
+        favoriteAudioAndVideoTracks
+    ) {
         when {
-            selectedGroupFilter != null -> tracks.filter {
-                it.folderName == selectedGroupFilter || it.albumName == selectedGroupFilter || it.artist == selectedGroupFilter
-            }
-            selectedCategory == "Favorites" -> favorites.filter { !it.isVideo }
-            else -> tracks
+            selectedFolderName == videoSongsFolderKey -> sortedVideoAudioItems
+            selectedFolderName != null -> sortTracks(
+                musicItems.filter { it.folderName.equals(selectedFolderName, ignoreCase = true) }
+            )
+            viewingFavoritesPlaylist -> favoriteAudioAndVideoTracks
+            activeTab == AudioSubTab.ALL -> sortedMusicItems
+            activeTab == AudioSubTab.NEW -> newSongsItems
+            activeTab == AudioSubTab.VIDEOS -> sortedVideoAudioItems
+            else -> sortedMusicItems
         }
     }
 
     Box(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(Color.Transparent)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // --- TOP HEADER: Custom App Logo + Pure Visual Liquid Glass Category Icon Orbs + EQ & Booster Widgets ---
+            // 1. Clean Top Header Bar — ONLY App Icon + "Hybrid Player" (matching Video Section)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .height(54.dp)
+                    .padding(horizontal = if (isTablet) 22.dp else 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.ic_app_custom_logo),
-                    contentDescription = "Hybrid Player App Icon",
+                    contentDescription = "Hybrid Player",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .border(1.dp, HybridEmerald.copy(alpha = 0.6f), RoundedCornerShape(9.dp))
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-
-                // Pure Visual Category Orbs (No hardcoded English text labels!)
-                LazyRow(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    items(AudioVisualCategory.entries) { cat ->
-                        val active = selectedCategory == cat.key
-                        Box(
-                            modifier = Modifier
-                                .size(if (active) 40.dp else 36.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.verticalGradient(
-                                        if (active) listOf(cat.color.copy(alpha = 0.38f), Color(0xFF0A1222))
-                                        else listOf(Color.White.copy(alpha = 0.10f), Color(0xFF0B111E))
-                                    )
-                                )
-                                .border(
-                                    width = if (active) 1.6.dp else 1.dp,
-                                    color = if (active) cat.color else Color.White.copy(alpha = 0.22f),
-                                    shape = CircleShape
-                                )
-                                .clickable {
-                                    selectedCategory = cat.key
-                                    selectedGroupFilter = null
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = cat.icon,
-                                contentDescription = cat.key,
-                                tint = if (active) cat.color else Color.White.copy(alpha = 0.8f),
-                                modifier = Modifier.size(if (active) 20.dp else 18.dp)
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(6.dp))
-
-                // Visual Liquid Glass Equalizer Component
-                LiquidGlassEqualizerWidget(
-                    bands = eqBands,
-                    isPlaying = isPlaying,
-                    size = 38.dp,
-                    onClick = onOpenEqualizer
-                )
-
-                Spacer(modifier = Modifier.width(6.dp))
-
-                // Visual Liquid Glass Volume Booster Component
-                LiquidGlassVolumeBoosterWidget(
-                    isBoostEnabled = is200Boost,
-                    volumePercent = audioVolumePct,
-                    size = 38.dp,
-                    onClick = { viewModel.toggle200Boost() }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 19.sp
                 )
             }
 
-            // --- PURE VISUAL ACTION STRIP: Shuffle Orb + 2x Shake Orb + Folder Picker Orb + Rescan Orb + Track Counter Badge ---
+            // 2. Clear Labeled Sub-Tabs Row: All | New | Videos | Playlist | Folders + Sort (⇅)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(horizontal = if (isTablet) 20.dp else 12.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Pure Visual Shuffle Play Orb
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.Shuffle,
-                        contentDescription = "Shuffle Play",
-                        tintColor = HybridEmerald,
-                        size = 38.dp,
-                        iconSize = 19.dp,
-                        isActive = true,
+                    AudioLabeledTabChip(
+                        label = if (isHindi) "सभी (${musicItems.size})" else "All (${musicItems.size})",
+                        selected = activeTab == AudioSubTab.ALL && selectedFolderName == null && !viewingFavoritesPlaylist,
+                        testTag = "audio_tab_all",
                         onClick = {
-                            viewModel.shufflePlayMusic()
-                            tracks.firstOrNull()?.let { onOpenStudioPlayer(nowPlaying ?: it) }
+                            activeTab = AudioSubTab.ALL
+                            selectedFolderName = null
+                            selectedPlaylistId = null
+                            viewingFavoritesPlaylist = false
                         }
                     )
-
-                    // Visual Liquid Glass 2x Shake Vibration Orb
-                    LiquidGlassShakeOrbWidget(
-                        isEnabled = doubleShakeEnabled,
-                        size = 38.dp,
-                        onClick = { viewModel.toggleDoubleShakeEnabled() }
-                    )
-
-                    // Pick Real Songs Orb (Liquid Glass)
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.FolderOpen,
-                        contentDescription = "Pick Real Songs",
-                        tintColor = Color(0xFF00E5FF),
-                        size = 38.dp,
-                        iconSize = 18.dp,
-                        onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }
-                    )
-
-                    // Rescan Real Audio Orb
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.Refresh,
-                        contentDescription = "Rescan Audio",
-                        tintColor = Color(0xFFFFEA00),
-                        size = 38.dp,
-                        iconSize = 18.dp,
+                    AudioLabeledTabChip(
+                        label = if (isHindi) "नए गाने" else "New",
+                        selected = activeTab == AudioSubTab.NEW && selectedFolderName == null && !viewingFavoritesPlaylist,
+                        testTag = "audio_tab_new",
                         onClick = {
-                            val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                                arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
-                            } else {
-                                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                            }
-                            permissionLauncher.launch(perms)
+                            activeTab = AudioSubTab.NEW
+                            selectedFolderName = null
+                            selectedPlaylistId = null
+                            viewingFavoritesPlaylist = false
                         }
                     )
-
-                    // Direct Hybrid Share Orb
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.SwapHoriz,
-                        contentDescription = "Hybrid Share",
-                        tintColor = Color(0xFFD500F9),
-                        size = 38.dp,
-                        iconSize = 19.dp,
-                        onClick = onOpenTurboShare
+                    AudioLabeledTabChip(
+                        label = if (isHindi) "वीडियो गाने (${videoItems.size})" else "Videos (${videoItems.size})",
+                        selected = activeTab == AudioSubTab.VIDEOS && selectedFolderName == null && !viewingFavoritesPlaylist,
+                        testTag = "audio_tab_videos",
+                        onClick = {
+                            activeTab = AudioSubTab.VIDEOS
+                            selectedFolderName = null
+                            selectedPlaylistId = null
+                            viewingFavoritesPlaylist = false
+                        }
+                    )
+                    AudioLabeledTabChip(
+                        label = if (isHindi) "प्लेलिस्ट" else "Playlist",
+                        selected = activeTab == AudioSubTab.PLAYLIST || viewingFavoritesPlaylist || selectedPlaylistId != null,
+                        testTag = "audio_tab_playlist",
+                        onClick = {
+                            activeTab = AudioSubTab.PLAYLIST
+                            selectedFolderName = null
+                        }
+                    )
+                    AudioLabeledTabChip(
+                        label = if (isHindi) "फ़ोल्डर" else "Folders",
+                        selected = activeTab == AudioSubTab.FOLDERS || selectedFolderName != null,
+                        testTag = "audio_tab_folders",
+                        onClick = {
+                            activeTab = AudioSubTab.FOLDERS
+                            viewingFavoritesPlaylist = false
+                            selectedPlaylistId = null
+                        }
                     )
                 }
 
-                // Pure Visual Numeric Counter Pill ("🎵 24")
-                Row(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.08f))
-                        .border(1.dp, HybridEmerald.copy(alpha = 0.45f), CircleShape)
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.QueueMusic,
-                        contentDescription = null,
-                        tint = HybridEmerald,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Text(
-                        text = "${displayedTracks.size}",
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Compact Sort Button on Right
+                LiquidGlassIconOrb(
+                    icon = Icons.AutoMirrored.Filled.Sort,
+                    contentDescription = if (isHindi) "क्रम बदलें" else "Sort Songs",
+                    tintColor = HybridGold,
+                    size = 36.dp,
+                    iconSize = 18.dp,
+                    testTag = "audio_sort_btn",
+                    onClick = { showSortDialog = true }
+                )
             }
 
-            if (selectedGroupFilter != null) {
+            // Optional Breadcrumb Back Bar when inside a specific Folder or Playlist
+            if (selectedFolderName != null || viewingFavoritesPlaylist || selectedPlaylistId != null) {
+                val activePlaylistObj = playlists.firstOrNull { it.id == selectedPlaylistId }
+                val headerLabel = when {
+                    selectedFolderName == videoSongsFolderKey -> if (isHindi) "वीडियो गाने (ऑडियो मोड)" else "Video Songs (Play as Audio)"
+                    selectedFolderName != null -> selectedFolderName!!
+                    viewingFavoritesPlaylist -> if (isHindi) "पसंदीदा गाने (Favourites)" else "Favourite Songs"
+                    activePlaylistObj != null -> activePlaylistObj.name
+                    else -> ""
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(HybridCardBg)
-                        .border(1.dp, HybridEmerald.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                        .clickable { selectedGroupFilter = null }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.ArrowBackIosNew, contentDescription = "Back", tint = HybridEmerald, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(selectedGroupFilter ?: "", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    LiquidGlassIconOrb(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tintColor = HybridEmerald,
+                        size = 34.dp,
+                        iconSize = 18.dp,
+                        onClick = {
+                            selectedFolderName = null
+                            selectedPlaylistId = null
+                            viewingFavoritesPlaylist = false
+                        }
+                    )
+                    Text(
+                        text = headerLabel,
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
 
-            // --- MAIN SCROLLABLE LIST CONTAINER (Modifier.weight(1f) so Mini-Player never overlaps song rows!) ---
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
-                if (selectedGroupFilter == null && selectedCategory in listOf("Folders", "Albums", "Artists")) {
-                    val groups = remember(tracks, selectedCategory) {
-                        when (selectedCategory) {
-                            "Folders" -> tracks.groupBy { it.folderName }
-                            "Albums" -> tracks.groupBy { it.albumName }
-                            else -> tracks.groupBy { it.artist }
+            // 3. Main Content Area (Folders Grid, Playlists List, or Track List)
+            when {
+                activeTab == AudioSubTab.FOLDERS && selectedFolderName == null -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(gridColumns),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentPadding = PaddingValues(
+                            start = if (isTablet) 20.dp else 12.dp,
+                            end = if (isTablet) 20.dp else 12.dp,
+                            top = 6.dp,
+                            bottom = 175.dp
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 1st Special Folder: Video Songs (Play Device Videos as Audio!)
+                        item {
+                            AudioFolderRowCard(
+                                folderTitle = if (isHindi) "वीडियो गाने (Video Songs)" else "Video Songs",
+                                subtitle = if (isHindi) {
+                                    "${videoItems.size} वीडियो • ऑडियो में सुनें"
+                                } else {
+                                    "${videoItems.size} Videos • Listen as Audio"
+                                },
+                                icon = Icons.Default.VideoLibrary,
+                                accent = HybridCyan,
+                                onClick = { selectedFolderName = videoSongsFolderKey }
+                            )
+                        }
+
+                        // All Real Device Audio Folders
+                        items(groupedAudioFolders, key = { it.key }) { (folderName, tracks) ->
+                            AudioFolderRowCard(
+                                folderTitle = folderName,
+                                subtitle = if (isHindi) "${tracks.size} गाने" else "${tracks.size} Songs",
+                                icon = Icons.Default.Folder,
+                                accent = HybridEmerald,
+                                onClick = { selectedFolderName = folderName }
+                            )
                         }
                     }
-                    LazyColumn(
-                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxSize()
+                }
+
+                activeTab == AudioSubTab.PLAYLIST && !viewingFavoritesPlaylist && selectedPlaylistId == null -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(gridColumns),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentPadding = PaddingValues(
+                            start = if (isTablet) 20.dp else 12.dp,
+                            end = if (isTablet) 20.dp else 12.dp,
+                            top = 6.dp,
+                            bottom = 175.dp
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(groups.entries.toList(), key = { it.key }) { (groupName, groupTracks) ->
+                        item {
+                            AudioFolderRowCard(
+                                folderTitle = if (isHindi) "पसंदीदा गाने (Favourites)" else "Favourites ❤️",
+                                subtitle = if (isHindi) {
+                                    "${favoriteAudioAndVideoTracks.size} पसंदीदा गाने"
+                                } else {
+                                    "${favoriteAudioAndVideoTracks.size} Liked Songs"
+                                },
+                                icon = Icons.Default.Favorite,
+                                accent = Color(0xFFFF4081),
+                                onClick = { viewingFavoritesPlaylist = true }
+                            )
+                        }
+
+                        item {
+                            AudioFolderRowCard(
+                                folderTitle = if (isHindi) "+ नई प्लेलिस्ट बनाएं" else "+ Create New Playlist",
+                                subtitle = if (isHindi) "अपनी कस्टम प्लेलिस्ट जोड़ें" else "Add custom music playlist",
+                                icon = Icons.Default.PlaylistAdd,
+                                accent = HybridGold,
+                                onClick = { showCreatePlaylistDialog = true }
+                            )
+                        }
+
+                        items(playlists, key = { it.id }) { pl ->
+                            AudioFolderRowCard(
+                                folderTitle = pl.name,
+                                subtitle = if (isHindi) "कस्टम प्लेलिस्ट" else "Custom Playlist",
+                                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                                accent = HybridEmerald,
+                                onClick = { selectedPlaylistId = pl.id }
+                            )
+                        }
+                    }
+                }
+
+                selectedPlaylistId != null -> {
+                    val allCombined by viewModel.allMediaItems.collectAsState()
+                    val playlistTracks by remember(selectedPlaylistId, allCombined) {
+                        viewModel.getPlaylistItemsFlow(selectedPlaylistId!!, allCombined)
+                    }.collectAsState(initial = emptyList())
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(gridColumns),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentPadding = PaddingValues(
+                            start = if (isTablet) 20.dp else 12.dp,
+                            end = if (isTablet) 20.dp else 12.dp,
+                            top = 6.dp,
+                            bottom = 175.dp
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (playlistTracks.isEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                EmptyAudioLibraryState(
+                                    isHindi = isHindi,
+                                    onRescan = { viewModel.loadMedia() }
+                                )
+                            }
+                        } else {
+                            items(playlistTracks, key = { it.id }) { track ->
+                                CleanAudioTrackRow(
+                                    track = track,
+                                    isCurrent = nowPlaying?.id == track.id,
+                                    isPlaying = isPlaying && nowPlaying?.id == track.id,
+                                    isHindi = isHindi,
+                                    onPlay = {
+                                        viewModel.playMusic(track)
+                                        onOpenFullMusicPlayer()
+                                    },
+                                    onOpenMenu = { sevenMenuTargetItem = track }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                else -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(gridColumns),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentPadding = PaddingValues(
+                            start = if (isTablet) 20.dp else 12.dp,
+                            end = if (isTablet) 20.dp else 12.dp,
+                            top = 6.dp,
+                            bottom = 175.dp
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (currentDisplayedTracks.isEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                EmptyAudioLibraryState(
+                                    isHindi = isHindi,
+                                    onRescan = { viewModel.loadMedia() }
+                                )
+                            }
+                        } else {
+                            items(currentDisplayedTracks, key = { it.id }) { track ->
+                                CleanAudioTrackRow(
+                                    track = track,
+                                    isCurrent = nowPlaying?.id == track.id,
+                                    isPlaying = isPlaying && nowPlaying?.id == track.id,
+                                    isHindi = isHindi,
+                                    onPlay = {
+                                        viewModel.playMusic(track)
+                                        onOpenFullMusicPlayer()
+                                    },
+                                    onOpenMenu = { sevenMenuTargetItem = track }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Floating Mini Now-Playing Dock Bar (Above Bottom Nav Bar)
+        val activeTrack = nowPlaying ?: sortedMusicItems.firstOrNull()
+        if (activeTrack != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = if (isTablet) 24.dp else 12.dp, vertical = 92.dp)
+                    .fillMaxWidth()
+            ) {
+                LiquidGlassBox(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("open_full_music_player_bar"),
+                    cornerRadius = 22.dp,
+                    tintColor = HybridEmerald,
+                    glassAlpha = 0.34f,
+                    onClick = onOpenFullMusicPlayer
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        GuaranteedAlbumArt(
+                            mediaPath = activeTrack.path,
+                            title = activeTrack.cleanTitle,
+                            isVideo = activeTrack.isVideo,
+                            modifier = Modifier.size(44.dp),
+                            cornerRadius = 12.dp,
+                            accentColor = HybridEmerald
+                        )
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = activeTrack.cleanTitle,
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${activeTrack.artist.ifBlank { if (activeTrack.isVideo) "Video Song" else "Local Artist" }} • ${activeTrack.format}",
+                                color = HybridEmerald,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { viewModel.playPrevious() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.SkipPrevious,
+                                contentDescription = "Previous",
+                                tint = Color.White
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                if (nowPlaying == null) {
+                                    viewModel.playMusic(activeTrack)
+                                } else {
+                                    viewModel.togglePlayPause()
+                                }
+                            },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(HybridEmerald)
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = "Play/Pause",
+                                tint = Color.Black
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { viewModel.playNext() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.SkipNext,
+                                contentDescription = "Next",
+                                tint = Color.White
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { sevenMenuTargetItem = activeTrack },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "More",
+                                tint = HybridTextSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showCreatePlaylistDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreatePlaylistDialog = false },
+            containerColor = HybridCardBg,
+            title = {
+                Text(
+                    text = if (isHindi) "नई प्लेलिस्ट बनाएं" else "Create New Playlist",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = newPlaylistName,
+                    onValueChange = { newPlaylistName = it },
+                    singleLine = true,
+                    label = {
+                        Text(
+                            if (isHindi) "प्लेलिस्ट का नाम" else "Playlist Name",
+                            color = HybridTextSecondary
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = newPlaylistName.trim()
+                        if (trimmed.isNotEmpty()) {
+                            viewModel.addPlaylist(trimmed)
+                            newPlaylistName = ""
+                        }
+                        showCreatePlaylistDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald)
+                ) {
+                    Text(
+                        if (isHindi) "बनाएं" else "Create",
+                        color = Color.Black,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                    Text(if (isHindi) "रद्द करें" else "Cancel", color = HybridTextSecondary)
+                }
+            }
+        )
+    }
+
+    if (showSortDialog) {
+        val sortOptions = listOf(
+            Triple("NewToOld", if (isHindi) "नए से पुराने (Newest First)" else "Newest to Oldest", Icons.Default.Schedule),
+            Triple("OldToNew", if (isHindi) "पुराने से नए (Oldest First)" else "Oldest to Newest", Icons.Default.History),
+            Triple("AtoZ", if (isHindi) "नाम: A से Z" else "Name: A to Z", Icons.Default.SortByAlpha),
+            Triple("ZtoA", if (isHindi) "नाम: Z से A" else "Name: Z to A", Icons.Default.SortByAlpha),
+            Triple("ShortToLong", if (isHindi) "छोटे से बड़े गाने (5s+)" else "Shortest to Longest (5s+)", Icons.Default.Timelapse),
+            Triple("LongToShort", if (isHindi) "बड़े से छोटे गाने" else "Longest to Shortest", Icons.Default.Timer)
+        )
+        AlertDialog(
+            onDismissRequest = { showSortDialog = false },
+            containerColor = HybridCardBg,
+            title = {
+                Text(
+                    text = if (isHindi) "गानों का क्रम चुनें (Sort By)" else "Sort Songs By",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    sortOptions.forEach { (key, label, icon) ->
+                        val active = audioSortOrder == key
+                        LiquidGlassBox(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 14.dp,
+                            tintColor = if (active) HybridEmerald else Color.White,
+                            glassAlpha = if (active) 0.30f else 0.12f,
+                            onClick = {
+                                viewModel.setAudioSortOrder(key)
+                                showSortDialog = false
+                            }
+                        ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(HybridCardBg)
-                                    .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
-                                    .clickable { selectedGroupFilter = groupName }
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                GuaranteedAlbumArt(
-                                    track = groupTracks.first(),
-                                    modifier = Modifier
-                                        .size(52.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(groupName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                    Text("${groupTracks.size}", color = HybridEmerald, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
-                                }
-                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = HybridTextSecondary)
-                            }
-                        }
-                    }
-                } else if (displayedTracks.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        LiquidGlassBox(
-                            modifier = Modifier.fillMaxWidth(),
-                            cornerRadius = 28.dp,
-                            tintColor = Color(0xFF00E5FF),
-                            glassAlpha = 0.24f
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                LiquidGlassIconOrb(
-                                    icon = Icons.Default.LibraryMusic,
-                                    contentDescription = "Real Device Audio",
-                                    tintColor = Color(0xFF00E5FF),
-                                    size = 72.dp,
-                                    iconSize = 36.dp,
-                                    isActive = true,
-                                    onClick = {
-                                        val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                                            arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
-                                        } else {
-                                            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                        }
-                                        permissionLauncher.launch(perms)
-                                    }
-                                )
                                 Row(
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    LiquidGlassIconOrb(
-                                        icon = Icons.Default.Refresh,
-                                        contentDescription = "Scan Storage",
-                                        tintColor = HybridEmerald,
-                                        size = 54.dp,
-                                        iconSize = 26.dp,
-                                        isActive = true,
-                                        onClick = {
-                                            val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                                                arrayOf(android.Manifest.permission.READ_MEDIA_AUDIO, android.Manifest.permission.READ_MEDIA_VIDEO)
-                                            } else {
-                                                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                            }
-                                            permissionLauncher.launch(perms)
-                                        }
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = null,
+                                        tint = if (active) HybridEmerald else Color.White,
+                                        modifier = Modifier.size(18.dp)
                                     )
-                                    LiquidGlassIconOrb(
-                                        icon = Icons.Default.FolderOpen,
-                                        contentDescription = "Pick Audio Files",
-                                        tintColor = Color(0xFF00E5FF),
-                                        size = 54.dp,
-                                        iconSize = 26.dp,
-                                        isActive = true,
-                                        onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) }
+                                    Text(
+                                        text = label,
+                                        color = if (active) HybridEmerald else Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                if (active) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = HybridEmerald,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
                         }
                     }
-                } else {
-                    LazyColumn(
-                        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        items(displayedTracks, key = { it.id }) { track ->
-                            val isCurrentTrack = nowPlaying?.id == track.id
-                            AudioSongRow(
-                                track = track,
-                                isCurrentTrack = isCurrentTrack,
-                                titleFontSize = personaMode.titleFontSize.value.toInt(),
-                                metaFontSize = personaMode.metaFontSize.value.toInt(),
-                                showPlayOrb = personaMode.showBigPlayButtonOnRow,
-                                accentColor = personaMode.primaryAccent,
-                                onClick = {
-                                    viewModel.playMusic(track)
-                                    onOpenStudioPlayer(track)
-                                },
-                                onMoreClick = { menuTargetTrack = track }
-                            )
-                        }
-                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSortDialog = false }) {
+                    Text(if (isHindi) "बंद करें" else "Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
                 }
             }
-
-            // --- DOCKED LIQUID GLASS MINI-PLAYER BAR (Never overlaps song rows!) ---
-            val activeTrack = nowPlaying ?: tracks.firstOrNull()
-            if (activeTrack != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(Color(0xF50B1324), Color(0xF5131F36))
-                            )
-                        )
-                        .border(1.2.dp, HybridEmerald.copy(alpha = 0.50f), RoundedCornerShape(20.dp))
-                        .clickable {
-                            if (nowPlaying == null) {
-                                viewModel.playMusic(activeTrack)
-                            }
-                            onOpenStudioPlayer(activeTrack)
-                        }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    GuaranteedAlbumArt(
-                        track = activeTrack,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = activeTrack.cleanTitle,
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${activeTrack.artist} • ${activeTrack.format}",
-                            color = HybridEmerald,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { viewModel.playPrevious() },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White)
-                    }
-
-                    IconButton(
-                        onClick = {
-                            if (nowPlaying == null) viewModel.playMusic(activeTrack) else viewModel.togglePlayPause()
-                        },
-                        modifier = Modifier.size(42.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
-                            contentDescription = "Play/Pause",
-                            tint = HybridEmerald,
-                            modifier = Modifier.size(36.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { viewModel.playNext() },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White)
-                    }
-
-                    IconButton(
-                        onClick = { menuTargetTrack = activeTrack },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Track Menu", tint = Color.White)
-                    }
-                }
-            }
-        }
+        )
     }
 
-    // --- 7-ACTION COMPREHENSIVE MEDIA SHEET ---
-    if (menuTargetTrack != null) {
-        val target = menuTargetTrack!!
-        val isFav = favorites.any { it.id == target.id }
+    sevenMenuTargetItem?.let { item ->
+        val isFav = favoriteItems.any { it.id == item.id }
         MediaSevenActionDialog(
-            item = target,
+            item = item,
             isFavorite = isFav,
-            onDismiss = { menuTargetTrack = null },
-            onHybridShare = { item ->
-                menuTargetTrack = null
-                onHybridShareItem(item)
+            isHindi = isHindi,
+            onDismiss = { sevenMenuTargetItem = null },
+            onHybridShare = { onOpenHybridShareForItem(it) },
+            onToggleFavorite = { viewModel.toggleFavorite(it) },
+            onLockInVault = { viewModel.toggleVaultLock(it) },
+            onPermanentDeleteConfirmed = {
+                viewModel.deletePermanently(it)
+                sevenMenuTargetItem = null
             },
-            onToggleFavorite = { item ->
-                viewModel.toggleFavorite(item)
+            onMoveToRecycleBin = {
+                viewModel.moveToRecycleBin(it)
+                sevenMenuTargetItem = null
             },
-            onLockInVault = { item ->
-                viewModel.toggleVaultLock(item)
-                Toast.makeText(context, "🔒 Vault Updated", Toast.LENGTH_SHORT).show()
+            onPlayBackgroundAudio = {
+                viewModel.playMusic(it)
+                onOpenFullMusicPlayer()
             },
-            onPlayBackgroundAudio = { item ->
-                viewModel.playMusic(item)
-            },
-            onPermanentDeleteConfirmed = { item ->
-                viewModel.deletePermanently(item)
+            onRenameCompleted = {
+                viewModel.loadMedia()
             }
         )
     }
 }
 
-/**
- * 3-Stage Guaranteed Album Art Engine (<1ms):
- * Stage 1: Instant RAM LruCache lookup
- * Stage 2: Immediate High-Definition Studio Vinyl Cover Generator on Canvas
- * Stage 3: Throttled Background MediaMetadataRetriever.embeddedPicture / Coil artwork
- */
 @Composable
-fun GuaranteedAlbumArt(
-    track: MediaItem,
-    modifier: Modifier = Modifier
+private fun AudioLabeledTabChip(
+    label: String,
+    selected: Boolean,
+    testTag: String,
+    onClick: () -> Unit
 ) {
-    val context = LocalContext.current
-    var localBitmap by remember(track.path) {
-        mutableStateOf<Bitmap?>(DeepMediaScanner.getCachedBitmap(track.path))
-    }
-
-    LaunchedEffect(track.path) {
-        if (localBitmap == null && !track.path.startsWith("http")) {
-            localBitmap = DeepMediaScanner.loadOrExtractBitmap(track.path, isVideo = false, context = context)
-        }
-    }
-
-    Box(modifier = modifier) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFF1A2942), Color(0xFF0F172A), Color(0xFF1E1B4B))
-                )
-            )
-            val center = Offset(size.width / 2f, size.height / 2f)
-            val discRadius = size.minDimension * 0.40f
-            drawCircle(color = Color(0xFF111115), radius = discRadius, center = center)
-            drawCircle(
-                color = Color(0x33FFFFFF),
-                radius = discRadius * 0.72f,
-                center = center,
-                style = Stroke(width = 1.5.dp.toPx())
-            )
-            drawCircle(color = HybridEmerald, radius = discRadius * 0.32f, center = center)
-            drawCircle(color = Color.Black, radius = discRadius * 0.10f, center = center)
-        }
-
-        if (localBitmap != null) {
-            Image(
-                bitmap = localBitmap!!.asImageBitmap(),
-                contentDescription = track.cleanTitle,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else if (track.coverUrl != null) {
-            AsyncImage(
-                model = track.coverUrl,
-                contentDescription = track.cleanTitle,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-    }
-}
-
-@Composable
-private fun AudioSongRow(
-    track: MediaItem,
-    isCurrentTrack: Boolean,
-    titleFontSize: Int = 15,
-    metaFontSize: Int = 12,
-    showPlayOrb: Boolean = false,
-    accentColor: Color = HybridEmerald,
-    onClick: () -> Unit,
-    onMoreClick: () -> Unit
-) {
-    Row(
+    Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (isCurrentTrack) HybridEmerald.copy(alpha = 0.15f) else HybridCardBg)
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                if (selected) {
+                    Brush.horizontalGradient(
+                        listOf(HybridEmerald.copy(alpha = 0.34f), HybridCyan.copy(alpha = 0.24f))
+                    )
+                } else {
+                    Brush.horizontalGradient(
+                        listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.04f))
+                    )
+                }
+            )
             .border(
-                width = 1.dp,
-                color = if (isCurrentTrack) HybridEmerald else HybridCardBorder,
-                shape = RoundedCornerShape(16.dp)
+                width = if (selected) 1.4.dp else 1.dp,
+                color = if (selected) HybridEmerald else Color.White.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(14.dp)
             )
             .clickable(onClick = onClick)
-            .padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 13.dp, vertical = 7.dp)
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
     ) {
-        GuaranteedAlbumArt(
-            track = track,
-            modifier = Modifier
-                .size(52.dp)
-                .clip(RoundedCornerShape(12.dp))
+        Text(
+            text = label,
+            color = if (selected) HybridEmerald else Color.White,
+            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold,
+            fontSize = 12.sp,
+            maxLines = 1
         )
+    }
+}
 
-        Spacer(modifier = Modifier.width(12.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = track.cleanTitle,
-                color = if (isCurrentTrack) HybridEmerald else Color.White,
-                fontSize = titleFontSize.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(3.dp))
-            Text(
-                text = "${track.artist} • ${track.formattedDuration} • ${track.format}",
-                color = HybridTextSecondary,
-                fontSize = metaFontSize.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-
-        if (showPlayOrb) {
-            IconButton(
-                onClick = onClick,
+@Composable
+private fun AudioFolderRowCard(
+    folderTitle: String,
+    subtitle: String,
+    icon: ImageVector,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    LiquidGlassBox(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 16.dp,
+        tintColor = accent,
+        glassAlpha = 0.20f,
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
                 modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .background(accentColor.copy(alpha = 0.22f))
-                    .border(1.dp, accentColor, CircleShape)
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(accent.copy(alpha = 0.22f))
+                    .border(1.dp, accent.copy(alpha = 0.65f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "Play Song",
-                    tint = accentColor,
+                    imageVector = icon,
+                    contentDescription = folderTitle,
+                    tint = accent,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = folderTitle,
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    color = accent,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CleanAudioTrackRow(
+    track: MediaItem,
+    isCurrent: Boolean,
+    isPlaying: Boolean,
+    isHindi: Boolean,
+    onPlay: () -> Unit,
+    onOpenMenu: () -> Unit
+) {
+    val accent = if (isCurrent) HybridEmerald else Color.White
+    LiquidGlassBox(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("audio_track_row_${track.id}"),
+        cornerRadius = 16.dp,
+        tintColor = accent,
+        glassAlpha = if (isCurrent) 0.28f else 0.14f,
+        onClick = onPlay
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                GuaranteedAlbumArt(
+                    mediaPath = track.path,
+                    title = track.cleanTitle,
+                    isVideo = track.isVideo,
+                    modifier = Modifier.size(48.dp),
+                    cornerRadius = 12.dp,
+                    accentColor = if (isCurrent) HybridEmerald else HybridCyan
+                )
+                if (isPlaying) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.GraphicEq,
+                            contentDescription = "Playing",
+                            tint = HybridEmerald,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.cleanTitle,
+                    color = if (isCurrent) HybridEmerald else Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                val artistLabel = track.artist.ifBlank {
+                    if (track.isVideo) {
+                        if (isHindi) "वीडियो गाना • ${track.folderName}" else "Video Song • ${track.folderName}"
+                    } else {
+                        track.folderName.ifBlank { "Local Artist" }
+                    }
+                }
+                Text(
+                    text = "$artistLabel • ${track.formattedDuration} • ${track.format}",
+                    color = HybridTextSecondary,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            IconButton(
+                onClick = onOpenMenu,
+                modifier = Modifier
+                    .size(40.dp)
+                    .testTag("audio_3dot_${track.id}")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Track Options",
+                    tint = HybridTextSecondary,
                     modifier = Modifier.size(20.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(2.dp))
         }
+    }
+}
 
-        IconButton(onClick = onMoreClick) {
+@Composable
+private fun EmptyAudioLibraryState(
+    isHindi: Boolean,
+    onRescan: () -> Unit
+) {
+    LiquidGlassBox(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 24.dp),
+        cornerRadius = 20.dp,
+        tintColor = HybridCyan,
+        glassAlpha = 0.16f
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             Icon(
-                imageVector = Icons.Default.MoreVert,
-                contentDescription = "Track Options",
-                tint = HybridTextSecondary
+                imageVector = Icons.Default.LibraryMusic,
+                contentDescription = null,
+                tint = HybridCyan,
+                modifier = Modifier.size(40.dp)
             )
+            Text(
+                text = if (isHindi) "कोई ऑडियो फ़ाइल नहीं मिली" else "No Audio Tracks Found",
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 15.sp
+            )
+            Button(
+                onClick = onRescan,
+                colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (isHindi) "फ़ोन स्कैन करें" else "Scan Phone Storage",
+                    color = Color.Black,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

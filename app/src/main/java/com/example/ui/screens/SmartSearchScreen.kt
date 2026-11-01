@@ -1,316 +1,442 @@
 package com.example.ui.screens
 
+import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.MediaItem
+import com.example.helpers.WifiDirectTransferEngine
+import com.example.ui.components.GuaranteedAlbumArt
+import com.example.ui.components.LiquidGlassBox
+import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
-@OptIn(ExperimentalLayoutApi::class)
+private enum class SearchCategoryFilter {
+    ALL, VIDEOS, AUDIO
+}
+
+/**
+ * Thumb-Friendly Bottom Search Screen for Videos & Audio:
+ * - Search Results scroll cleanly in the upper area.
+ * - The Search Input Box and All / Videos / Audio category selector tabs are docked at the
+ *   BOTTOM of the screen (right above the navigation bar) for effortless one-handed reach!
+ */
 @Composable
 fun SmartSearchScreen(
     viewModel: PlayerViewModel,
     onPlayVideo: (MediaItem) -> Unit,
-    onPlayMusic: (MediaItem) -> Unit,
-    modifier: Modifier = Modifier
+    onPlayMusic: (MediaItem) -> Unit = { viewModel.playMusic(it) },
+    onOpenMusicPlayer: () -> Unit = {},
+    onOpenHybridShare: ((MediaItem) -> Unit)? = null
 ) {
-    val videos by viewModel.videoItems.collectAsState()
-    val music by viewModel.musicItems.collectAsState()
+    val context = LocalContext.current
+    val allItems by viewModel.allMediaItems.collectAsState()
+    val videoItems by viewModel.videoItems.collectAsState()
+    val musicItems by viewModel.musicItems.collectAsState()
+    val favoriteItems by viewModel.favoriteItems.collectAsState()
     val recentSearches by viewModel.recentSearches.collectAsState()
+    val selectedLanguage by viewModel.selectedLanguage.collectAsState()
 
+    val isHindi = remember(selectedLanguage) {
+        selectedLanguage.contains("Hindi", ignoreCase = true) ||
+            selectedLanguage.contains("हिन्दी")
+    }
+
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val isTablet = configuration.screenWidthDp >= 600
+    val gridColumns = if (isTablet || isLandscape) 2 else 1
+
+    val focusManager = LocalFocusManager.current
     var query by remember { mutableStateOf("") }
-    var activeSegment by remember { mutableStateOf("Videos") } // "Videos" | "Audio"
+    var categoryFilter by remember { mutableStateOf(SearchCategoryFilter.ALL) }
+    var sevenMenuTargetItem by remember { mutableStateOf<MediaItem?>(null) }
 
-    val matchedVideos = remember(videos, query) {
-        if (query.isBlank()) videos else videos.filter {
-            it.cleanTitle.contains(query, ignoreCase = true) ||
-                it.artist.contains(query, ignoreCase = true) ||
-                it.folderName.contains(query, ignoreCase = true)
+    val basePool = remember(categoryFilter, allItems, videoItems, musicItems) {
+        when (categoryFilter) {
+            SearchCategoryFilter.ALL -> allItems
+            SearchCategoryFilter.VIDEOS -> videoItems
+            SearchCategoryFilter.AUDIO -> musicItems
         }
     }
 
-    val matchedAudio = remember(music, query) {
-        if (query.isBlank()) music else music.filter {
-            it.cleanTitle.contains(query, ignoreCase = true) ||
-                it.artist.contains(query, ignoreCase = true) ||
-                it.albumName.contains(query, ignoreCase = true)
-        }
-    }
+    val results = remember(query, basePool) {
+        val q = query.trim().lowercase()
+        if (q.isBlank()) {
+            basePool
+        } else {
+            val tokens = q.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            basePool
+                .mapNotNull { item ->
+                    val titleLower = item.cleanTitle.lowercase()
+                    val rawLower = item.title.lowercase()
+                    val artistLower = item.artist.lowercase()
+                    val folderLower = item.folderName.lowercase()
+                    val formatLower = item.format.lowercase()
 
-    // Automatic Tab Switch: If Videos has 0 results and Audio has matches, auto-switch to Audio tab
-    LaunchedEffect(query, matchedVideos.size, matchedAudio.size) {
-        if (query.isNotBlank()) {
-            if (matchedVideos.isEmpty() && matchedAudio.isNotEmpty()) {
-                activeSegment = "Audio"
-            } else if (matchedAudio.isEmpty() && matchedVideos.isNotEmpty()) {
-                activeSegment = "Videos"
-            }
+                    var score = 0
+                    if (titleLower == q) score += 120
+                    if (titleLower.startsWith(q)) score += 80
+                    if (titleLower.contains(q)) score += 50
+                    if (artistLower.contains(q)) score += 35
+                    if (folderLower.contains(q)) score += 30
+                    if (formatLower == q) score += 45
+
+                    val matchedAllTokens = tokens.all { tok ->
+                        titleLower.contains(tok) ||
+                            rawLower.contains(tok) ||
+                            artistLower.contains(tok) ||
+                            folderLower.contains(tok) ||
+                            formatLower.contains(tok)
+                    }
+                    if (matchedAllTokens) score += 40
+
+                    if (score > 0) item to score else null
+                }
+                .sortedByDescending { it.second }
+                .map { it.first }
         }
     }
 
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 16.dp)
+            .padding(horizontal = if (isTablet) 22.dp else 14.dp)
+            .padding(top = 10.dp, bottom = 92.dp)
     ) {
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // --- TOP SEARCH BAR WITH 1-TAP CLEAR BUTTON ---
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            placeholder = {
-                Text(
-                    text = "Search 8K videos, songs, folders...",
-                    color = HybridTextSecondary,
-                    fontSize = 14.sp
-                )
-            },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = "Search", tint = HybridEmerald)
-            },
-            trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { query = "" }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear Search", tint = Color.White)
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = HybridCardBg,
-                unfocusedContainerColor = HybridCardBg,
-                focusedBorderColor = HybridEmerald,
-                unfocusedBorderColor = HybridCardBorder,
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White
-            ),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // --- RECENT SEARCHES HISTORY (Shown when search box is empty) ---
-        if (query.isBlank() && recentSearches.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Recent Searches",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                TextButton(onClick = { viewModel.clearRecentSearches() }) {
-                    Text("Clear All", color = HybridCoralRed, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                recentSearches.forEach { keyword ->
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(HybridCardBg)
-                            .border(1.dp, HybridCardBorder, RoundedCornerShape(18.dp))
-                            .clickable { query = keyword }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.History,
-                            contentDescription = null,
-                            tint = HybridEmerald,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(keyword, color = Color.White, fontSize = 12.sp)
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(14.dp))
-        }
-
-        // --- SEGMENTED TABS: "Videos (Count)" and "Music / Audio (Count)" ---
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        // 1. Upper Scrollable Results Area (Fills all space above the bottom search dock)
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(gridColumns),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(bottom = 12.dp)
         ) {
-            val videoSelected = activeSegment == "Videos"
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (videoSelected) HybridEmerald else HybridCardBg)
-                    .border(1.dp, if (videoSelected) HybridEmerald else HybridCardBorder, RoundedCornerShape(12.dp))
-                    .clickable { activeSegment = "Videos" }
-                    .padding(vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Videos (${matchedVideos.size})",
-                    color = if (videoSelected) Color.Black else Color.White,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 13.sp
-                )
-            }
-
-            val audioSelected = activeSegment == "Audio"
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (audioSelected) HybridEmerald else HybridCardBg)
-                    .border(1.dp, if (audioSelected) HybridEmerald else HybridCardBorder, RoundedCornerShape(12.dp))
-                    .clickable { activeSegment = "Audio" }
-                    .padding(vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Music / Audio (${matchedAudio.size})",
-                    color = if (audioSelected) Color.Black else Color.White,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 13.sp
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // --- SEARCH RESULTS WITH INSTANT CHARACTER HIGHLIGHTING (#2ECC71) ---
-        val activeList = if (activeSegment == "Videos") matchedVideos else matchedAudio
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(bottom = 24.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(activeList, key = { it.id }) { item ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(HybridCardBg)
-                        .border(1.dp, HybridCardBorder, RoundedCornerShape(14.dp))
-                        .clickable {
-                            if (query.isNotBlank()) {
-                                viewModel.addRecentSearch(query)
-                            }
-                            if (item.isVideo) {
-                                onPlayVideo(item)
-                            } else {
-                                onPlayMusic(item)
+            if (query.isBlank() && recentSearches.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isHindi) "हाल की खोजें" else "Recent Searches",
+                                color = HybridTextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (isHindi) "हटाएं" else "Clear",
+                                color = HybridCoralRed,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable { viewModel.clearRecentSearches() }
+                            )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            recentSearches.forEach { term ->
+                                AssistChip(
+                                    onClick = { query = term },
+                                    label = { Text(term, color = Color.White, fontSize = 12.sp) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.History,
+                                            contentDescription = null,
+                                            tint = HybridCyan,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                )
                             }
                         }
-                        .padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (item.isVideo) {
-                        Box(
-                            modifier = Modifier
-                                .size(width = 92.dp, height = 56.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                        ) {
-                            GuaranteedVideoThumbnail(video = item, modifier = Modifier.fillMaxSize())
+                    }
+                }
+            }
+
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    text = if (query.isBlank()) {
+                        when (categoryFilter) {
+                            SearchCategoryFilter.VIDEOS -> if (isHindi) "सभी वीडियो (${results.size})" else "Videos (${results.size})"
+                            SearchCategoryFilter.AUDIO -> if (isHindi) "सभी ऑडियो गाने (${results.size})" else "Audio Songs (${results.size})"
+                            SearchCategoryFilter.ALL -> if (isHindi) "सभी वीडियो और ऑडियो (${results.size})" else "All Videos & Audio (${results.size})"
                         }
                     } else {
-                        GuaranteedAlbumArt(
-                            track = item,
-                            modifier = Modifier
-                                .size(52.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                        )
+                        if (isHindi) "${results.size} परिणाम मिले" else "${results.size} Results Found"
+                    },
+                    color = HybridEmerald,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                )
+            }
+
+            items(results, key = { it.id }) { item ->
+                val accent = if (item.isVideo) HybridCyan else HybridEmerald
+                LiquidGlassBox(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("search_result_${item.id}"),
+                    cornerRadius = 16.dp,
+                    tintColor = accent,
+                    glassAlpha = 0.16f,
+                    onClick = {
+                        if (query.isNotBlank()) {
+                            viewModel.addRecentSearch(query)
+                        }
+                        focusManager.clearFocus()
+                        if (item.isVideo) {
+                            onPlayVideo(item)
+                        } else {
+                            onPlayMusic(item)
+                            onOpenMusicPlayer()
+                        }
                     }
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = buildHighlightedText(item.cleanTitle, query),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        GuaranteedAlbumArt(
+                            mediaPath = item.path,
+                            title = item.cleanTitle,
+                            isVideo = item.isVideo,
+                            modifier = Modifier.size(48.dp),
+                            cornerRadius = 12.dp,
+                            accentColor = accent
                         )
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Text(
-                            text = "${item.artist} • ${item.formattedDuration} • ${item.folderName}",
-                            color = HybridTextSecondary,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.cleanTitle,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${if (item.isVideo) (if (isHindi) "वीडियो" else "Video") else (if (isHindi) "ऑडियो" else "Audio")} • ${item.folderName} • ${item.formattedDuration}",
+                                color = HybridTextSecondary,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(
+                            onClick = { sevenMenuTargetItem = item },
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Options",
+                                tint = HybridTextSecondary
+                            )
+                        }
                     }
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 2. BOTTOM SEARCH DOCK: Video / Audio Filter Tabs + Search Input Bar right at the bottom!
+        LiquidGlassBox(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = 22.dp,
+            tintColor = HybridCyan,
+            glassAlpha = 0.28f
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BottomSearchFilterTab(
+                        modifier = Modifier.weight(1f),
+                        label = if (isHindi) "सभी (${allItems.size})" else "All (${allItems.size})",
+                        selected = categoryFilter == SearchCategoryFilter.ALL,
+                        accent = HybridEmerald,
+                        testTag = "search_filter_all",
+                        onClick = { categoryFilter = SearchCategoryFilter.ALL }
+                    )
+                    BottomSearchFilterTab(
+                        modifier = Modifier.weight(1f),
+                        label = if (isHindi) "वीडियो (${videoItems.size})" else "Videos (${videoItems.size})",
+                        selected = categoryFilter == SearchCategoryFilter.VIDEOS,
+                        accent = HybridCyan,
+                        testTag = "search_filter_videos",
+                        onClick = { categoryFilter = SearchCategoryFilter.VIDEOS }
+                    )
+                    BottomSearchFilterTab(
+                        modifier = Modifier.weight(1f),
+                        label = if (isHindi) "ऑडियो (${musicItems.size})" else "Audio (${musicItems.size})",
+                        selected = categoryFilter == SearchCategoryFilter.AUDIO,
+                        accent = HybridGold,
+                        testTag = "search_filter_audio",
+                        onClick = { categoryFilter = SearchCategoryFilter.AUDIO }
+                    )
+                }
+
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = {
+                        Text(
+                            text = when (categoryFilter) {
+                                SearchCategoryFilter.VIDEOS -> if (isHindi) "वीडियो खोजें..." else "Search videos..."
+                                SearchCategoryFilter.AUDIO -> if (isHindi) "ऑडियो गाने खोजें..." else "Search audio songs..."
+                                SearchCategoryFilter.ALL -> if (isHindi) "वीडियो या ऑडियो गाने खोजें..." else "Search videos or audio songs..."
+                            },
+                            color = HybridTextSecondary,
+                            fontSize = 13.sp
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = HybridEmerald)
+                    },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.White)
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(
+                        onSearch = {
+                            viewModel.addRecentSearch(query)
+                            focusManager.clearFocus()
+                        }
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("smart_search_input")
+                )
+            }
+        }
+    }
+
+    sevenMenuTargetItem?.let { item ->
+        val isFav = favoriteItems.any { it.id == item.id }
+        MediaSevenActionDialog(
+            item = item,
+            isFavorite = isFav,
+            isHindi = isHindi,
+            onDismiss = { sevenMenuTargetItem = null },
+            onHybridShare = {
+                if (onOpenHybridShare != null) {
+                    onOpenHybridShare(it)
+                } else {
+                    WifiDirectTransferEngine.shareRealFilesViaSystem(context, listOf(it))
+                }
+            },
+            onToggleFavorite = { viewModel.toggleFavorite(it) },
+            onLockInVault = { viewModel.toggleVaultLock(it) },
+            onPermanentDeleteConfirmed = {
+                viewModel.deletePermanently(it)
+                sevenMenuTargetItem = null
+            },
+            onMoveToRecycleBin = {
+                viewModel.moveToRecycleBin(it)
+                sevenMenuTargetItem = null
+            },
+            onPlayBackgroundAudio = if (item.isVideo) {
+                { videoTrack ->
+                    onPlayMusic(videoTrack)
+                    onOpenMusicPlayer()
+                }
+            } else null,
+            onRenameCompleted = {
+                viewModel.loadMedia()
+            }
+        )
     }
 }
 
-/**
- * Highlights matching characters in bright Emerald Green (#2ECC71).
- */
-private fun buildHighlightedText(fullText: String, query: String): AnnotatedString {
-    if (query.isBlank()) {
-        return AnnotatedString(fullText, SpanStyle(color = Color.White))
-    }
-    return buildAnnotatedString {
-        var startIndex = 0
-        val lowerFull = fullText.lowercase()
-        val lowerQuery = query.trim().lowercase()
-
-        while (startIndex < fullText.length) {
-            val matchIndex = lowerFull.indexOf(lowerQuery, startIndex)
-            if (matchIndex == -1) {
-                withStyle(SpanStyle(color = Color.White)) {
-                    append(fullText.substring(startIndex))
+@Composable
+private fun BottomSearchFilterTab(
+    modifier: Modifier = Modifier,
+    label: String,
+    selected: Boolean,
+    accent: Color,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) {
+                    Brush.horizontalGradient(listOf(accent.copy(alpha = 0.34f), accent.copy(alpha = 0.18f)))
+                } else {
+                    Brush.horizontalGradient(listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.04f)))
                 }
-                break
-            }
-            if (matchIndex > startIndex) {
-                withStyle(SpanStyle(color = Color.White)) {
-                    append(fullText.substring(startIndex, matchIndex))
-                }
-            }
-            withStyle(
-                SpanStyle(
-                    color = HybridEmerald,
-                    fontWeight = FontWeight.ExtraBold
-                )
-            ) {
-                append(fullText.substring(matchIndex, matchIndex + lowerQuery.length))
-            }
-            startIndex = matchIndex + lowerQuery.length
-        }
+            )
+            .border(
+                width = if (selected) 1.4.dp else 1.dp,
+                color = if (selected) accent else Color.White.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(12.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp, horizontal = 6.dp)
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = if (selected) accent else Color.White,
+            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold,
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

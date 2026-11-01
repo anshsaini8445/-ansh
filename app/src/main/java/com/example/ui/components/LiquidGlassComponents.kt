@@ -1,14 +1,26 @@
 package com.example.ui.components
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.util.LruCache
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,17 +33,126 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.cos
 import kotlin.math.sin
 
+private object AlbumArtBitmapCache {
+    private val cache = object : LruCache<String, Bitmap>(80) {}
+    fun get(key: String): Bitmap? = cache.get(key)
+    fun put(key: String, bitmap: Bitmap) {
+        cache.put(key, bitmap)
+    }
+}
+
+/**
+ * Extracts and caches real embedded album art (for MP3/M4A/FLAC) or a real video frame (for MP4/MKV)
+ * with a vibrant vinyl disc fallback when a file has no embedded cover image.
+ */
+@Composable
+fun GuaranteedAlbumArt(
+    mediaPath: String,
+    title: String,
+    isVideo: Boolean,
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = 12.dp,
+    accentColor: Color = Color(0xFF00E676)
+) {
+    var bitmap by remember(mediaPath) { mutableStateOf(AlbumArtBitmapCache.get(mediaPath)) }
+
+    LaunchedEffect(mediaPath, isVideo) {
+        if (bitmap == null && mediaPath.isNotBlank()) {
+            val loaded = withContext(Dispatchers.IO) {
+                val cached = AlbumArtBitmapCache.get(mediaPath)
+                if (cached != null) return@withContext cached
+                val file = File(mediaPath)
+                if (!file.exists()) return@withContext null
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(mediaPath)
+                    val embedded = retriever.embeddedPicture
+                    val rawBmp = if (embedded != null && embedded.isNotEmpty()) {
+                        BitmapFactory.decodeByteArray(embedded, 0, embedded.size)
+                    } else if (isVideo) {
+                        retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    } else {
+                        null
+                    }
+                    if (rawBmp != null) {
+                        val scaled = Bitmap.createScaledBitmap(rawBmp, 160, 160, true)
+                        AlbumArtBitmapCache.put(mediaPath, scaled)
+                        scaled
+                    } else null
+                } catch (_: Exception) {
+                    null
+                } finally {
+                    try {
+                        retriever.release()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            if (loaded != null) {
+                bitmap = loaded
+            }
+        }
+    }
+
+    val shape = RoundedCornerShape(cornerRadius)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        Color(0xFF0D1B1E),
+                        accentColor.copy(alpha = 0.25f),
+                        Color(0xFF09101D)
+                    )
+                )
+            )
+            .border(1.dp, accentColor.copy(alpha = 0.45f), shape),
+        contentAlignment = Alignment.Center
+    ) {
+        val bmp = bitmap
+        if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize(0.68f)
+                    .clip(CircleShape)
+                    .background(Color(0xFF0B111A))
+                    .border(1.5.dp, accentColor.copy(alpha = 0.75f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isVideo) Icons.Default.Movie else Icons.Default.MusicNote,
+                    contentDescription = title,
+                    tint = accentColor,
+                    modifier = Modifier.fillMaxSize(0.55f)
+                )
+            }
+        }
+    }
+}
+
 /**
  * Ultra-Smooth Colorful Liquid Glass Container.
- * Renders a refractive multi-stop frosted glass surface, top-left specular rim highlight,
- * inner prism glow, diagonal liquid sheen, and spring-physics press animation.
  */
 @Composable
 fun LiquidGlassBox(
@@ -81,7 +202,6 @@ fun LiquidGlassBox(
             val h = size.height
             val baseAlpha = glassAlpha.coerceIn(0.08f, 0.85f)
 
-            // 1. Deep refractive liquid glass base
             drawRoundRect(
                 brush = Brush.linearGradient(
                     colors = if (isActive) {
@@ -103,7 +223,6 @@ fun LiquidGlassBox(
                 cornerRadius = CornerRadius(rPx, rPx)
             )
 
-            // 2. Top-left liquid droplet specular sheen
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(
@@ -117,7 +236,6 @@ fun LiquidGlassBox(
                 cornerRadius = CornerRadius(rPx, rPx)
             )
 
-            // 3. Outer refractive prism rim border
             drawRoundRect(
                 brush = Brush.linearGradient(
                     colors = if (isActive) {
@@ -159,7 +277,8 @@ fun LiquidGlassIconOrb(
     glowColor: Color = tintColor,
     secondaryColor: Color = Color(0xFF00E676),
     isActive: Boolean = false,
-    iconTint: Color = Color.White
+    iconTint: Color = Color.White,
+    testTag: String? = null
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -174,6 +293,7 @@ fun LiquidGlassIconOrb(
 
     Box(
         modifier = modifier
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .size(size)
             .scale(scale)
             .clip(CircleShape)
@@ -188,7 +308,6 @@ fun LiquidGlassIconOrb(
             val r = this.size.minDimension / 2f
             val center = Offset(this.size.width / 2f, this.size.height / 2f)
 
-            // Frosted liquid sphere fill
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = if (isActive) {
@@ -210,7 +329,6 @@ fun LiquidGlassIconOrb(
                 radius = r
             )
 
-            // Top glass droplet reflection arc
             drawOval(
                 brush = Brush.verticalGradient(
                     colors = listOf(
@@ -222,7 +340,6 @@ fun LiquidGlassIconOrb(
                 size = Size(r * 1.24f, r * 0.72f)
             )
 
-            // Refractive neon glass rim
             drawCircle(
                 brush = Brush.sweepGradient(
                     colors = listOf(
@@ -248,7 +365,6 @@ fun LiquidGlassIconOrb(
 
 /**
  * Pure Visual Liquid Glass 5-Band Animated Equalizer Component (NO "Equalizer" text label!).
- * Users tap this colorful animated 5-bar graphic widget to open the Studio Equalizer directly.
  */
 @Composable
 fun LiquidGlassEqualizerWidget(
@@ -271,11 +387,11 @@ fun LiquidGlassEqualizerWidget(
 
     val barColors = remember {
         listOf(
-            Color(0xFF00E5FF), // Electric Cyan
-            Color(0xFF00E676), // Neon Emerald
-            Color(0xFFFF2A85), // Neon Magenta
-            Color(0xFFFFD700), // Cyber Gold
-            Color(0xFFB388FF)  // Prism Violet
+            Color(0xFF00E5FF),
+            Color(0xFF00E676),
+            Color(0xFFFF2A85),
+            Color(0xFFFFD700),
+            Color(0xFFB388FF)
         )
     }
 
@@ -305,7 +421,6 @@ fun LiquidGlassEqualizerWidget(
                 val topY = this.size.height - barH
                 val color = barColors[i % barColors.size]
 
-                // Vertical track groove
                 drawLine(
                     color = Color.White.copy(alpha = 0.14f),
                     start = Offset(x, 0f),
@@ -314,7 +429,6 @@ fun LiquidGlassEqualizerWidget(
                     cap = StrokeCap.Round
                 )
 
-                // Glowing liquid neon bar
                 drawLine(
                     brush = Brush.verticalGradient(
                         colors = listOf(Color.White, color, color.copy(alpha = 0.6f)),
@@ -327,7 +441,6 @@ fun LiquidGlassEqualizerWidget(
                     cap = StrokeCap.Round
                 )
 
-                // Specular slider knob dot on top of each bar
                 drawCircle(
                     color = Color.White,
                     radius = barWidth * 0.58f,
@@ -338,10 +451,53 @@ fun LiquidGlassEqualizerWidget(
     }
 }
 
+@Composable
+fun ColorfulEqualizerOrb(
+    onClick: () -> Unit,
+    size: Dp = 44.dp
+) {
+    LiquidGlassEqualizerWidget(
+        onClick = onClick,
+        size = size,
+        isActive = true
+    )
+}
+
+@Composable
+fun DoubleShakeVibrationOrb(
+    isEnabled: Boolean,
+    onClick: () -> Unit,
+    size: Dp = 44.dp
+) {
+    LiquidGlassShakeOrbWidget(
+        isEnabled = isEnabled,
+        onClick = onClick,
+        size = size
+    )
+}
+
+@Composable
+fun VisualPrecisionSeekBar(
+    progressFraction: Float,
+    onSeekFractionChanged: (Float) -> Unit,
+    accentColor: Color,
+    secondaryAccent: Color,
+    modifier: Modifier = Modifier
+) {
+    Slider(
+        value = progressFraction.coerceIn(0f, 1f),
+        onValueChange = { onSeekFractionChanged(it.coerceIn(0f, 1f)) },
+        colors = SliderDefaults.colors(
+            thumbColor = accentColor,
+            activeTrackColor = accentColor,
+            inactiveTrackColor = secondaryAccent.copy(alpha = 0.24f)
+        ),
+        modifier = modifier
+    )
+}
+
 /**
  * Pure Visual Liquid Glass Hardware Volume Booster Rotary Orb (NO "Volume Boost" text label!).
- * Shows a 270-degree glowing rotary gauge + pulsing acoustic sonic rings.
- * Tapping toggles 200% hardware boost or opens the vertical volume pill.
  */
 @Composable
 fun LiquidGlassVolumeBoosterWidget(
@@ -385,7 +541,6 @@ fun LiquidGlassVolumeBoosterWidget(
             val cy = h / 2f
             val r = (minOf(w, h) / 2f)
 
-            // 1. Background 270-degree rotary dial track
             drawArc(
                 color = Color.White.copy(alpha = 0.18f),
                 startAngle = 135f,
@@ -394,7 +549,6 @@ fun LiquidGlassVolumeBoosterWidget(
                 style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round)
             )
 
-            // 2. Active neon rotary boost arc (0..200%)
             val sweep = ((volumePercent.coerceIn(0, 200) / 200f) * 270f).coerceAtLeast(35f)
             drawArc(
                 brush = Brush.sweepGradient(
@@ -412,7 +566,6 @@ fun LiquidGlassVolumeBoosterWidget(
                 style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
             )
 
-            // 3. Center Speaker Cone + Sonic Wave Arcs (No text!)
             val conePath = Path().apply {
                 moveTo(cx - r * 0.36f, cy - r * 0.14f)
                 lineTo(cx - r * 0.16f, cy - r * 0.14f)
@@ -427,7 +580,6 @@ fun LiquidGlassVolumeBoosterWidget(
                 color = if (isBoostActive || volumePercent > 100) Color(0xFFFFD700) else Color.White
             )
 
-            // Sonic wave arcs on right side of speaker cone
             val waveScale = if (isBoostActive) sonicWave else 1f
             drawArc(
                 color = activeGlow,
@@ -496,7 +648,6 @@ fun LiquidGlassShakeOrbWidget(
             val cx = w / 2f + (if (enabled) waveOffset * 1.5f else 0f)
             val cy = h / 2f
 
-            // Center mini smartphone body
             drawRoundRect(
                 color = if (enabled) Color.White else Color.White.copy(alpha = 0.55f),
                 topLeft = Offset(cx - w * 0.18f, cy - h * 0.28f),
@@ -505,7 +656,6 @@ fun LiquidGlassShakeOrbWidget(
                 style = Stroke(width = 1.8.dp.toPx())
             )
 
-            // Left & right double-shake vibration wave arcs
             val waveColor = if (enabled) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.3f)
             drawArc(
                 color = waveColor,
@@ -530,7 +680,7 @@ fun LiquidGlassShakeOrbWidget(
 }
 
 /**
- * Pure Visual Liquid Glass Speed Dial Gauge Widget (Replaces plain speed text pill).
+ * Pure Visual Liquid Glass Speed Dial Gauge Widget.
  */
 @Composable
 fun LiquidGlassSpeedDialOrb(
@@ -561,7 +711,6 @@ fun LiquidGlassSpeedDialOrb(
             val cy = h * 0.58f
             val r = minOf(w, h) * 0.44f
 
-            // Speedometer semi-circle arc
             drawArc(
                 brush = Brush.sweepGradient(
                     colors = listOf(Color(0xFF00E676), Color(0xFF00E5FF), Color(0xFFFF2A85), Color(0xFFFFD700))
@@ -574,7 +723,6 @@ fun LiquidGlassSpeedDialOrb(
                 style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round)
             )
 
-            // Needle angle based on speed (0.5x -> 2.0x+)
             val normalized = ((speed - 0.5f) / 1.5f).coerceIn(0f, 1f)
             val angleRad = Math.toRadians((160f + normalized * 220f).toDouble())
             val needleEnd = Offset(

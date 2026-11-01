@@ -1,8 +1,12 @@
 package com.example.ui.screens
 
-import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.widget.Toast
+import android.widget.VideoView
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,6 +15,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,25 +35,23 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
-import com.example.helpers.HybridCleanerHubHelper
 import com.example.helpers.WifiDirectTransferEngine
-import com.example.ui.components.LiquidGlassBox
-import com.example.ui.components.LiquidGlassIconOrb
-import com.example.ui.components.LiquidGlassShakeOrbWidget
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.persona.DemographicMode
-import com.example.ui.persona.UniversalPersonaSelectorDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+import java.io.File
+import java.util.Locale
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -64,21 +68,27 @@ fun VideoSectionScreen(
     val videos by viewModel.videoItems.collectAsState()
     val history by viewModel.historyItems.collectAsState()
     val favorites by viewModel.favoriteItems.collectAsState()
-    val playlists by viewModel.playlists.collectAsState()
     val sortCriteria by viewModel.sortCriteria.collectAsState()
     val sortNewToOld by viewModel.sortNewToOld.collectAsState()
     val isGridView by viewModel.isVideoGridView.collectAsState()
     val hdrBadges by viewModel.hdrCcBadges.collectAsState()
-    val doubleShakeEnabled by viewModel.doubleShakeEnabled.collectAsState()
     val personaMode by viewModel.demographicMode.collectAsState()
+    val selectedLanguage by viewModel.selectedLanguage.collectAsState()
 
-    var activeSubTab by remember { mutableStateOf("Video") } // "Video" | "Folder" | "Playlist"
+    val isHindi = remember(selectedLanguage) {
+        selectedLanguage.contains("Hindi", ignoreCase = true) ||
+            selectedLanguage.contains("हिन्दी") ||
+            Locale.getDefault().language == "hi"
+    }
+
+    var activeSubTab by remember { mutableStateOf("Video") } // "Video" | "Folder" | "Status" | "Favourite"
     var openedFolderName by remember { mutableStateOf<String?>(null) }
+    var isViewingFavouriteFolder by remember { mutableStateOf(false) }
+    var showStatusReelsOverlay by remember { mutableStateOf(false) }
+    var initialStatusReelIndex by remember { mutableIntStateOf(0) }
+
     var showSortDialog by remember { mutableStateOf(false) }
-    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
-    var showPersonaDialog by remember { mutableStateOf(false) }
     var isHistoryCollapsed by remember { mutableStateOf(false) }
-    var newPlaylistName by remember { mutableStateOf("") }
     var actionTargetVideo by remember { mutableStateOf<MediaItem?>(null) }
 
     val pickVideosLauncher = rememberLauncherForActivityResult(
@@ -93,7 +103,23 @@ fun VideoSectionScreen(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
         viewModel.loadMedia()
-        Toast.makeText(context, "Scanning device storage for real videos...", Toast.LENGTH_SHORT).show()
+    }
+
+    // Automatically request permission / scan on launch if video list is empty
+    LaunchedEffect(Unit) {
+        val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
+        } else {
+            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        val hasPerm = perms.any {
+            ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (hasPerm) {
+            viewModel.loadMedia()
+        } else {
+            permissionLauncher.launch(perms)
+        }
     }
 
     // Multi-Select Mode State
@@ -101,11 +127,24 @@ fun VideoSectionScreen(
     val isMultiSelectMode = selectedIds.isNotEmpty()
     var pendingDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
 
-    // Apply PLAYit-style Sort
-    val sortedVideos = remember(videos, sortCriteria, sortNewToOld, openedFolderName) {
-        val base = if (openedFolderName != null) {
-            videos.filter { it.folderName == openedFolderName }
-        } else videos
+    val favoriteVideos = remember(favorites, videos) {
+        val favIds = favorites.map { it.id }.toSet()
+        videos.filter { it.id in favIds }
+    }
+
+    // Short videos <= 100 seconds (100,000 ms) for Status Reels
+    val statusReelVideos = remember(videos) {
+        val under100s = videos.filter { !it.isPartialDownload && it.duration in 1L..100_000L }
+        if (under100s.isNotEmpty()) under100s else videos
+    }
+
+    // Sort videos while ALWAYS keeping Pending / Half-Downloaded Chrome videos at the VERY TOP
+    val sortedVideos = remember(videos, favoriteVideos, sortCriteria, sortNewToOld, openedFolderName, isViewingFavouriteFolder) {
+        val base = when {
+            isViewingFavouriteFolder -> favoriteVideos
+            openedFolderName != null -> videos.filter { it.folderName == openedFolderName }
+            else -> videos
+        }
 
         val comparator = when (sortCriteria) {
             "Name" -> compareBy<MediaItem> { it.cleanTitle.lowercase() }
@@ -113,10 +152,11 @@ fun VideoSectionScreen(
             "Length" -> compareBy<MediaItem> { it.duration }
             else -> compareBy<MediaItem> { it.dateAdded } // "Date"
         }
-        if (sortNewToOld) base.sortedWith(comparator.reversed()) else base.sortedWith(comparator)
+        val sortedNormal = if (sortNewToOld) base.sortedWith(comparator.reversed()) else base.sortedWith(comparator)
+        val (pendingList, completeList) = sortedNormal.partition { it.isPartialDownload }
+        pendingList + completeList
     }
 
-    // Real watched history only (never fake/duplicate items taking up half the screen)
     val historyVideos = remember(history) {
         history.filter { it.first.isVideo }
     }
@@ -125,344 +165,266 @@ fun VideoSectionScreen(
         historyVideos.associate { it.first.id to it.second }
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        // --- FIXED-HEIGHT 56.DP SLEEK TOP HEADER (Never stretches vertically!) ---
-        if (isMultiSelectMode) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .background(HybridCardBg)
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "${selectedIds.size} Selected",
-                    color = HybridEmerald,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    maxLines = 1
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = {
-                        if (selectedIds.size == sortedVideos.size) {
-                            selectedIds.clear()
-                        } else {
-                            selectedIds.clear()
-                            selectedIds.addAll(sortedVideos.map { it.id })
+    // Back handler when inside a folder or Status Reels overlay
+    if (showStatusReelsOverlay || activeSubTab == "Status") {
+        BackHandler {
+            showStatusReelsOverlay = false
+            if (activeSubTab == "Status") {
+                activeSubTab = "Folder"
+            }
+        }
+    } else if (openedFolderName != null || isViewingFavouriteFolder) {
+        BackHandler {
+            openedFolderName = null
+            isViewingFavouriteFolder = false
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            // --- CLEAN TOP BAR: ONLY App Icon + "Hybrid Player" (No right-side clutter icons!) ---
+            if (isMultiSelectMode) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp)
+                        .background(HybridCardBg)
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isHindi) "${selectedIds.size} चुने गए" else "${selectedIds.size} Selected",
+                        color = HybridEmerald,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        maxLines = 1
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            if (selectedIds.size == sortedVideos.size) {
+                                selectedIds.clear()
+                            } else {
+                                selectedIds.clear()
+                                selectedIds.addAll(sortedVideos.map { it.id })
+                            }
+                        }) {
+                            Text(
+                                text = if (isHindi) "सभी" else "All",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
-                    }) {
-                        Text("All", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                    TextButton(onClick = { selectedIds.clear() }) {
-                        Text("Done", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { selectedIds.clear() }) {
+                            Text(
+                                text = if (isHindi) "पूर्ण" else "Done",
+                                color = HybridEmerald,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
-            }
-        } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .padding(horizontal = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            } else {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp)
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Image(
                         painter = painterResource(id = R.drawable.ic_app_custom_logo),
-                        contentDescription = "Hybrid Player App Icon",
+                        contentDescription = "Hybrid Player",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(9.dp))
-                            .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(9.dp))
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, Color(0xFFFF2A4B).copy(alpha = 0.65f), RoundedCornerShape(8.dp))
                     )
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Hybrid Player",
+                        text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
                         color = Color.White,
-                        fontSize = 19.sp,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // 1. Universal Experience Mode Orb (Kids 👶 / Senior 👴 / Youth ⚡ / Bharat 🇮🇳 / Global 🌍)
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(personaMode.primaryAccent.copy(alpha = 0.32f), Color(0xFF0E1726))
-                                )
-                            )
-                            .border(1.2.dp, personaMode.primaryAccent, CircleShape)
-                            .clickable { showPersonaDialog = true }
-                            .testTag("persona_mode_button"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(text = personaMode.badgeEmoji, fontSize = 15.sp)
-                    }
-
-                    // 2. Full-Screen PDF Reader Studio Orb
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.PictureAsPdf,
-                        contentDescription = "Full-Screen PDF Studio",
-                        tintColor = Color(0xFFFF5252),
-                        size = 34.dp,
-                        iconSize = 17.dp,
-                        isActive = true,
-                        onClick = onOpenPdfReader,
-                        modifier = Modifier.testTag("open_pdf_studio_orb")
-                    )
-
-                    // 3. Direct ShareKaro Transfer Orb
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.SwapHoriz,
-                        contentDescription = "ShareKaro Transfer",
-                        tintColor = Color(0xFFD500F9),
-                        size = 34.dp,
-                        iconSize = 17.dp,
-                        isActive = true,
-                        onClick = onOpenTurboShare
-                    )
-
-                    // 3. Pick Real Videos from Any Folder Orb
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.FolderOpen,
-                        contentDescription = "Add Real Videos from Device",
-                        tintColor = Color(0xFF00E5FF),
-                        size = 36.dp,
-                        iconSize = 17.dp,
-                        isActive = false,
-                        onClick = {
-                            pickVideosLauncher.launch(arrayOf("video/*"))
-                        }
-                    )
-
-                    // 4. Visual Liquid Glass 2x Shake Vibration Orb
-                    LiquidGlassShakeOrbWidget(
-                        isEnabled = doubleShakeEnabled,
-                        size = 36.dp,
-                        onClick = {
-                            viewModel.toggleDoubleShakeEnabled()
-                            val st = if (viewModel.doubleShakeEnabled.value) "ON" else "OFF"
-                            Toast.makeText(
-                                context,
-                                "📳 2x Shake (Next Track): $st",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    )
-
-                    // 5. Compact 36.dp Cleaner Orb (Fixes the vertical stretching bug from Screenshot!)
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .testTag("cleaner_bucket_button")
-                    ) {
-                        LiquidGlassIconOrb(
-                            icon = Icons.Default.DeleteSweep,
-                            contentDescription = "Cleaner Hub",
-                            tintColor = HybridCoralRed,
-                            size = 36.dp,
-                            iconSize = 18.dp,
-                            onClick = onOpenCleanerHub
-                        )
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(HybridCoralRed)
-                                .align(Alignment.TopEnd)
-                        )
-                    }
-                }
-            }
-        }
-
-        // --- COMPACT 42.DP SUB-TABS & CONTROLS ROW ("Video" | "Folder" | "Playlist" + Rescan + Sort + Grid/List) ---
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp)
-                .padding(horizontal = 14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                listOf(
-                    Triple("Video", Icons.Default.SmartDisplay, sortedVideos.size),
-                    Triple("Folder", Icons.Default.Folder, videos.map { it.folderName }.distinct().size),
-                    Triple("Playlist", Icons.Default.VideoLibrary, playlists.size + 1)
-                ).forEach { (tab, tabIcon, count) ->
-                    val isSelected = activeSubTab == tab
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable {
-                            activeSubTab = tab
-                            openedFolderName = null
-                        }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = tabIcon,
-                                contentDescription = tab,
-                                tint = if (isSelected) personaMode.primaryAccent else HybridTextSecondary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "$count",
-                                color = if (isSelected) Color.White else HybridTextSecondary,
-                                fontSize = 13.sp,
-                                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Box(
-                            modifier = Modifier
-                                .width(26.dp)
-                                .height(3.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(if (isSelected) personaMode.primaryAccent else Color.Transparent)
-                        )
-                    }
-                }
             }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp)
-            ) {
-                // Rescan Storage Orb
-                LiquidGlassIconOrb(
-                    icon = Icons.Default.Refresh,
-                    contentDescription = "Scan Real Device Videos",
-                    tintColor = HybridEmerald,
-                    size = 34.dp,
-                    iconSize = 16.dp,
-                    onClick = {
-                        val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                            arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
-                        } else {
-                            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                        }
-                        permissionLauncher.launch(perms)
-                    }
-                )
-
-                // Sort Orb
-                LiquidGlassIconOrb(
-                    icon = Icons.Default.SwapVert,
-                    contentDescription = "Sort by",
-                    tintColor = Color(0xFF00E5FF),
-                    size = 34.dp,
-                    iconSize = 16.dp,
-                    onClick = { showSortDialog = true }
-                )
-
-                // Grid / List Toggle Orb
-                LiquidGlassIconOrb(
-                    icon = when {
-                        activeSubTab == "Playlist" -> Icons.Default.Add
-                        isGridView -> Icons.Default.ViewList
-                        else -> Icons.Default.GridView
-                    },
-                    contentDescription = "Toggle View / Create Playlist",
-                    tintColor = personaMode.primaryAccent,
-                    size = 34.dp,
-                    iconSize = 16.dp,
-                    onClick = {
-                        if (activeSubTab == "Playlist") {
-                            showCreatePlaylistDialog = true
-                        } else {
-                            viewModel.toggleVideoViewMode()
-                        }
-                    }
-                )
-            }
-        }
-
-        // Optional Folder Back Header when inside a specific folder
-        if (openedFolderName != null) {
+            // --- CLEAR LABELED SUB-TABS ROW (English / Hindi Labels so every user understands each tab) ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 4.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(HybridCardBg)
-                    .clickable { openedFolderName = null }
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                    .height(46.dp)
+                    .padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Folders", tint = HybridEmerald)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "$openedFolderName (${sortedVideos.size})",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    maxLines = 1
-                )
-            }
-        }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    val tabs = listOf(
+                        Triple("Video", if (isHindi) "वीडियो" else "Video", Icons.Default.SmartDisplay),
+                        Triple("Folder", if (isHindi) "फ़ोल्डर" else "Folder", Icons.Default.Folder),
+                        Triple("Status", if (isHindi) "स्टेटस" else "Status", Icons.Default.SlowMotionVideo),
+                        Triple("Favourite", if (isHindi) "पसंदीदा" else "Favourite", Icons.Default.Favorite)
+                    )
 
-        // --- FULL-SCREEN VIDEO CONTENT AREA (Occupies ~85% of the screen immediately!) ---
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) {
-            when (activeSubTab) {
-                "Video" -> {
-                    if (sortedVideos.isEmpty()) {
-                        Box(
+                    tabs.forEach { (tabKey, tabLabel, tabIcon) ->
+                        val isSelected = activeSubTab == tabKey
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(20.dp),
-                            contentAlignment = Alignment.Center
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    activeSubTab = tabKey
+                                    openedFolderName = null
+                                    isViewingFavouriteFolder = false
+                                    if (tabKey == "Status") {
+                                        initialStatusReelIndex = 0
+                                        showStatusReelsOverlay = true
+                                    }
+                                }
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
-                            LiquidGlassBox(
-                                modifier = Modifier.fillMaxWidth(),
-                                cornerRadius = 28.dp,
-                                tintColor = personaMode.primaryAccent,
-                                glassAlpha = 0.24f
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(24.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                                ) {
-                                    LiquidGlassIconOrb(
-                                        icon = Icons.Default.VideoLibrary,
-                                        contentDescription = "Real Device Videos",
-                                        tintColor = personaMode.primaryAccent,
-                                        size = 64.dp,
-                                        iconSize = 32.dp,
-                                        isActive = true,
+                                Icon(
+                                    imageVector = tabIcon,
+                                    contentDescription = tabLabel,
+                                    tint = if (isSelected) personaMode.primaryAccent else HybridTextSecondary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = tabLabel,
+                                    color = if (isSelected) Color.White else HybridTextSecondary,
+                                    fontSize = 13.sp,
+                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(32.dp)
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(if (isSelected) personaMode.primaryAccent else Color.Transparent)
+                            )
+                        }
+                    }
+                }
+
+                // Compact Sort & View Toggle Icons
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    IconButton(
+                        onClick = { showSortDialog = true },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SwapVert,
+                            contentDescription = if (isHindi) "क्रमबद्ध करें" else "Sort by",
+                            tint = HybridTextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = { viewModel.toggleVideoViewMode() },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
+                            contentDescription = if (isHindi) "व्यू बदलें" else "Toggle View",
+                            tint = HybridTextSecondary,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+            }
+
+            // Folder / Favourite Back Header when inside a specific folder
+            if (openedFolderName != null || isViewingFavouriteFolder) {
+                val headerTitle = if (isViewingFavouriteFolder) {
+                    if (isHindi) "पसंदीदा (${sortedVideos.size})" else "Favourite (${sortedVideos.size})"
+                } else {
+                    "$openedFolderName (${sortedVideos.size})"
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(HybridCardBg)
+                        .clickable {
+                            openedFolderName = null
+                            isViewingFavouriteFolder = false
+                            activeSubTab = "Folder"
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = if (isHindi) "वापस" else "Back",
+                        tint = HybridEmerald
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = headerTitle,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            // --- MAIN CONTENT AREA ---
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                when (activeSubTab) {
+                    "Video" -> {
+                        if (sortedVideos.isEmpty()) {
+                            // Clean, minimal empty state (no big "100% Real Device Video Scanner" card!)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.VideoLibrary,
+                                    contentDescription = null,
+                                    tint = HybridTextSecondary.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = if (isHindi) "कोई वीडियो नहीं मिला" else "No videos found",
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    OutlinedButton(
                                         onClick = {
                                             val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                                                 arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
@@ -471,238 +433,179 @@ fun VideoSectionScreen(
                                             }
                                             permissionLauncher.launch(perms)
                                         }
-                                    )
-                                    Text(
-                                        text = "100% Real Device Video Scanner",
-                                        color = Color.White,
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.ExtraBold
-                                    )
-                                    Text(
-                                        text = "Grant storage permission to scan all real 8K/4K/HD videos on your phone, or pick videos directly from any folder.",
-                                        color = HybridTextSecondary,
-                                        fontSize = 13.sp,
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                    )
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                        modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        LiquidGlassBox(
-                                            modifier = Modifier.weight(1f),
-                                            cornerRadius = 20.dp,
-                                            tintColor = HybridEmerald,
-                                            glassAlpha = 0.32f,
-                                            onClick = {
-                                                val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                                                    arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
-                                                } else {
-                                                    arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                                }
-                                                permissionLauncher.launch(perms)
-                                            }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(vertical = 12.dp),
-                                                horizontalArrangement = Arrangement.Center,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(18.dp))
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Scan Storage", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
-                                            }
-                                        }
-
-                                        LiquidGlassBox(
-                                            modifier = Modifier.weight(1f),
-                                            cornerRadius = 20.dp,
-                                            tintColor = Color(0xFF00E5FF),
-                                            glassAlpha = 0.32f,
-                                            onClick = {
-                                                pickVideosLauncher.launch(arrayOf("video/*"))
-                                            }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(vertical = 12.dp),
-                                                horizontalArrangement = Arrangement.Center,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(18.dp))
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Pick Videos", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
-                                            }
-                                        }
+                                        Icon(Icons.Default.Refresh, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (isHindi) "रिफ्रेश करें" else "Refresh",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = { pickVideosLauncher.launch(arrayOf("video/*")) }
+                                    ) {
+                                        Icon(Icons.Default.FolderOpen, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (isHindi) "फ़ाइल चुनें" else "Open File",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
                                     }
                                 }
                             }
-                        }
-                    } else if (isGridView) {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(sortedVideos, key = { it.id }) { video ->
-                                val isSelected = video.id in selectedIds
-                                VideoGridCard(
-                                    video = video,
-                                    isSelected = isSelected,
-                                    showBadges = hdrBadges,
-                                    progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
-                                    onClick = {
-                                        if (isMultiSelectMode) {
-                                            if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
-                                        } else {
-                                            onPlayVideo(video)
+                        } else if (isGridView) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(2),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                items(sortedVideos, key = { it.id }) { video ->
+                                    val isSelected = video.id in selectedIds
+                                    VideoGridCard(
+                                        video = video,
+                                        isHindi = isHindi,
+                                        isSelected = isSelected,
+                                        showBadges = hdrBadges,
+                                        progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
+                                        onClick = {
+                                            if (isMultiSelectMode) {
+                                                if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
+                                            } else {
+                                                onPlayVideo(video)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            if (!isSelected) selectedIds.add(video.id)
+                                        },
+                                        onMoreClick = {
+                                            actionTargetVideo = video
                                         }
-                                    },
-                                    onLongClick = {
-                                        if (!isSelected) selectedIds.add(video.id)
-                                    },
-                                    onMoreClick = {
-                                        actionTargetVideo = video
-                                    }
-                                )
+                                    )
+                                }
                             }
-                        }
-                    } else {
-                        // Full-Screen Scrollable LazyColumn (History scrolls away cleanly with the list!)
-                        LazyColumn(
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            // Scrollable Collapsible History Carousel (Only when real watch history exists)
-                            if (historyVideos.isNotEmpty() && openedFolderName == null) {
-                                item(key = "scrollable_history_section") {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
+                        } else {
+                            LazyColumn(
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                // Collapsible Watch History Carousel
+                                if (historyVideos.isNotEmpty() && openedFolderName == null && !isViewingFavouriteFolder) {
+                                    item(key = "scrollable_history_section") {
+                                        Column(modifier = Modifier.fillMaxWidth()) {
                                             Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                modifier = Modifier.clickable { isHistoryCollapsed = !isHistoryCollapsed }
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.History,
-                                                    contentDescription = "History",
-                                                    tint = personaMode.primaryAccent,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                                Text(
-                                                    text = "${historyVideos.size}",
-                                                    color = Color.White,
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Icon(
-                                                    imageVector = if (isHistoryCollapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
-                                                    contentDescription = "Collapse History",
-                                                    tint = HybridTextSecondary,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    modifier = Modifier.clickable { isHistoryCollapsed = !isHistoryCollapsed }
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.History,
+                                                        contentDescription = null,
+                                                        tint = personaMode.primaryAccent,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Text(
+                                                        text = if (isHindi) "हाल ही में देखे गए (${historyVideos.size})" else "History (${historyVideos.size})",
+                                                        color = Color.White,
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Icon(
+                                                        imageVector = if (isHistoryCollapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                                                        contentDescription = null,
+                                                        tint = HybridTextSecondary,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = {
+                                                        viewModel.clearHistory()
+                                                        Toast.makeText(
+                                                            context,
+                                                            if (isHindi) "हिस्ट्री साफ़ की गई" else "Watch History Cleared",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.DeleteOutline,
+                                                        contentDescription = null,
+                                                        tint = HybridTextSecondary,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
                                             }
-                                            IconButton(
-                                                onClick = {
-                                                    viewModel.clearHistory()
-                                                    Toast.makeText(context, "Watch History Cleared", Toast.LENGTH_SHORT).show()
-                                                },
-                                                modifier = Modifier.size(28.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.DeleteOutline,
-                                                    contentDescription = "Clear History",
-                                                    tint = HybridTextSecondary,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
-                                        }
 
-                                        if (!isHistoryCollapsed) {
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            LazyRow(
-                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                            ) {
-                                                items(historyVideos, key = { "hist_${it.first.id}" }) { (video, posMs) ->
-                                                    val progressFraction = if (video.duration > 0) {
-                                                        (posMs.toFloat() / video.duration.toFloat()).coerceIn(0.12f, 1f)
-                                                    } else 0.35f
+                                            if (!isHistoryCollapsed) {
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                LazyRow(
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    items(historyVideos, key = { "hist_${it.first.id}" }) { (video, posMs) ->
+                                                        val progressFraction = if (video.duration > 0) {
+                                                            (posMs.toFloat() / video.duration.toFloat()).coerceIn(0.12f, 1f)
+                                                        } else 0.35f
 
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(width = 132.dp, height = 72.dp)
-                                                            .clip(RoundedCornerShape(10.dp))
-                                                            .background(HybridCardBg)
-                                                            .border(1.dp, HybridCardBorder, RoundedCornerShape(10.dp))
-                                                            .clickable { onPlayVideo(video) }
-                                                    ) {
-                                                        GuaranteedVideoThumbnail(
-                                                            video = video,
-                                                            modifier = Modifier.fillMaxSize()
-                                                        )
                                                         Box(
                                                             modifier = Modifier
-                                                                .fillMaxSize()
-                                                                .background(
-                                                                    Brush.verticalGradient(
-                                                                        colors = listOf(Color.Transparent, Color(0xCC000000))
-                                                                    )
-                                                                )
-                                                        )
-                                                        if (hdrBadges) {
+                                                                .size(width = 132.dp, height = 72.dp)
+                                                                .clip(RoundedCornerShape(10.dp))
+                                                                .background(HybridCardBg)
+                                                                .border(1.dp, HybridCardBorder, RoundedCornerShape(10.dp))
+                                                                .clickable { onPlayVideo(video) }
+                                                        ) {
+                                                            GuaranteedVideoThumbnail(
+                                                                video = video,
+                                                                modifier = Modifier.fillMaxSize()
+                                                            )
                                                             Box(
                                                                 modifier = Modifier
-                                                                    .align(Alignment.BottomStart)
-                                                                    .padding(start = 5.dp, bottom = 6.dp)
+                                                                    .fillMaxSize()
+                                                                    .background(
+                                                                        Brush.verticalGradient(
+                                                                            colors = listOf(Color.Transparent, Color(0xCC000000))
+                                                                        )
+                                                                    )
+                                                            )
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .align(Alignment.BottomEnd)
+                                                                    .padding(end = 5.dp, bottom = 6.dp)
                                                                     .clip(RoundedCornerShape(4.dp))
-                                                                    .background(HybridGold)
+                                                                    .background(Color(0x99000000))
                                                                     .padding(horizontal = 4.dp, vertical = 1.dp)
                                                             ) {
                                                                 Text(
-                                                                    text = if (video.is8K) "8k" else video.resolution,
-                                                                    color = Color.Black,
+                                                                    text = "▶ ${video.formattedDuration}",
+                                                                    color = Color.White,
                                                                     fontSize = 8.sp,
-                                                                    fontWeight = FontWeight.ExtraBold
+                                                                    fontWeight = FontWeight.SemiBold
                                                                 )
                                                             }
-                                                        }
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .align(Alignment.BottomEnd)
-                                                                .padding(end = 5.dp, bottom = 6.dp)
-                                                                .clip(RoundedCornerShape(4.dp))
-                                                                .background(Color(0x99000000))
-                                                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                                                        ) {
-                                                            Text(
-                                                                text = "▶ ${video.formattedDuration}",
-                                                                color = Color.White,
-                                                                fontSize = 8.sp,
-                                                                fontWeight = FontWeight.SemiBold
-                                                            )
-                                                        }
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .height(3.dp)
-                                                                .align(Alignment.BottomCenter)
-                                                                .background(Color(0x44FFFFFF))
-                                                        ) {
                                                             Box(
                                                                 modifier = Modifier
-                                                                    .fillMaxWidth(progressFraction)
-                                                                    .fillMaxHeight()
-                                                                    .background(personaMode.primaryAccent)
-                                                            )
+                                                                    .fillMaxWidth()
+                                                                    .height(3.dp)
+                                                                    .align(Alignment.BottomCenter)
+                                                                    .background(Color(0x44FFFFFF))
+                                                            ) {
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth(progressFraction)
+                                                                        .fillMaxHeight()
+                                                                        .background(personaMode.primaryAccent)
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -710,197 +613,284 @@ fun VideoSectionScreen(
                                         }
                                     }
                                 }
-                            }
 
-                            items(sortedVideos, key = { it.id }) { video ->
-                                val isSelected = video.id in selectedIds
-                                VideoDetailedRowItem(
-                                    video = video,
-                                    isSelected = isSelected,
-                                    showBadges = hdrBadges,
-                                    progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
-                                    personaMode = personaMode,
+                                items(sortedVideos, key = { it.id }) { video ->
+                                    val isSelected = video.id in selectedIds
+                                    VideoDetailedRowItem(
+                                        video = video,
+                                        isHindi = isHindi,
+                                        isSelected = isSelected,
+                                        showBadges = hdrBadges,
+                                        progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
+                                        personaMode = personaMode,
+                                        onClick = {
+                                            if (isMultiSelectMode) {
+                                                if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
+                                            } else {
+                                                onPlayVideo(video)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            if (!isSelected) selectedIds.add(video.id)
+                                        },
+                                        onMoreClick = {
+                                            actionTargetVideo = video
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    "Folder" -> {
+                        val groupedFolders = remember(videos) {
+                            videos.groupBy { it.folderName }
+                        }
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            // 1. FIRST FOLDER: STATUS (Reels <= 100s vertical swipe player)
+                            item(key = "special_folder_status") {
+                                SpecialFolderCard(
+                                    title = if (isHindi) "स्टेटस (Status • Reels)" else "Status (Short Reels ≤ 100s)",
+                                    subtitle = if (isHindi) {
+                                        "${statusReelVideos.size} शॉर्ट वीडियो • ऊपर-नीचे स्वाइप करके देखें"
+                                    } else {
+                                        "${statusReelVideos.size} Short Videos • Swipe up/down like Reels"
+                                    },
+                                    icon = Icons.Default.SlowMotionVideo,
+                                    accentColor = Color(0xFFFF2A6D),
+                                    previewVideos = statusReelVideos,
                                     onClick = {
-                                        if (isMultiSelectMode) {
-                                            if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
-                                        } else {
-                                            onPlayVideo(video)
-                                        }
-                                    },
-                                    onLongClick = {
-                                        if (!isSelected) selectedIds.add(video.id)
-                                    },
-                                    onMoreClick = {
-                                        actionTargetVideo = video
+                                        initialStatusReelIndex = 0
+                                        showStatusReelsOverlay = true
                                     }
+                                )
+                            }
+
+                            // 2. SECOND FOLDER: FAVOURITE (Liked videos from Status & Player)
+                            item(key = "special_folder_favourite") {
+                                SpecialFolderCard(
+                                    title = if (isHindi) "पसंदीदा (Favourite)" else "Favourite",
+                                    subtitle = if (isHindi) {
+                                        "${favoriteVideos.size} पसंदीदा वीडियो"
+                                    } else {
+                                        "${favoriteVideos.size} Liked & Saved Videos"
+                                    },
+                                    icon = Icons.Default.Favorite,
+                                    accentColor = Color(0xFFFF5252),
+                                    previewVideos = favoriteVideos,
+                                    onClick = {
+                                        isViewingFavouriteFolder = true
+                                        openedFolderName = null
+                                        activeSubTab = "Video"
+                                    }
+                                )
+                            }
+
+                            // 3. REMAINING DEVICE MEDIA FOLDERS
+                            items(groupedFolders.entries.toList(), key = { "folder_${it.key}" }) { (folderName, folderVideos) ->
+                                FolderFourThumbnailCard(
+                                    folderName = folderName,
+                                    isHindi = isHindi,
+                                    folderVideos = folderVideos,
+                                    onOpenFolder = {
+                                        isViewingFavouriteFolder = false
+                                        openedFolderName = folderName
+                                        activeSubTab = "Video"
+                                    },
+                                    onPlayDirectVideo = onPlayVideo
                                 )
                             }
                         }
                     }
-                }
 
-                "Folder" -> {
-                    val groupedFolders = remember(videos) {
-                        videos.groupBy { it.folderName }
-                    }
-                    LazyColumn(
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        items(groupedFolders.entries.toList(), key = { it.key }) { (folderName, folderVideos) ->
-                            FolderFourThumbnailCard(
-                                folderName = folderName,
-                                folderVideos = folderVideos,
-                                onOpenFolder = {
-                                    openedFolderName = folderName
-                                    activeSubTab = "Video"
-                                },
-                                onPlayDirectVideo = onPlayVideo
-                            )
-                        }
-                    }
-                }
-
-                "Playlist" -> {
-                    val favVideos = favorites.filter { it.isVideo }
-                    LazyColumn(
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        // Clapperboard Design "Favorite Videos" Card
-                        item {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(HybridCardBg)
-                                    .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
-                                    .clickable {
-                                        if (favVideos.isNotEmpty()) {
-                                            onPlayVideo(favVideos.first())
-                                        } else if (videos.isNotEmpty()) {
-                                            onPlayVideo(videos.first())
-                                        }
-                                    }
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(56.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(HybridEmerald.copy(alpha = 0.18f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.MovieFilter,
-                                        contentDescription = "Clapperboard Favorite Videos",
-                                        tint = HybridEmerald,
-                                        modifier = Modifier.size(30.dp)
-                                    )
+                    "Status" -> {
+                        // Also render Status Reels directly inside the Status tab
+                        StatusReelsVerticalPagerView(
+                            reelVideos = statusReelVideos,
+                            favorites = favorites,
+                            initialIndex = initialStatusReelIndex,
+                            isHindi = isHindi,
+                            onToggleLike = { vid ->
+                                val alreadyFav = favorites.any { it.id == vid.id }
+                                viewModel.toggleFavorite(vid)
+                                val msg = if (!alreadyFav) {
+                                    if (isHindi) "❤️ पसंदीदा में सेव हो गया!" else "❤️ Saved to Favourite!"
+                                } else {
+                                    if (isHindi) "पसंदीदा से हटाया गया" else "Removed from Favourite"
                                 }
-                                Spacer(modifier = Modifier.width(14.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Favorite Videos",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp
-                                    )
-                                    Text(
-                                        text = "${favVideos.size} Clapperboard Favorites",
-                                        color = HybridTextSecondary,
-                                        fontSize = 13.sp
-                                    )
-                                }
-                                Icon(
-                                    imageVector = Icons.Default.PlayCircleFilled,
-                                    contentDescription = "Play Favorites",
-                                    tint = HybridEmerald,
-                                    modifier = Modifier.size(28.dp)
-                                )
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            },
+                            onShareVideo = { vid ->
+                                WifiDirectTransferEngine.shareRealFilesViaSystem(context, listOf(vid))
+                            },
+                            onOpenInFullPlayer = { vid ->
+                                showStatusReelsOverlay = false
+                                onPlayVideo(vid)
+                            },
+                            onOpenMoreOptions = { vid ->
+                                actionTargetVideo = vid
+                            },
+                            onClose = {
+                                showStatusReelsOverlay = false
+                                activeSubTab = "Folder"
                             }
-                        }
+                        )
+                    }
 
-                        items(playlists, key = { it.id }) { playlist ->
-                            Row(
+                    "Favourite" -> {
+                        if (favoriteVideos.isEmpty()) {
+                            Column(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(HybridCardBg)
-                                    .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
-                                    .clickable {
-                                        if (videos.isNotEmpty()) onPlayVideo(videos.first())
-                                    }
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .fillMaxSize()
+                                    .padding(32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.VideoLibrary,
+                                    imageVector = Icons.Default.FavoriteBorder,
                                     contentDescription = null,
-                                    tint = HybridCyan,
-                                    modifier = Modifier.size(28.dp)
+                                    tint = Color(0xFFFF5252),
+                                    modifier = Modifier.size(52.dp)
                                 )
-                                Spacer(modifier = Modifier.width(14.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(playlist.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                    Text("Custom Studio Playlist", color = HybridTextSecondary, fontSize = 12.sp)
-                                }
-                                IconButton(onClick = { viewModel.removePlaylist(playlist.id) }) {
-                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Delete Playlist", tint = HybridCoralRed)
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text(
+                                    text = if (isHindi) "कोई पसंदीदा वीडियो नहीं है" else "No Favourite Videos Yet",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = if (isHindi) {
+                                        "स्टेटस (Status) या वीडियो में ❤️ लाइक बटन दबाने पर वीडियो यहाँ सेव हो जाएंगे।"
+                                    } else {
+                                        "Tap the ❤️ Like button in Status Reels or Video menu to save videos here."
+                                    },
+                                    color = HybridTextSecondary,
+                                    fontSize = 13.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                items(favoriteVideos, key = { "fav_${it.id}" }) { video ->
+                                    VideoDetailedRowItem(
+                                        video = video,
+                                        isHindi = isHindi,
+                                        isSelected = video.id in selectedIds,
+                                        showBadges = hdrBadges,
+                                        progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
+                                        personaMode = personaMode,
+                                        onClick = { onPlayVideo(video) },
+                                        onLongClick = {
+                                            if (video.id !in selectedIds) selectedIds.add(video.id)
+                                        },
+                                        onMoreClick = { actionTargetVideo = video }
+                                    )
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // --- BOTTOM MULTI-SELECT ACTION DOCK ---
+            if (isMultiSelectMode) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(HybridCardBg)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = {
+                        selectedIds.clear()
+                        onOpenTurboShare()
+                    }) {
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = HybridEmerald)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (isHindi) "फास्ट शेयर" else "Fast Share",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    TextButton(onClick = {
+                        val selectedItems = videos.filter { it.id in selectedIds }
+                        if (selectedItems.isNotEmpty()) {
+                            WifiDirectTransferEngine.shareRealFilesViaSystem(context, selectedItems)
+                        }
+                        selectedIds.clear()
+                    }) {
+                        Icon(Icons.Default.Share, contentDescription = null, tint = HybridCyan)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (isHindi) "शेयर करें" else "Share",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    TextButton(onClick = {
+                        pendingDeleteItems = videos.filter { it.id in selectedIds }
+                    }) {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = HybridCoralRed)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (isHindi) "हटाएं" else "Delete",
+                            color = HybridCoralRed,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
         }
 
-        // --- BOTTOM MULTI-SELECT ACTION DOCK ("Turbo Share", "Share Apps", "Delete") ---
-        if (isMultiSelectMode) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(HybridCardBg)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = {
-                    selectedIds.clear()
-                    onOpenTurboShare()
-                }) {
-                    Icon(Icons.Default.Bolt, contentDescription = null, tint = HybridEmerald)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Turbo Share", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-
-                TextButton(onClick = {
-                    val selectedItems = videos.filter { it.id in selectedIds }
-                    if (selectedItems.isNotEmpty()) {
-                        WifiDirectTransferEngine.shareRealFilesViaSystem(context, selectedItems)
+        // --- FULL-SCREEN VERTICAL SWIPE STATUS REELS OVERLAY (When opened from Folder -> Status) ---
+        if (showStatusReelsOverlay && activeSubTab != "Status") {
+            StatusReelsVerticalPagerView(
+                reelVideos = statusReelVideos,
+                favorites = favorites,
+                initialIndex = initialStatusReelIndex,
+                isHindi = isHindi,
+                onToggleLike = { vid ->
+                    val alreadyFav = favorites.any { it.id == vid.id }
+                    viewModel.toggleFavorite(vid)
+                    val msg = if (!alreadyFav) {
+                        if (isHindi) "❤️ पसंदीदा में सेव हो गया!" else "❤️ Saved to Favourite!"
+                    } else {
+                        if (isHindi) "पसंदीदा से हटाया गया" else "Removed from Favourite"
                     }
-                    selectedIds.clear()
-                }) {
-                    Icon(Icons.Default.Share, contentDescription = null, tint = HybridCyan)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Share Apps", color = Color.White, fontWeight = FontWeight.Bold)
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                },
+                onShareVideo = { vid ->
+                    WifiDirectTransferEngine.shareRealFilesViaSystem(context, listOf(vid))
+                },
+                onOpenInFullPlayer = { vid ->
+                    showStatusReelsOverlay = false
+                    onPlayVideo(vid)
+                },
+                onOpenMoreOptions = { vid ->
+                    actionTargetVideo = vid
+                },
+                onClose = {
+                    showStatusReelsOverlay = false
                 }
-
-                TextButton(onClick = {
-                    pendingDeleteItems = videos.filter { it.id in selectedIds }
-                }) {
-                    Icon(Icons.Default.Delete, contentDescription = null, tint = HybridCoralRed)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Delete", color = HybridCoralRed, fontWeight = FontWeight.Bold)
-                }
-            }
+            )
         }
     }
 
-    // --- PLAYit-Style "Sort by" Dialog ---
+    // --- Sort Dialog (English & Hindi) ---
     if (showSortDialog) {
         var tempCriteria by remember { mutableStateOf(sortCriteria) }
         var tempNewToOld by remember { mutableStateOf(sortNewToOld) }
@@ -909,25 +899,36 @@ fun VideoSectionScreen(
             onDismissRequest = { showSortDialog = false },
             containerColor = HybridCardBg,
             title = {
-                Text("Sort by", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
+                Text(
+                    text = if (isHindi) "क्रमबद्ध करें (Sort by)" else "Sort by",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 19.sp
+                )
             },
             text = {
                 Column {
-                    listOf("Date", "Name", "Size", "Length").forEach { option ->
+                    val sortOptions = listOf(
+                        "Date" to if (isHindi) "तारीख (Date)" else "Date",
+                        "Name" to if (isHindi) "नाम (Name)" else "Name",
+                        "Size" to if (isHindi) "साइज़ (Size)" else "Size",
+                        "Length" to if (isHindi) "लंबाई (Length)" else "Length"
+                    )
+                    sortOptions.forEach { (optionKey, optionLabel) ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { tempCriteria = option }
+                                .clickable { tempCriteria = optionKey }
                                 .padding(vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
-                                selected = tempCriteria == option,
-                                onClick = { tempCriteria = option },
+                                selected = tempCriteria == optionKey,
+                                onClick = { tempCriteria = optionKey },
                                 colors = RadioButtonDefaults.colors(selectedColor = HybridEmerald)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(option, color = Color.White, fontSize = 15.sp)
+                            Text(optionLabel, color = Color.White, fontSize = 15.sp)
                         }
                     }
 
@@ -937,8 +938,8 @@ fun VideoSectionScreen(
                     )
 
                     listOf(
-                        true to "From new to old",
-                        false to "From old to new"
+                        true to if (isHindi) "नए से पुराना (New to Old)" else "From new to old",
+                        false to if (isHindi) "पुराने से नया (Old to New)" else "From old to new"
                     ).forEach { (isDesc, label) ->
                         Row(
                             modifier = Modifier
@@ -963,81 +964,51 @@ fun VideoSectionScreen(
                     viewModel.setSortOptions(tempCriteria, tempNewToOld)
                     showSortDialog = false
                 }) {
-                    Text("OK", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                    Text(if (isHindi) "ठीक है" else "OK", color = HybridEmerald, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showSortDialog = false }) {
-                    Text("Cancel", color = HybridTextSecondary)
+                    Text(if (isHindi) "रद्द करें" else "Cancel", color = HybridTextSecondary)
                 }
             }
         )
     }
 
-    // --- Create Playlist Dialog ---
-    if (showCreatePlaylistDialog) {
-        AlertDialog(
-            onDismissRequest = { showCreatePlaylistDialog = false },
-            containerColor = HybridCardBg,
-            title = { Text("Create Video Playlist", color = Color.White, fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(
-                    value = newPlaylistName,
-                    onValueChange = { newPlaylistName = it },
-                    placeholder = { Text("Playlist name...", color = HybridTextSecondary) },
-                    singleLine = true
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (newPlaylistName.isNotBlank()) {
-                        viewModel.addPlaylist(newPlaylistName.trim())
-                        newPlaylistName = ""
-                        showCreatePlaylistDialog = false
-                    }
-                }) {
-                    Text("Create", color = HybridEmerald, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreatePlaylistDialog = false }) {
-                    Text("Cancel", color = HybridTextSecondary)
-                }
-            }
-        )
-    }
-
-    // --- 30-Day Recycle Bin Safe Delete Dialog ---
+    // --- Safe Delete Dialog ---
     if (pendingDeleteItems.isNotEmpty()) {
         AlertDialog(
             onDismissRequest = { pendingDeleteItems = emptyList() },
             containerColor = HybridCardBg,
             title = {
                 Text(
-                    text = "Safe Delete (${pendingDeleteItems.size} file${if (pendingDeleteItems.size > 1) "s" else ""})",
+                    text = if (isHindi) {
+                        "${pendingDeleteItems.size} वीडियो हटाएं"
+                    } else {
+                        "Delete (${pendingDeleteItems.size} file${if (pendingDeleteItems.size > 1) "s" else ""})"
+                    },
                     color = Color.White,
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Keep your videos safe in the 30-Day Recycle Bin so you can restore them anytime, or delete them permanently.",
-                        color = HybridTextSecondary,
-                        fontSize = 13.sp
-                    )
                     Button(
                         onClick = {
                             viewModel.moveBatchToRecycleBin(pendingDeleteItems)
                             pendingDeleteItems = emptyList()
                             selectedIds.clear()
-                            Toast.makeText(context, "Moved to 30-Day Recycle Bin", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                if (isHindi) "रीसायकल बिन में भेजा गया" else "Moved to Recycle Bin",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "MOVE TO RECYCLE BIN (30 DAYS SAFE)",
+                            text = if (isHindi) "रीसायकल बिन में डालें" else "MOVE TO RECYCLE BIN",
                             color = Color.Black,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 12.sp
@@ -1048,30 +1019,39 @@ fun VideoSectionScreen(
                             pendingDeleteItems.forEach { viewModel.deletePermanently(it) }
                             pendingDeleteItems = emptyList()
                             selectedIds.clear()
-                            Toast.makeText(context, "Deleted Permanently", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                if (isHindi) "हमेशा के लिए हटा दिया गया" else "Deleted Permanently",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Delete Permanently", color = HybridCoralRed, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (isHindi) "हमेशा के लिए हटाएं" else "Delete Permanently",
+                            color = HybridCoralRed,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             },
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { pendingDeleteItems = emptyList() }) {
-                    Text("Cancel", color = HybridTextSecondary)
+                    Text(if (isHindi) "रद्द करें" else "Cancel", color = HybridTextSecondary)
                 }
             }
         )
     }
 
-    // --- 7-ACTION COMPREHENSIVE VIDEO OPTIONS SHEET ---
+    // --- 3-DOT FILE MANAGEMENT DIALOG ---
     if (actionTargetVideo != null) {
         val target = actionTargetVideo!!
         val isFav = favorites.any { it.id == target.id }
         MediaSevenActionDialog(
             item = target,
             isFavorite = isFav,
+            isHindi = isHindi,
             onDismiss = { actionTargetVideo = null },
             onHybridShare = { vid ->
                 actionTargetVideo = null
@@ -1082,40 +1062,648 @@ fun VideoSectionScreen(
             },
             onLockInVault = { vid ->
                 viewModel.toggleVaultLock(vid)
-                Toast.makeText(context, "🔒 Moved to Privacy Vault", Toast.LENGTH_SHORT).show()
-            },
-            onPlayBackgroundAudio = { vid ->
-                viewModel.playMusic(vid)
-                Toast.makeText(context, "🎧 Playing Video as Background Audio", Toast.LENGTH_SHORT).show()
-            },
-            onPermanentDeleteConfirmed = { vid ->
-                viewModel.deletePermanently(vid)
-            }
-        )
-    }
-
-    // --- UNIVERSAL DEMOGRAPHIC & GLOBAL PERSONA SELECTOR DIALOG (Kids, Seniors, Youth, Bharat, Global) ---
-    if (showPersonaDialog) {
-        UniversalPersonaSelectorDialog(
-            activeMode = personaMode,
-            onSelectMode = { mode ->
-                viewModel.selectDemographicMode(mode)
                 Toast.makeText(
                     context,
-                    "${mode.badgeEmoji} ${mode.title} Activated!",
+                    if (isHindi) "🔒 प्राइवेट फ़ोल्डर में सुरक्षित किया गया" else "🔒 Moved to Private Folder",
                     Toast.LENGTH_SHORT
                 ).show()
             },
-            onDismiss = { showPersonaDialog = false }
+            onPlayBackgroundAudio = { vid ->
+                viewModel.playMusic(vid)
+                Toast.makeText(
+                    context,
+                    if (isHindi) "🎧 बैकग्राउंड ऑडियो चालू" else "🎧 Playing in Background Audio",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onPermanentDeleteConfirmed = { vid ->
+                viewModel.deletePermanently(vid)
+            },
+            onMoveToRecycleBin = { vid ->
+                viewModel.moveToRecycleBin(vid)
+            },
+            onRenameCompleted = {
+                viewModel.loadMedia()
+            }
         )
     }
 }
 
 /**
- * 4-Stage Guaranteed Video Thumbnail Composable:
- * Stage 1: Instant RAM LruCache (<1ms)
- * Stage 2: Immediate Cinema Poster Fallback (Canvas gradient + clapper vector)
- * Stage 3 & 4: Hardware frame / MediaMetadataRetriever / Coil AsyncImage
+ * Full-Screen Vertical Swipe Status / Reels Player (`<= 100s` videos).
+ * Right-side vertical controls in exact requested order:
+ * 1. Top: Like / Heart button (immediately saves to Favourite)
+ * 2. Middle: Share button
+ * 3. Bottom: 3-Dot button with 4 options
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun StatusReelsVerticalPagerView(
+    reelVideos: List<MediaItem>,
+    favorites: List<MediaItem>,
+    initialIndex: Int,
+    isHindi: Boolean,
+    onToggleLike: (MediaItem) -> Unit,
+    onShareVideo: (MediaItem) -> Unit,
+    onOpenInFullPlayer: (MediaItem) -> Unit,
+    onOpenMoreOptions: (MediaItem) -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    var showReelThreeDotSheetFor by remember { mutableStateOf<MediaItem?>(null) }
+    var showReelDetailsDialogFor by remember { mutableStateOf<MediaItem?>(null) }
+
+    if (reelVideos.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = Icons.Default.SlowMotionVideo,
+                    contentDescription = null,
+                    tint = Color(0xFFFF2A6D),
+                    modifier = Modifier.size(54.dp)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = if (isHindi) "कोई स्टेटस वीडियो उपलब्ध नहीं है" else "No Status Videos Found",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                OutlinedButton(onClick = onClose) {
+                    Text(if (isHindi) "वापस जाएं" else "Go Back", color = Color.White)
+                }
+            }
+        }
+        return
+    }
+
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex.coerceIn(0, (reelVideos.size - 1).coerceAtLeast(0)),
+        pageCount = { reelVideos.size }
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        VerticalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            val video = reelVideos[page]
+            val isCurrentPage = pagerState.currentPage == page
+            val isLiked = favorites.any { it.id == video.id }
+            var isPausedByTap by remember(video.id, isCurrentPage) { mutableStateOf(false) }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .clickable { isPausedByTap = !isPausedByTap }
+            ) {
+                if (isCurrentPage) {
+                    AndroidView(
+                        factory = { ctx ->
+                            VideoView(ctx).apply {
+                                val uri = if (
+                                    video.path.startsWith("content://") ||
+                                    video.path.startsWith("http://") ||
+                                    video.path.startsWith("https://") ||
+                                    video.path.startsWith("android.resource://")
+                                ) {
+                                    Uri.parse(video.path)
+                                } else {
+                                    val file = File(video.path)
+                                    if (file.exists()) Uri.fromFile(file) else Uri.parse(video.path)
+                                }
+                                setVideoURI(uri)
+                                setOnPreparedListener { mp ->
+                                    mp.isLooping = true
+                                    if (!isPausedByTap) start()
+                                }
+                                setOnErrorListener { _, _, _ -> true }
+                            }
+                        },
+                        update = { view ->
+                            try {
+                                if (isPausedByTap && view.isPlaying) {
+                                    view.pause()
+                                } else if (!isPausedByTap && !view.isPlaying) {
+                                    view.start()
+                                }
+                            } catch (_: Exception) {
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .align(Alignment.Center)
+                    )
+                } else {
+                    GuaranteedVideoThumbnail(
+                        video = video,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // Bottom gradient scrim for readable title
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color(0xDD000000))
+                            )
+                        )
+                )
+
+                // Center Play Icon when paused by tap
+                if (isPausedByTap) {
+                    Box(
+                        modifier = Modifier
+                            .size(68.dp)
+                            .align(Alignment.Center)
+                            .clip(CircleShape)
+                            .background(Color(0x88000000)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(42.dp)
+                        )
+                    }
+                }
+
+                // --- RIGHT SIDE REELS CONTROLS (Top: Like ❤️ -> Middle: Share 📤 -> Bottom: 3-Dot ⋮) ---
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 14.dp, bottom = 36.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    // 1. TOP BUTTON: LIKE / HEART (Saves immediately to Favourite)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable { onToggleLike(video) }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isLiked) Color(0xFFFF1744).copy(alpha = 0.28f)
+                                    else Color(0x88000000)
+                                )
+                                .border(
+                                    1.2.dp,
+                                    if (isLiked) Color(0xFFFF1744) else Color.White.copy(alpha = 0.35f),
+                                    CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = if (isHindi) "पसंदीदा" else "Like",
+                                tint = if (isLiked) Color(0xFFFF1744) else Color.White,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (isLiked) {
+                                if (isHindi) "सेव्ड" else "Saved"
+                            } else {
+                                if (isHindi) "लाइक" else "Like"
+                            },
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // 2. MIDDLE BUTTON: SHARE
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable { onShareVideo(video) }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x88000000))
+                                .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = if (isHindi) "शेयर करें" else "Share",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (isHindi) "शेयर" else "Share",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // 3. BOTTOM BUTTON: 3-DOT (4 Clean Options)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable { showReelThreeDotSheetFor = video }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x88000000))
+                                .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = if (isHindi) "विकल्प" else "More Options",
+                                tint = Color.White,
+                                modifier = Modifier.size(25.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (isHindi) "विकल्प" else "More",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // Bottom-Left Video Title & Duration Info
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 16.dp, end = 84.dp, bottom = 28.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFFFF2A6D))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = if (isHindi) "स्टेटस • ${video.formattedDuration}" else "Status • ${video.formattedDuration}",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                        Text(
+                            text = "${page + 1} / ${reelVideos.size}",
+                            color = Color.White.copy(alpha = 0.8f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = video.cleanTitle,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "${video.folderName} • ${video.formattedSize}",
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        // Top-Left Back Header over Reels
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = 12.dp, start = 12.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0x88000000))
+                .clickable { onClose() }
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = if (isHindi) "वापस" else "Back",
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = if (isHindi) "स्टेटस (Status)" else "Status",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+        }
+    }
+
+    // 3-Dot Clean 4-Options Dialog for Status Reels
+    if (showReelThreeDotSheetFor != null) {
+        val target = showReelThreeDotSheetFor!!
+        val isLiked = favorites.any { it.id == target.id }
+        AlertDialog(
+            onDismissRequest = { showReelThreeDotSheetFor = null },
+            containerColor = Color(0xFF101826),
+            title = {
+                Text(
+                    text = target.cleanTitle,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Option 1: Open in Full Player
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                showReelThreeDotSheetFor = null
+                                onOpenInFullPlayer(target)
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.SmartDisplay, contentDescription = null, tint = HybridEmerald)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "पूरे वीडियो प्लेयर में चलाएं" else "Play in Full Video Player",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // Option 2: Save / Remove Favourite
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                showReelThreeDotSheetFor = null
+                                onToggleLike(target)
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = null,
+                            tint = Color(0xFFFF1744)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isLiked) {
+                                if (isHindi) "पसंदीदा से हटाएं" else "Remove from Favourite"
+                            } else {
+                                if (isHindi) "पसंदीदा में सेव करें" else "Save to Favourite"
+                            },
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // Option 3: File Details
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                showReelThreeDotSheetFor = null
+                                showReelDetailsDialogFor = target
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = HybridCyan)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "फ़ाइल की जानकारी (Details)" else "Video File Details",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // Option 4: More File Actions (Rename / Vault / Delete)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                val v = target
+                                showReelThreeDotSheetFor = null
+                                onOpenMoreOptions(v)
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.DriveFileRenameOutline, contentDescription = null, tint = Color(0xFFFFB300))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "नाम बदलें / हटाएं (More)" else "Rename / Delete / Vault",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showReelThreeDotSheetFor = null }) {
+                    Text(if (isHindi) "बंद करें" else "Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    if (showReelDetailsDialogFor != null) {
+        val v = showReelDetailsDialogFor!!
+        AlertDialog(
+            onDismissRequest = { showReelDetailsDialogFor = null },
+            containerColor = Color(0xFF101826),
+            title = {
+                Text(
+                    text = if (isHindi) "फ़ाइल की जानकारी" else "File Details",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${if (isHindi) "नाम" else "Name"}: ${v.cleanTitle}", color = Color.White, fontSize = 13.sp)
+                    Text("${if (isHindi) "लंबाई" else "Duration"}: ${v.formattedDuration}", color = HybridTextSecondary, fontSize = 13.sp)
+                    Text("${if (isHindi) "साइज़" else "Size"}: ${v.formattedSize}", color = HybridTextSecondary, fontSize = 13.sp)
+                    Text("${if (isHindi) "फ़ोल्डर" else "Folder"}: ${v.folderName}", color = HybridTextSecondary, fontSize = 13.sp)
+                    Text("${if (isHindi) "पाथ" else "Path"}: ${v.path}", color = HybridTextSecondary, fontSize = 11.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showReelDetailsDialogFor = null }) {
+                    Text("OK", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Special Folder Card used at the top of the Folder tab for:
+ * 1. Status (Short Reels <= 100s)
+ * 2. Favourite (Liked Videos)
+ */
+@Composable
+private fun SpecialFolderCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    accentColor: Color,
+    previewVideos: List<MediaItem>,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.horizontalGradient(
+                    listOf(accentColor.copy(alpha = 0.16f), HybridCardBg)
+                )
+            )
+            .border(1.2.dp, accentColor.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+            .clickable { onClick() }
+            .padding(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(accentColor.copy(alpha = 0.22f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = title,
+                        tint = accentColor,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = title,
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp
+                    )
+                    Text(
+                        text = subtitle,
+                        color = HybridTextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = accentColor
+            )
+        }
+
+        if (previewVideos.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                previewVideos.take(4).forEach { previewVideo ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                    ) {
+                        GuaranteedVideoThumbnail(
+                            video = previewVideo,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(3.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color(0xAA000000))
+                                .padding(horizontal = 3.dp)
+                        ) {
+                            Text(
+                                text = previewVideo.formattedDuration,
+                                color = Color.White,
+                                fontSize = 8.sp
+                            )
+                        }
+                    }
+                }
+                repeat((4 - previewVideos.size).coerceAtLeast(0)) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0x11FFFFFF))
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 4-Stage Guaranteed Video Thumbnail Composable.
  */
 @Composable
 fun GuaranteedVideoThumbnail(
@@ -1134,14 +1722,12 @@ fun GuaranteedVideoThumbnail(
     }
 
     Box(modifier = modifier) {
-        // Stage 2: Immediate Cinema Poster Fallback (Never blank/black while scrolling)
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(
                 brush = Brush.linearGradient(
                     colors = listOf(Color(0xFF1A2639), Color(0xFF0F172A), Color(0xFF141E30))
                 )
             )
-            // Subtle film reel rings
             drawCircle(
                 color = Color(0x182ECC71),
                 radius = size.minDimension * 0.34f
@@ -1170,6 +1756,7 @@ fun GuaranteedVideoThumbnail(
 @Composable
 private fun VideoDetailedRowItem(
     video: MediaItem,
+    isHindi: Boolean,
     isSelected: Boolean,
     showBadges: Boolean,
     progressFraction: Float,
@@ -1179,14 +1766,24 @@ private fun VideoDetailedRowItem(
     onMoreClick: () -> Unit
 ) {
     val cornerRad = if (personaMode == DemographicMode.KIDS_MAGIC) 20.dp else 14.dp
+    val displayTitle = if (video.isPartialDownload) {
+        if (isHindi) "पेंडिंग (Pending) • ${video.cleanTitle}" else "Pending • ${video.cleanTitle}"
+    } else {
+        video.cleanTitle
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(cornerRad))
             .background(if (isSelected) HybridEmerald.copy(alpha = 0.16f) else HybridCardBg)
             .border(
-                width = if (personaMode == DemographicMode.SENIOR_EASY || personaMode == DemographicMode.KIDS_MAGIC) 1.5.dp else 1.dp,
-                color = if (isSelected) HybridEmerald else if (personaMode == DemographicMode.SENIOR_EASY) personaMode.primaryAccent.copy(alpha = 0.45f) else HybridCardBorder,
+                width = if (video.isPartialDownload) 1.4.dp else 1.dp,
+                color = when {
+                    isSelected -> HybridEmerald
+                    video.isPartialDownload -> Color(0xFFFF9100)
+                    else -> HybridCardBorder
+                },
                 shape = RoundedCornerShape(cornerRad)
             )
             .combinedClickable(
@@ -1196,7 +1793,7 @@ private fun VideoDetailedRowItem(
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Thumbnail with Golden "8k" Badge, "▶ 02:05" Duration Pill, and Bottom Progress Bar
+        // Thumbnail with Pending / Resolution Badge (NO "8K" text!) and Duration Pill
         Box(
             modifier = Modifier
                 .size(width = personaMode.thumbnailWidth, height = personaMode.thumbnailHeight)
@@ -1207,26 +1804,40 @@ private fun VideoDetailedRowItem(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Bottom-Left Golden "8k" Badge
-            if (showBadges) {
+            if (video.isPartialDownload) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 5.dp, top = 5.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFFFF9100))
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        text = if (isHindi) "पेंडिंग" else "Pending",
+                        color = Color.Black,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            } else if (showBadges && !video.resolution.contains("8K", ignoreCase = true)) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(start = 6.dp, bottom = 7.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(if (video.is8K) HybridGold else Color(0xCC141E30))
+                        .background(Color(0xCC141E30))
                         .padding(horizontal = 5.dp, vertical = 1.dp)
                 ) {
                     Text(
                         text = video.resolution,
-                        color = if (video.is8K) Color.Black else HybridCyan,
+                        color = HybridCyan,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                 }
             }
 
-            // Bottom-Right Duration Pill ("▶ 02:05")
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -1243,7 +1854,6 @@ private fun VideoDetailedRowItem(
                 )
             }
 
-            // Bottom Resume Progress Line
             if (progressFraction > 0.02f) {
                 Box(
                     modifier = Modifier
@@ -1264,25 +1874,28 @@ private fun VideoDetailedRowItem(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Info Column: 2-line readable title, "4k | 412.44MB", Folder Source Chip
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = video.cleanTitle,
-                color = Color.White,
+                text = displayTitle,
+                color = if (video.isPartialDownload) Color(0xFFFFD180) else Color.White,
                 fontSize = personaMode.titleFontSize,
-                fontWeight = if (personaMode == DemographicMode.SENIOR_EASY) FontWeight.ExtraBold else FontWeight.SemiBold,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 lineHeight = (personaMode.titleFontSize.value + 4f).sp
             )
             Spacer(modifier = Modifier.height(4.dp))
+            val cleanRes = if (video.resolution.contains("8K", ignoreCase = true)) "HD" else video.resolution
             Text(
-                text = "${video.resolution} • ${video.format} • ${video.formattedSize}${if (video.isPartialDownload) " • Partial" else ""}",
-                color = HybridTextSecondary,
+                text = if (video.isPartialDownload) {
+                    if (isHindi) "पेंडिंग डाउनलोड • ${video.formattedSize}" else "Pending Download • ${video.formattedSize}"
+                } else {
+                    "$cleanRes • ${video.format} • ${video.formattedSize}"
+                },
+                color = if (video.isPartialDownload) Color(0xFFFFAB40) else HybridTextSecondary,
                 fontSize = personaMode.metaFontSize
             )
             Spacer(modifier = Modifier.height(5.dp))
-            // Folder Source Chip
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
@@ -1308,30 +1921,13 @@ private fun VideoDetailedRowItem(
             }
         }
 
-        // In Senior Easy, Kids Magic, or Bharat Desi Mode, show a bright 1-tap Play Orb right on the row!
-        if (personaMode.showBigPlayButtonOnRow) {
-            IconButton(
-                onClick = onClick,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(personaMode.primaryAccent.copy(alpha = 0.22f))
-                    .border(1.dp, personaMode.primaryAccent, CircleShape)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "Instant Play",
-                    tint = personaMode.primaryAccent,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-            Spacer(modifier = Modifier.width(2.dp))
-        }
-
-        IconButton(onClick = onMoreClick) {
+        IconButton(
+            onClick = onMoreClick,
+            modifier = Modifier.testTag("video_row_more_button")
+        ) {
             Icon(
                 imageVector = Icons.Default.MoreVert,
-                contentDescription = "7 Video Actions",
+                contentDescription = if (isHindi) "विकल्प" else "Video Options",
                 tint = HybridTextSecondary
             )
         }
@@ -1342,6 +1938,7 @@ private fun VideoDetailedRowItem(
 @Composable
 private fun VideoGridCard(
     video: MediaItem,
+    isHindi: Boolean,
     isSelected: Boolean,
     showBadges: Boolean,
     progressFraction: Float,
@@ -1349,12 +1946,26 @@ private fun VideoGridCard(
     onLongClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
+    val displayTitle = if (video.isPartialDownload) {
+        if (isHindi) "पेंडिंग • ${video.cleanTitle}" else "Pending • ${video.cleanTitle}"
+    } else {
+        video.cleanTitle
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(if (isSelected) HybridEmerald.copy(alpha = 0.16f) else HybridCardBg)
-            .border(1.dp, if (isSelected) HybridEmerald else HybridCardBorder, RoundedCornerShape(14.dp))
+            .border(
+                1.dp,
+                when {
+                    isSelected -> HybridEmerald
+                    video.isPartialDownload -> Color(0xFFFF9100)
+                    else -> HybridCardBorder
+                },
+                RoundedCornerShape(14.dp)
+            )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(8.dp)
     ) {
@@ -1366,18 +1977,34 @@ private fun VideoGridCard(
         ) {
             GuaranteedVideoThumbnail(video = video, modifier = Modifier.fillMaxSize())
 
-            if (showBadges) {
+            if (video.isPartialDownload) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFFFF9100))
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        text = if (isHindi) "पेंडिंग" else "Pending",
+                        color = Color.Black,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            } else if (showBadges && !video.resolution.contains("8K", ignoreCase = true)) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(6.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(if (video.is8K) HybridGold else Color(0xCC141E30))
+                        .background(Color(0xCC141E30))
                         .padding(horizontal = 5.dp, vertical = 1.dp)
                 ) {
                     Text(
                         text = video.resolution,
-                        color = if (video.is8K) Color.Black else HybridCyan,
+                        color = HybridCyan,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -1424,15 +2051,15 @@ private fun VideoGridCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = video.cleanTitle,
-                    color = Color.White,
+                    text = displayTitle,
+                    color = if (video.isPartialDownload) Color(0xFFFFD180) else Color.White,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "${video.resolution} • ${video.formattedSize}",
+                    text = video.formattedSize,
                     color = HybridTextSecondary,
                     fontSize = 11.sp
                 )
@@ -1443,7 +2070,7 @@ private fun VideoGridCard(
             ) {
                 Icon(
                     imageVector = Icons.Default.MoreVert,
-                    contentDescription = "7 Video Actions",
+                    contentDescription = if (isHindi) "विकल्प" else "Video Options",
                     tint = HybridTextSecondary,
                     modifier = Modifier.size(18.dp)
                 )
@@ -1458,6 +2085,7 @@ private fun VideoGridCard(
 @Composable
 private fun FolderFourThumbnailCard(
     folderName: String,
+    isHindi: Boolean,
     folderVideos: List<MediaItem>,
     onOpenFolder: () -> Unit,
     onPlayDirectVideo: (MediaItem) -> Unit
@@ -1470,7 +2098,6 @@ private fun FolderFourThumbnailCard(
             .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
             .padding(14.dp)
     ) {
-        // Folder Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1494,7 +2121,7 @@ private fun FolderFourThumbnailCard(
                         fontSize = 15.sp
                     )
                     Text(
-                        text = "${folderVideos.size} Videos",
+                        text = if (isHindi) "${folderVideos.size} वीडियो" else "${folderVideos.size} Videos",
                         color = HybridTextSecondary,
                         fontSize = 12.sp
                     )
@@ -1502,14 +2129,13 @@ private fun FolderFourThumbnailCard(
             }
             Icon(
                 imageVector = Icons.Default.ChevronRight,
-                contentDescription = "Open Folder",
+                contentDescription = if (isHindi) "फ़ोल्डर खोलें" else "Open Folder",
                 tint = HybridTextSecondary
             )
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // 4-Thumbnail Horizontal Preview Strip
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1542,7 +2168,6 @@ private fun FolderFourThumbnailCard(
                     }
                 }
             }
-            // Fill remaining slots up to 4 so strip stays symmetrical
             repeat((4 - folderVideos.size).coerceAtLeast(0)) {
                 Box(
                     modifier = Modifier

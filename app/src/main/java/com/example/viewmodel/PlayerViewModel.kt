@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.database.ContentObserver
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -12,16 +13,15 @@ import android.media.PlaybackParams
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
+import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.widget.Toast
-import android.database.ContentObserver
-import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.database.AppDatabase
@@ -65,7 +65,6 @@ class PlayerViewModel(application: Application) :
     fun selectDemographicMode(mode: DemographicMode) {
         _demographicMode.value = mode
         DemographicMode.saveMode(getApplication(), mode)
-        // Automatically apply the persona's signature theme & penguins mode if Kids Magic is selected
         selectTheme(mode.defaultThemeName)
         if (mode == DemographicMode.KIDS_MAGIC) {
             _companionEnabled.value = true
@@ -92,7 +91,7 @@ class PlayerViewModel(application: Application) :
     private val _allMediaItems = MutableStateFlow(_videoItems.value + _musicItems.value)
     val allMediaItems: StateFlow<List<MediaItem>> = _allMediaItems.asStateFlow()
 
-    // --- PLAYit-Style Video Sort & View Mode ---
+    // --- Video Sort & View Mode ---
     private val _sortCriteria = MutableStateFlow("Date") // "Date", "Name", "Size", "Length"
     val sortCriteria: StateFlow<String> = _sortCriteria.asStateFlow()
 
@@ -101,6 +100,18 @@ class PlayerViewModel(application: Application) :
 
     private val _isVideoGridView = MutableStateFlow(false)
     val isVideoGridView: StateFlow<Boolean> = _isVideoGridView.asStateFlow()
+
+    // --- Audio Library Sort Order ---
+    // "NewToOld", "OldToNew", "AtoZ", "ZtoA", "ShortToLong", "LongToShort"
+    private val _audioSortOrder = MutableStateFlow(
+        prefs.getString("saved_audio_sort_order", "NewToOld") ?: "NewToOld"
+    )
+    val audioSortOrder: StateFlow<String> = _audioSortOrder.asStateFlow()
+
+    fun setAudioSortOrder(order: String) {
+        _audioSortOrder.value = order
+        prefs.edit().putString("saved_audio_sort_order", order).apply()
+    }
 
     // --- Playlists ---
     val playlists: StateFlow<List<PlaylistEntity>> = repository.getPlaylists()
@@ -189,9 +200,35 @@ class PlayerViewModel(application: Application) :
     private val _sleepTimerMinutes = MutableStateFlow(0)
     val sleepTimerMinutes: StateFlow<Int> = _sleepTimerMinutes.asStateFlow()
 
-    // --- Loop / Shuffle Mode ---
-    private val _isShuffleMode = MutableStateFlow(false)
+    // --- True Non-Repeating Fisher-Yates Shuffle & Repeat Mode ---
+    private val _isShuffleMode = MutableStateFlow(
+        prefs.getBoolean("music_shuffle_mode", false)
+    )
     val isShuffleMode: StateFlow<Boolean> = _isShuffleMode.asStateFlow()
+
+    // 0 = Order List, 1 = Repeat All, 2 = Repeat One
+    private val _repeatMode = MutableStateFlow(
+        prefs.getInt("music_repeat_mode", 1)
+    )
+    val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
+
+    private val unplayedShuffleIds = mutableListOf<String>()
+    private val playedHistoryIds = ArrayDeque<String>()
+
+    // --- Permanent 3D Visualizer ON/OFF Switch ---
+    private val _visualizer3DEnabled = MutableStateFlow(
+        prefs.getBoolean("music_3d_visualizer_enabled", false)
+    )
+    val visualizer3DEnabled: StateFlow<Boolean> = _visualizer3DEnabled.asStateFlow()
+
+    fun toggleVisualizer3DEnabled() {
+        setVisualizer3DEnabled(!_visualizer3DEnabled.value)
+    }
+
+    fun setVisualizer3DEnabled(enabled: Boolean) {
+        _visualizer3DEnabled.value = enabled
+        prefs.edit().putBoolean("music_3d_visualizer_enabled", enabled).apply()
+    }
 
     // --- EQ & Sound Enhancements ---
     private val _equalizerPreset = MutableStateFlow("Flat")
@@ -218,7 +255,12 @@ class PlayerViewModel(application: Application) :
     private val _customWallpaperUri = MutableStateFlow<String?>(null)
     val customWallpaperUri: StateFlow<String?> = _customWallpaperUri.asStateFlow()
 
-    private val _selectedLanguage = MutableStateFlow("English (Default)")
+    private val _selectedLanguage = MutableStateFlow(
+        prefs.getString(
+            "saved_app_language",
+            if (java.util.Locale.getDefault().language == "hi") "Hindi (हिन्दी)" else "English (Default)"
+        ) ?: "English (Default)"
+    )
     val selectedLanguage: StateFlow<String> = _selectedLanguage.asStateFlow()
 
     private val _oneHandMode = MutableStateFlow(false)
@@ -395,7 +437,6 @@ class PlayerViewModel(application: Application) :
         val y = event.values[1]
         val z = event.values[2]
 
-        // High-pass filter to isolate pure linear wrist shake acceleration regardless of phone tilt/orientation
         if (!gravityInitialized) {
             gravityFilter[0] = x
             gravityFilter[1] = y
@@ -433,18 +474,16 @@ class PlayerViewModel(application: Application) :
                 return
             }
 
-            // 2. Check Double-Shake to Skip Song (Active in Audio Mode OR Background Video Audio Mode; OFF in Foreground Video)
-            if (!_doubleShakeEnabled.value || _isForegroundVideoActive.value) return
+            // 2. Check Double-Shake to Skip Song (Active when music/background audio is loaded & not in foreground video)
+            if (!_doubleShakeEnabled.value || _isForegroundVideoActive.value || _nowPlaying.value == null) return
             if (now - lastDoubleShakeTriggerMs < 950L) return
 
             val gap = now - firstShakeTimestampMs
             if (gap in 140L..900L) {
-                // Confirmed 2nd Shake (Double Shake)!
                 firstShakeTimestampMs = 0L
                 lastDoubleShakeTriggerMs = now
                 executeDoubleShakeNextSong()
             } else if (gap > 900L) {
-                // 1st Shake detected: store timestamp & give a crisp haptic tick so the user feels the 1st shake
                 firstShakeTimestampMs = now
                 triggerDoubleShakeVibration(isSingleTick = true)
             }
@@ -455,11 +494,11 @@ class PlayerViewModel(application: Application) :
 
     fun executeDoubleShakeNextSong() {
         triggerDoubleShakeVibration(isSingleTick = false)
-        playNext()
+        playNext(fromAutoCompletion = false)
         val trackTitle = _nowPlaying.value?.cleanTitle ?: "Next Track"
         Toast.makeText(
             getApplication(),
-            "📳 2x Shake Vibration -> Playing: $trackTitle",
+            "📳 2x Shake -> $trackTitle",
             Toast.LENGTH_SHORT
         ).show()
     }
@@ -589,8 +628,19 @@ class PlayerViewModel(application: Application) :
     }
 
     // --- Music & Background Audio Player Operations ---
-    fun playMusic(item: MediaItem) {
+    fun playMusic(item: MediaItem, recordHistory: Boolean = true) {
         progressJob?.cancel()
+        val previousItem = _nowPlaying.value
+        if (recordHistory && previousItem != null && previousItem.id != item.id) {
+            if (playedHistoryIds.lastOrNull() != previousItem.id) {
+                playedHistoryIds.addLast(previousItem.id)
+                if (playedHistoryIds.size > 200) {
+                    playedHistoryIds.removeFirst()
+                }
+            }
+        }
+        unplayedShuffleIds.remove(item.id)
+
         try {
             loudnessEnhancer?.release()
             hardwareEqualizer?.release()
@@ -606,7 +656,7 @@ class PlayerViewModel(application: Application) :
         _nowPlaying.value = item
         _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), item)
 
-        // Ensure notification delegate & foreground service start immediately
+        // Start foreground service ONLY when audio playback is explicitly requested
         MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
         AudioService.startServiceSafely(getApplication())
 
@@ -653,7 +703,7 @@ class PlayerViewModel(application: Application) :
                     _isPlaying.value = false
                     _playbackPosition.value = 0L
                     progressJob?.cancel()
-                    playNext()
+                    playNext(fromAutoCompletion = true)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -664,20 +714,55 @@ class PlayerViewModel(application: Application) :
         }
     }
 
+    private fun getActiveAudioPool(): List<MediaItem> {
+        val current = _nowPlaying.value
+        return if (current?.isVideo == true) {
+            (_musicItems.value + _videoItems.value).distinctBy { it.id }
+        } else {
+            _musicItems.value.ifEmpty { _videoItems.value }
+        }
+    }
+
+    private fun refillShuffleDeck(pool: List<MediaItem>, excludeId: String?) {
+        unplayedShuffleIds.clear()
+        val ids = pool.map { it.id }.filter { it != excludeId }.shuffled()
+        unplayedShuffleIds.addAll(ids)
+    }
+
     fun shufflePlayMusic() {
-        val list = _musicItems.value
+        val list = getActiveAudioPool()
         if (list.isNotEmpty()) {
             _isShuffleMode.value = true
-            playMusic(list.random())
+            prefs.edit().putBoolean("music_shuffle_mode", true).apply()
+            refillShuffleDeck(list, _nowPlaying.value?.id)
+            val nextId = unplayedShuffleIds.removeFirstOrNull()
+            val target = list.firstOrNull { it.id == nextId } ?: list.random()
+            playMusic(target)
         }
     }
 
     fun toggleShuffleMode() {
-        _isShuffleMode.value = !_isShuffleMode.value
+        val next = !_isShuffleMode.value
+        _isShuffleMode.value = next
+        prefs.edit().putBoolean("music_shuffle_mode", next).apply()
+        if (next) {
+            refillShuffleDeck(getActiveAudioPool(), _nowPlaying.value?.id)
+        } else {
+            unplayedShuffleIds.clear()
+        }
+        syncMediaNotification()
+    }
+
+    fun cycleRepeatMode() {
+        val next = (_repeatMode.value + 1) % 3
+        _repeatMode.value = next
+        prefs.edit().putInt("music_repeat_mode", next).apply()
+        syncMediaNotification()
     }
 
     fun togglePlayPause() {
-        mediaPlayer?.let { mp ->
+        val mp = mediaPlayer
+        if (mp != null) {
             try {
                 if (mp.isPlaying) {
                     mp.pause()
@@ -692,6 +777,11 @@ class PlayerViewModel(application: Application) :
                 }
                 syncMediaNotification()
             } catch (_: Exception) {
+            }
+        } else {
+            val current = _nowPlaying.value ?: _musicItems.value.firstOrNull()
+            if (current != null) {
+                playMusic(current)
             }
         }
     }
@@ -796,30 +886,73 @@ class PlayerViewModel(application: Application) :
         }
     }
 
-    fun playNext() {
-        val currentList = _musicItems.value.ifEmpty { _videoItems.value }
+    fun playNext(fromAutoCompletion: Boolean = false) {
+        val currentList = getActiveAudioPool()
         if (currentList.isEmpty()) return
-        if (_isShuffleMode.value && currentList.size > 1) {
-            val others = currentList.filter { it.id != _nowPlaying.value?.id }
-            playMusic(others.random())
+        val current = _nowPlaying.value
+
+        // Repeat One mode: replay current song when track finishes naturally
+        if (fromAutoCompletion && _repeatMode.value == 2 && current != null) {
+            playMusic(current, recordHistory = false)
             return
         }
-        val currentIndex = currentList.indexOfFirst { it.id == _nowPlaying.value?.id }
+
+        // True Fisher-Yates Non-Repeating Shuffle Queue
+        if (_isShuffleMode.value && currentList.size > 1) {
+            val validIds = currentList.map { it.id }.toSet()
+            unplayedShuffleIds.retainAll(validIds)
+            unplayedShuffleIds.remove(current?.id)
+
+            if (unplayedShuffleIds.isEmpty()) {
+                if (fromAutoCompletion && _repeatMode.value == 0) {
+                    // Order mode finished all tracks in deck
+                    syncMediaNotification()
+                    return
+                }
+                refillShuffleDeck(currentList, current?.id)
+            }
+
+            val nextId = unplayedShuffleIds.removeFirstOrNull()
+            val nextTrack = currentList.firstOrNull { it.id == nextId }
+                ?: currentList.firstOrNull { it.id != current?.id }
+                ?: currentList.first()
+            playMusic(nextTrack, recordHistory = true)
+            return
+        }
+
+        val currentIndex = currentList.indexOfFirst { it.id == current?.id }
         if (currentIndex != -1 && currentIndex < currentList.size - 1) {
-            playMusic(currentList[currentIndex + 1])
+            playMusic(currentList[currentIndex + 1], recordHistory = true)
         } else {
-            playMusic(currentList.first())
+            if (fromAutoCompletion && _repeatMode.value == 0) {
+                // Stop at end of list when Repeat is Off (Order Mode)
+                syncMediaNotification()
+            } else {
+                playMusic(currentList.first(), recordHistory = true)
+            }
         }
     }
 
     fun playPrevious() {
-        val currentList = _musicItems.value.ifEmpty { _videoItems.value }
+        val currentList = getActiveAudioPool()
         if (currentList.isEmpty()) return
+
+        // If playback is > 4 seconds in, restart current song first on Prev tap? No, user expects immediate previous track,
+        // and in shuffle mode step back through actual played history!
+        while (playedHistoryIds.isNotEmpty()) {
+            val prevId = playedHistoryIds.removeLast()
+            val prevItem = currentList.firstOrNull { it.id == prevId }
+            if (prevItem != null && prevItem.id != _nowPlaying.value?.id) {
+                playMusic(prevItem, recordHistory = false)
+                return
+            }
+        }
+
         val currentIndex = currentList.indexOfFirst { it.id == _nowPlaying.value?.id }
         if (currentIndex > 0) {
-            playMusic(currentList[currentIndex - 1])
+            playMusic(currentList[currentIndex - 1], recordHistory = false)
         } else {
-            playMusic(currentList.last())
+            playMusic(currentList.last(), recordHistory = false)
         }
     }
 
@@ -846,16 +979,18 @@ class PlayerViewModel(application: Application) :
                     syncMediaNotification()
                 }
 
-                _visualizerFrequencies.value = List(16) { index ->
-                    val multiplier = when (_equalizerPreset.value) {
-                        "Bass Booster" -> if (index < 6) 1.6f else 0.8f
-                        "Treble Booster" -> if (index > 10) 1.7f else 0.7f
-                        "Vocal Booster" -> if (index in 5..11) 1.5f else 0.8f
-                        "3D Surround" -> if (index % 2 == 0) 1.4f else 1.0f
-                        else -> 1.0f
+                if (_visualizer3DEnabled.value) {
+                    _visualizerFrequencies.value = List(16) { index ->
+                        val multiplier = when (_equalizerPreset.value) {
+                            "Bass Booster" -> if (index < 6) 1.6f else 0.8f
+                            "Treble Booster" -> if (index > 10) 1.7f else 0.7f
+                            "Vocal Booster" -> if (index in 5..11) 1.5f else 0.8f
+                            "3D Surround" -> if (index % 2 == 0) 1.4f else 1.0f
+                            else -> 1.0f
+                        }
+                        val randomWave = (0.15f..0.65f).random()
+                        (randomWave * multiplier).coerceIn(0.1f, 1.0f)
                     }
-                    val randomWave = (0.15f..0.65f).random()
-                    (randomWave * multiplier).coerceIn(0.1f, 1.0f)
                 }
 
                 delay(250)
@@ -870,13 +1005,15 @@ class PlayerViewModel(application: Application) :
         MediaNotificationHelper.showOrUpdateNotification(
             context = getApplication(),
             title = current.cleanTitle,
-            subtitle = current.artist.ifBlank { if (current.isVideo) "Background Video Audio" else "Hybrid Audio Studio" },
+            subtitle = current.artist.ifBlank { if (current.isVideo) "Video Audio" else "Hybrid Audio" },
             mediaPath = current.path,
             isVideo = current.isVideo,
             isPlaying = _isPlaying.value,
             positionMs = _playbackPosition.value,
             durationMs = dur,
             playbackSpeed = _playbackSpeed.value,
+            isShuffle = _isShuffleMode.value,
+            repeatMode = _repeatMode.value,
             contentIntentActivity = com.example.MainActivity::class.java
         )
     }
@@ -895,7 +1032,7 @@ class PlayerViewModel(application: Application) :
     }
 
     override fun onNotificationNext() {
-        playNext()
+        playNext(fromAutoCompletion = false)
     }
 
     override fun onNotificationPrevious() {
@@ -906,16 +1043,27 @@ class PlayerViewModel(application: Application) :
         seekTo(positionMs)
     }
 
+    override fun onNotificationToggleShuffle() {
+        toggleShuffleMode()
+    }
+
+    override fun onNotificationToggleRepeat() {
+        cycleRepeatMode()
+    }
+
     override fun onNotificationStop() {
         try {
             if (mediaPlayer?.isPlaying == true) {
                 mediaPlayer?.pause()
             }
+            mediaPlayer?.release()
         } catch (_: Exception) {
         }
+        mediaPlayer = null
         _isPlaying.value = false
         progressJob?.cancel()
         MediaNotificationHelper.cancelNotification(getApplication())
+        AudioService.stopServiceCompletely(getApplication())
     }
 
     private fun ClosedFloatingPointRange<Float>.random(): Float {
@@ -1029,7 +1177,6 @@ class PlayerViewModel(application: Application) :
                 _vaultUnlocked.value = true
                 onResult(true)
             } else {
-                // Failed attempt! Log intruder & trigger lockout if >= 3 attempts
                 triggerDoubleShakeVibration(isSingleTick = false)
                 SecurityDefenseEngine.recordFailedPinAttempt(getApplication(), pin)
                 _intruderLogs.value = SecurityDefenseEngine.getIntruderLogs(getApplication())
@@ -1162,6 +1309,7 @@ class PlayerViewModel(application: Application) :
 
     fun selectLanguage(lang: String) {
         _selectedLanguage.value = lang
+        prefs.edit().putString("saved_app_language", lang).apply()
     }
 
     fun toggleOneHandMode() {
