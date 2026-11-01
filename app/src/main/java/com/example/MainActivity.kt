@@ -26,6 +26,7 @@ import com.example.helpers.*
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.components.VideoPlayerView
+import com.example.ui.pdf.PdfReaderScreen
 import com.example.ui.screens.*
 import com.example.ui.share.ShareKaroTransferScreen
 import com.example.ui.theme.*
@@ -43,7 +44,8 @@ enum class ActiveScreen {
     Mp3Converter,
     StatusSaver,
     Playlists,
-    History
+    History,
+    PdfReader
 }
 
 enum class MainBottomTab(val label: String) {
@@ -251,6 +253,9 @@ class MainActivity : ComponentActivity() {
                                                     onHybridShareItem = { item ->
                                                         preselectedShareItem = item
                                                         navigationStack.add(ActiveScreen.TurboShare)
+                                                    },
+                                                    onOpenPdfReader = {
+                                                        navigationStack.add(ActiveScreen.PdfReader)
                                                     }
                                                 )
                                             }
@@ -308,6 +313,9 @@ class MainActivity : ComponentActivity() {
                                                     },
                                                     onOpenCleanerHub = {
                                                         navigationStack.add(ActiveScreen.CleanerHub)
+                                                    },
+                                                    onOpenPdfReader = {
+                                                        navigationStack.add(ActiveScreen.PdfReader)
                                                     },
                                                     onPlayStreamVideo = { streamItem ->
                                                         activeVideoItem = streamItem
@@ -463,6 +471,12 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onBackClick = { navigationStack.removeAt(navigationStack.lastIndex) },
                                     accentColor = accentColor
+                                )
+                            }
+
+                            ActiveScreen.PdfReader -> {
+                                PdfReaderScreen(
+                                    onBackClick = { navigationStack.removeAt(navigationStack.lastIndex) }
                                 )
                             }
                         }

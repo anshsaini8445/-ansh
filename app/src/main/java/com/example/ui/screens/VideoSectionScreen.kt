@@ -57,6 +57,7 @@ fun VideoSectionScreen(
     onOpenCleanerHub: () -> Unit,
     onOpenTurboShare: () -> Unit,
     onHybridShareItem: (MediaItem) -> Unit = { _ -> onOpenTurboShare() },
+    onOpenPdfReader: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -218,13 +219,25 @@ fun VideoSectionScreen(
                         Text(text = personaMode.badgeEmoji, fontSize = 15.sp)
                     }
 
-                    // 2. Direct ShareKaro Transfer Orb
+                    // 2. Full-Screen PDF Reader Studio Orb
+                    LiquidGlassIconOrb(
+                        icon = Icons.Default.PictureAsPdf,
+                        contentDescription = "Full-Screen PDF Studio",
+                        tintColor = Color(0xFFFF5252),
+                        size = 34.dp,
+                        iconSize = 17.dp,
+                        isActive = true,
+                        onClick = onOpenPdfReader,
+                        modifier = Modifier.testTag("open_pdf_studio_orb")
+                    )
+
+                    // 3. Direct ShareKaro Transfer Orb
                     LiquidGlassIconOrb(
                         icon = Icons.Default.SwapHoriz,
                         contentDescription = "ShareKaro Transfer",
                         tintColor = Color(0xFFD500F9),
-                        size = 36.dp,
-                        iconSize = 18.dp,
+                        size = 34.dp,
+                        iconSize = 17.dp,
                         isActive = true,
                         onClick = onOpenTurboShare
                     )

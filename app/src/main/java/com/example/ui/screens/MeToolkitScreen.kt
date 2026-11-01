@@ -34,6 +34,8 @@ import com.example.data.model.MediaItem
 import com.example.helpers.*
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
+import com.example.ui.persona.DemographicMode
+import com.example.ui.persona.UniversalPersonaSelectorDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
 
@@ -45,11 +47,13 @@ fun MeToolkitScreen(
     onOpenMp3Converter: () -> Unit,
     onOpenStatusSaver: () -> Unit,
     onOpenCleanerHub: () -> Unit,
+    onOpenPdfReader: () -> Unit = {},
     onPlayStreamVideo: (MediaItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val activeTheme by viewModel.activeTheme.collectAsState()
+    val personaMode by viewModel.demographicMode.collectAsState()
     val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
     val companionEnabled by viewModel.companionEnabled.collectAsState()
     val companionBreed by viewModel.companionBreed.collectAsState()
@@ -70,6 +74,7 @@ fun MeToolkitScreen(
     val intruderLogs by viewModel.intruderLogs.collectAsState()
 
     var showThemeStudioDialog by remember { mutableStateOf(false) }
+    var showPersonaDialog by remember { mutableStateOf(false) }
     var show3DMusicThemesDialog by remember { mutableStateOf(false) }
     var showSecurityFortressDialog by remember { mutableStateOf(false) }
     var showCompanionDialog by remember { mutableStateOf(false) }
@@ -279,6 +284,24 @@ fun MeToolkitScreen(
                         onClick = { showRecycleBinDialog = true }
                     )
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    UniformToolkitGridCard(
+                        title = "Full-Screen PDF",
+                        subtitle = "100% HD Reader & Zoom",
+                        icon = Icons.Default.PictureAsPdf,
+                        accent = Color(0xFFFF5252),
+                        modifier = Modifier.weight(1f),
+                        onClick = onOpenPdfReader
+                    )
+                    UniformToolkitGridCard(
+                        title = "Universal Mode",
+                        subtitle = "${personaMode.badgeEmoji} ${personaMode.title}",
+                        icon = Icons.Default.Public,
+                        accent = personaMode.primaryAccent,
+                        modifier = Modifier.weight(1f),
+                        onClick = { showPersonaDialog = true }
+                    )
+                }
             }
         }
 
@@ -299,6 +322,13 @@ fun MeToolkitScreen(
                     fontSize = 13.sp,
                     fontWeight = FontWeight.ExtraBold,
                     modifier = Modifier.padding(bottom = 4.dp)
+                )
+
+                PersonalizationNavRow(
+                    title = "Universal Demographic Mode (Kids / Senior / Youth / India / Global)",
+                    value = "${personaMode.badgeEmoji} ${personaMode.title} (${personaMode.subtitle})",
+                    icon = Icons.Default.Public,
+                    onClick = { showPersonaDialog = true }
                 )
 
                 PersonalizationNavRow(
@@ -1126,6 +1156,21 @@ fun MeToolkitScreen(
                     Text("Awesome", color = HybridEmerald, fontWeight = FontWeight.Bold)
                 }
             }
+        )
+    }
+
+    if (showPersonaDialog) {
+        UniversalPersonaSelectorDialog(
+            activeMode = personaMode,
+            onSelectMode = { mode ->
+                viewModel.selectDemographicMode(mode)
+                Toast.makeText(
+                    context,
+                    "${mode.badgeEmoji} ${mode.title} Activated!",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onDismiss = { showPersonaDialog = false }
         )
     }
 }

@@ -1059,29 +1059,29 @@ private fun ShareKaroConnectedDashboard(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // --- TOP SECTION: HIGH-SPEED LIVE SPEEDOMETER HEADER ---
+        // --- TOP SECTION: COMPACT HIGH-SPEED LIVE SPEEDOMETER HEADER ---
         LiquidGlassBox(
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("connected_speedometer_header"),
-            cornerRadius = 26.dp,
+            cornerRadius = 22.dp,
             tintColor = if (isTransferring) HybridCyan else HybridEmerald,
             glassAlpha = 0.28f
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Speedometer Gauge Dial
+                // Compact Speedometer Gauge Dial
                 Box(
-                    modifier = Modifier.size(92.dp),
+                    modifier = Modifier.size(68.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
-                        val strokeW = 8.dp.toPx()
+                        val strokeW = 6.5.dp.toPx()
                         drawArc(
                             color = Color.White.copy(alpha = 0.14f),
                             startAngle = 135f,
@@ -1102,12 +1102,12 @@ private fun ShareKaroConnectedDashboard(
                     Text(
                         text = "$overallPercent%",
                         color = Color.White,
-                        fontSize = 20.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                 }
 
-                Spacer(modifier = Modifier.width(16.dp))
+                Spacer(modifier = Modifier.width(14.dp))
 
                 // Top Live Speed Readout (MB/s)
                 Column(
@@ -1122,7 +1122,7 @@ private fun ShareKaroConnectedDashboard(
                             imageVector = Icons.Default.Speed,
                             contentDescription = "Transfer Speed",
                             tint = HybridEmerald,
-                            modifier = Modifier.size(26.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                         Text(
                             text = String.format(
@@ -1131,11 +1131,11 @@ private fun ShareKaroConnectedDashboard(
                                 if (isTransferring) speedMbPerSec else 124.6f
                             ),
                             color = Color.White,
-                            fontSize = 28.sp,
+                            fontSize = 23.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = String.format(
                             Locale.US,
@@ -1145,7 +1145,7 @@ private fun ShareKaroConnectedDashboard(
                             peerEndpoint
                         ),
                         color = HybridCyan,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
