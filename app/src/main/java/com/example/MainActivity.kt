@@ -75,8 +75,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        MediaNotificationHelper.ensureChannel(this)
+        try {
+            enableEdgeToEdge()
+        } catch (_: Throwable) {
+        }
+        try {
+            MediaNotificationHelper.ensureChannel(this)
+        } catch (_: Throwable) {
+        }
         requestNecessaryMediaAndNotificationPermissions()
 
         setContent {
@@ -665,8 +671,10 @@ class MainActivity : ComponentActivity() {
         if (missing.isNotEmpty()) {
             try {
                 permissionsLauncher.launch(missing.toTypedArray())
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
             }
+        } else {
+            viewModel.loadMedia()
         }
     }
 }
@@ -938,7 +946,7 @@ private fun HybridFastSplashOverlay(
                     shadowElevation = 18.dp
                 ) {
                     androidx.compose.foundation.Image(
-                        painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_foreground),
+                        painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_app_custom_logo),
                         contentDescription = "Hybrid Player Logo",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()

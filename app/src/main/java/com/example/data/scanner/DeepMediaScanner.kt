@@ -81,13 +81,13 @@ object DeepMediaScanner {
         if (src == null) return null
         val maxW = if (isVideo) 320 else 240
         val maxH = if (isVideo) 180 else 240
-        if (src.width <= maxW && src.height <= maxH) return src
+        if (src.width <= 0 || src.height <= 0 || (src.width <= maxW && src.height <= maxH)) return src
         return try {
             val ratio = minOf(maxW.toFloat() / src.width.toFloat(), maxH.toFloat() / src.height.toFloat())
             val targetW = (src.width * ratio).toInt().coerceAtLeast(1)
             val targetH = (src.height * ratio).toInt().coerceAtLeast(1)
             Bitmap.createScaledBitmap(src, targetW, targetH, true)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             src
         }
     }
@@ -112,7 +112,7 @@ object DeepMediaScanner {
                                 if (isVideo) Size(320, 180) else Size(240, 240),
                                 null
                             )
-                        } catch (_: Exception) {
+                        } catch (_: Throwable) {
                         }
                     }
                     if (extracted == null) {
@@ -128,11 +128,11 @@ object DeepMediaScanner {
                                     extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
                                 }
                             }
-                        } catch (_: Exception) {
+                        } catch (_: Throwable) {
                         } finally {
                             try {
                                 retriever.release()
-                            } catch (_: Exception) {
+                            } catch (_: Throwable) {
                             }
                         }
                     }
@@ -146,7 +146,7 @@ object DeepMediaScanner {
                                     file.absolutePath,
                                     MediaStore.Images.Thumbnails.MINI_KIND
                                 )
-                            } catch (_: Exception) {
+                            } catch (_: Throwable) {
                             }
                         }
                         if (extracted == null) {
@@ -162,11 +162,11 @@ object DeepMediaScanner {
                                         extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
                                     }
                                 }
-                            } catch (_: Exception) {
+                            } catch (_: Throwable) {
                             } finally {
                                 try {
                                     retriever.release()
-                                } catch (_: Exception) {
+                                } catch (_: Throwable) {
                                 }
                             }
                         }
@@ -175,7 +175,10 @@ object DeepMediaScanner {
 
                 val scaled = downscaleForSmoothUi(extracted, isVideo)
                 if (scaled != null) {
-                    bitmapCache.put(path, scaled)
+                    try {
+                        bitmapCache.put(path, scaled)
+                    } catch (_: Throwable) {
+                    }
                 }
                 scaled
             }
@@ -200,7 +203,7 @@ object DeepMediaScanner {
             return currentRam.filterNot {
                 it.path.startsWith("http", ignoreCase = true) ||
                     PermanentDeleteHelper.isHiddenByTrash(context, it.id, it.path)
-            }
+            }.distinctBy { it.path }.distinctBy { it.id }
         }
 
         val prefs = context.getSharedPreferences(SNAPSHOT_PREFS, Context.MODE_PRIVATE)
@@ -209,7 +212,7 @@ object DeepMediaScanner {
             val parsed = deserializeSnapshot(raw, isVideo).filterNot {
                 it.path.startsWith("http", ignoreCase = true) ||
                     PermanentDeleteHelper.isHiddenByTrash(context, it.id, it.path)
-            }
+            }.distinctBy { it.path }.distinctBy { it.id }
             if (parsed.isNotEmpty()) {
                 if (isVideo) ramVideoCache = parsed else ramAudioCache = parsed
                 return parsed
@@ -243,10 +246,13 @@ object DeepMediaScanner {
                 }
             }
         }
-        val fastList = discoveredMap.values.sortedWith(
-            compareByDescending<MediaItem> { it.isPartialDownload }
-                .thenByDescending { it.dateAdded }
-        )
+        val fastList = discoveredMap.values
+            .distinctBy { it.path }
+            .distinctBy { it.id }
+            .sortedWith(
+                compareByDescending<MediaItem> { it.isPartialDownload }
+                    .thenByDescending { it.dateAdded }
+            )
         if (fastList.isNotEmpty()) {
             if (isVideo) ramVideoCache = fastList else ramAudioCache = fastList
         }
@@ -304,10 +310,13 @@ object DeepMediaScanner {
         }
 
         // Sort: Pending/Partial downloads ALWAYS at the top, then by dateAdded descending
-        val finalList = discoveredMap.values.sortedWith(
-            compareByDescending<MediaItem> { it.isPartialDownload }
-                .thenByDescending { it.dateAdded }
-        )
+        val finalList = discoveredMap.values
+            .distinctBy { it.path }
+            .distinctBy { it.id }
+            .sortedWith(
+                compareByDescending<MediaItem> { it.isPartialDownload }
+                    .thenByDescending { it.dateAdded }
+            )
 
         if (isVideo) {
             ramVideoCache = finalList

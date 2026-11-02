@@ -82,6 +82,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.helpers.CompanionBreed
+import com.example.helpers.FluffyMascot3DStudioPortrait
 import com.example.helpers.MultiLanguageHelper
 import com.example.helpers.Music3DThemeEngine
 import com.example.helpers.PermanentDeleteHelper
@@ -284,6 +285,176 @@ fun MeToolkitScreen(
                         }
                     }
 
+                    // =====================================================================
+                    // SAVED 3D FLUFFY PUPPY & TEDDY BEAR MASCOT STUDIO SHOWCASE (IN ME SECTION)
+                    // =====================================================================
+                    item {
+                        val fluffyMascots = remember { CompanionBreed.FLUFFY_CASSETTE_MASCOTS }
+                        LiquidGlassBox(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("me_saved_mascots_section"),
+                            cornerRadius = 24.dp,
+                            tintColor = Color(0xFFFF80AB),
+                            glassAlpha = 0.22f
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(Color(0xFFFF80AB).copy(alpha = 0.22f))
+                                                .border(1.dp, Color(0xFFFF80AB).copy(alpha = 0.6f), RoundedCornerShape(12.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            val activeBreed = CompanionBreed.entries.find {
+                                                it.displayName == selectedCompanionName || it.name == selectedCompanionName
+                                            } ?: CompanionBreed.HONEY_BEAT_TEDDY
+                                            FluffyMascot3DStudioPortrait(
+                                                breed = activeBreed,
+                                                showStudioBackdrop = false,
+                                                animateReels = false,
+                                                modifier = Modifier.size(34.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = if (isHindi) "3D पपी और टेडी मैस्कॉट (Saved)" else "3D Puppy & Teddy Mascots (Saved)",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 13.5.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = if (isHindi) "सक्रिय: $selectedCompanionName" else "Saved Active: $selectedCompanionName",
+                                                color = Color(0xFFFF80AB),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+
+                                    TextButton(
+                                        onClick = { subScreen = MeSubScreen.COMPANION_GALLERY },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isHindi) "सभी देखें" else "All (${CompanionBreed.entries.size})",
+                                            color = accent,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 11.5.sp
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    fluffyMascots.forEach { breed ->
+                                        val isSavedActive = breed.displayName == selectedCompanionName || breed.name == selectedCompanionName
+                                        LiquidGlassBox(
+                                            modifier = Modifier
+                                                .width(126.dp)
+                                                .testTag("me_mascot_card_${breed.name.lowercase()}"),
+                                            cornerRadius = 18.dp,
+                                            tintColor = breed.headphoneAccent,
+                                            glassAlpha = if (isSavedActive) 0.34f else 0.16f,
+                                            isActive = isSavedActive,
+                                            onClick = {
+                                                viewModel.selectCompanionBreed(breed.displayName)
+                                            }
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(8.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(96.dp)
+                                                        .clip(RoundedCornerShape(14.dp))
+                                                        .border(
+                                                            width = if (isSavedActive) 2.dp else 1.dp,
+                                                            color = if (isSavedActive) breed.headphoneAccent else Color.White.copy(alpha = 0.22f),
+                                                            shape = RoundedCornerShape(14.dp)
+                                                        )
+                                                ) {
+                                                    FluffyMascot3DStudioPortrait(
+                                                        breed = breed,
+                                                        showStudioBackdrop = true,
+                                                        animateReels = false,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(6.dp))
+                                                Text(
+                                                    text = breed.displayName,
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 11.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = breed.cassetteLabel,
+                                                    color = breed.headphoneAccent,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 9.5.sp,
+                                                    maxLines = 1
+                                                )
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(50))
+                                                        .background(
+                                                            if (isSavedActive) breed.headphoneAccent
+                                                            else Color.White.copy(alpha = 0.12f)
+                                                        )
+                                                        .padding(vertical = 3.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = if (isSavedActive) {
+                                                            if (isHindi) "सेव है ✓" else "SAVED ✓"
+                                                        } else {
+                                                            if (isHindi) "सेव करें" else "SAVE"
+                                                        },
+                                                        color = if (isSavedActive) Color.Black else Color.White,
+                                                        fontWeight = FontWeight.Black,
+                                                        fontSize = 9.5.sp
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ROW 1: Hybrid Share | Private Vault
                     item {
                         Row(
@@ -362,7 +533,7 @@ fun MeToolkitScreen(
                             CompactGridBoxWithToggle(
                                 modifier = Modifier.weight(1f),
                                 icon = Icons.Default.Pets,
-                                title = if (isHindi) "पपी/पेंगुइन (20)" else "Companions (20)",
+                                title = if (isHindi) "टेडी/पपी (${CompanionBreed.entries.size})" else "Mascots (${CompanionBreed.entries.size})",
                                 subtitle = selectedCompanionName,
                                 accentColor = Color(0xFFFF80AB),
                                 checked = companionEnabled,
@@ -615,59 +786,93 @@ fun MeToolkitScreen(
             }
 
             // =========================================================================
-            // SUB-SCREEN: 20 PUPPIES & PENGUINS COMPANION GALLERY
+            // SUB-SCREEN: 3D FLUFFY CASSETTE PUPPIES, TEDDY BEARS & PENGUINS GALLERY
             // =========================================================================
             MeSubScreen.COMPANION_GALLERY -> {
                 val breeds = CompanionBreed.entries
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 145.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    columns = GridCells.Adaptive(minSize = 152.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 28.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(breeds.size) { index ->
                         val breed = breeds[index]
-                        val isSelected = breed.displayName == selectedCompanionName
+                        val isSelected = breed.displayName == selectedCompanionName || breed.name == selectedCompanionName
                         LiquidGlassBox(
                             modifier = Modifier.fillMaxWidth(),
-                            cornerRadius = 18.dp,
+                            cornerRadius = 20.dp,
                             tintColor = breed.headphoneAccent,
+                            glassAlpha = if (isSelected) 0.32f else 0.16f,
                             isActive = isSelected,
                             onClick = { viewModel.selectCompanionBreed(breed.displayName) }
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(CircleShape)
-                                        .background(breed.primaryFur)
-                                        .border(2.dp, breed.headphoneAccent, CircleShape),
+                                        .fillMaxWidth()
+                                        .height(132.dp)
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .border(
+                                            width = if (isSelected) 2.dp else 1.dp,
+                                            color = if (isSelected) breed.headphoneAccent else Color.White.copy(alpha = 0.22f),
+                                            shape = RoundedCornerShape(16.dp)
+                                        )
+                                ) {
+                                    FluffyMascot3DStudioPortrait(
+                                        breed = breed,
+                                        showStudioBackdrop = true,
+                                        animateReels = isSelected,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = breed.displayName,
+                                    color = Color.White,
+                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = when {
+                                        breed.isPenguin -> "3D Studio Penguin"
+                                        breed.isTeddyBear -> "3D Fluffy Teddy • ${breed.cassetteLabel}"
+                                        else -> "3D Fluffy Puppy • ${breed.cassetteLabel}"
+                                    },
+                                    color = breed.headphoneAccent,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(50))
+                                        .background(
+                                            if (isSelected) breed.headphoneAccent
+                                            else Color.White.copy(alpha = 0.12f)
+                                        )
+                                        .padding(vertical = 4.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = if (breed.isPenguin) "🐧" else "🐶",
-                                        fontSize = 16.sp
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = breed.displayName,
-                                        color = Color.White,
-                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                        fontSize = 12.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = if (breed.isPenguin) "Penguin" else "Puppy",
-                                        color = breed.headphoneAccent,
+                                        text = if (isSelected) {
+                                            if (isHindi) "Me में सेव है ✓" else "SAVED IN ME ✓"
+                                        } else {
+                                            if (isHindi) "सेव और लागू करें" else "SAVE & APPLY"
+                                        },
+                                        color = if (isSelected) Color.Black else Color.White,
+                                        fontWeight = FontWeight.Black,
                                         fontSize = 10.sp
                                     )
                                 }

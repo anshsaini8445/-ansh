@@ -123,7 +123,7 @@ fun VideoSectionScreen(
         viewModel.loadMedia()
     }
 
-    // Automatically request permission / scan on launch if video list is empty
+    // Scan on launch if permission is already granted (MainActivity handles initial permission dialog)
     LaunchedEffect(Unit) {
         val perms = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             arrayOf(android.Manifest.permission.READ_MEDIA_VIDEO, android.Manifest.permission.READ_MEDIA_AUDIO)
@@ -135,8 +135,6 @@ fun VideoSectionScreen(
         }
         if (hasPerm) {
             viewModel.loadMedia()
-        } else {
-            permissionLauncher.launch(perms)
         }
     }
 
@@ -147,13 +145,13 @@ fun VideoSectionScreen(
 
     val favoriteVideos = remember(favorites, videos) {
         val favIds = favorites.map { it.id }.toSet()
-        videos.filter { it.id in favIds }
+        videos.filter { it.id in favIds }.distinctBy { it.id }
     }
 
     // Short videos <= 100 seconds (100,000 ms) for Status Reels
     val statusReelVideos = remember(videos) {
-        val under100s = videos.filter { !it.isPartialDownload && it.duration in 1L..100_000L }
-        if (under100s.isNotEmpty()) under100s else videos
+        val under100s = videos.filter { !it.isPartialDownload && it.duration in 1L..100_000L }.distinctBy { it.id }
+        if (under100s.isNotEmpty()) under100s else videos.distinctBy { it.id }
     }
 
     // Sort videos while ALWAYS keeping Pending / Half-Downloaded Chrome videos at the VERY TOP
@@ -162,7 +160,7 @@ fun VideoSectionScreen(
             isViewingFavouriteFolder -> favoriteVideos
             openedFolderName != null -> videos.filter { it.folderName == openedFolderName }
             else -> videos
-        }
+        }.distinctBy { it.id }
 
         val comparator = when (sortCriteria) {
             "Name" -> compareBy<MediaItem> { it.cleanTitle.lowercase() }
@@ -172,11 +170,11 @@ fun VideoSectionScreen(
         }
         val sortedNormal = if (sortNewToOld) base.sortedWith(comparator.reversed()) else base.sortedWith(comparator)
         val (pendingList, completeList) = sortedNormal.partition { it.isPartialDownload }
-        pendingList + completeList
+        (pendingList + completeList).distinctBy { it.id }
     }
 
     val historyVideos = remember(history) {
-        history.filter { it.first.isVideo }
+        history.filter { it.first.isVideo }.distinctBy { it.first.id }
     }
 
     val historyProgressMap = remember(historyVideos) {

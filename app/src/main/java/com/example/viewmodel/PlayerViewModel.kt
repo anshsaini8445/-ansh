@@ -267,17 +267,19 @@ class PlayerViewModel(application: Application) :
     private val _oneHandMode = MutableStateFlow(false)
     val oneHandMode: StateFlow<Boolean> = _oneHandMode.asStateFlow()
 
-    // --- 3D Companion Mascot (20 Colorful Varieties + Penguins Only Mode) ---
-    private val _companionEnabled = MutableStateFlow(true)
+    // --- 3D Companion Mascot (3D Fluffy Cassette Puppies & Teddy Bears + Penguins Mode) ---
+    private val _companionEnabled = MutableStateFlow(
+        prefs.getBoolean("saved_companion_enabled_v3", true)
+    )
     val companionEnabled: StateFlow<Boolean> = _companionEnabled.asStateFlow()
 
     private val _companionBreed = MutableStateFlow(
-        prefs.getString("saved_companion_breed", "Emperor Penguin DJ 🐧") ?: "Emperor Penguin DJ 🐧"
+        prefs.getString("saved_companion_breed_v3", "Honey Beat Teddy 🧸") ?: "Honey Beat Teddy 🧸"
     )
     val companionBreed: StateFlow<String> = _companionBreed.asStateFlow()
 
     private val _penguinsOnlyMode = MutableStateFlow(
-        prefs.getBoolean("companion_penguins_only_mode", false)
+        prefs.getBoolean("companion_penguins_only_mode_v3", false)
     )
     val penguinsOnlyMode: StateFlow<Boolean> = _penguinsOnlyMode.asStateFlow()
 
@@ -578,32 +580,39 @@ class PlayerViewModel(application: Application) :
 
     fun loadMedia() {
         viewModelScope.launch {
-            // Stage 1: Emit fast MediaStore results (<80ms) so videos/songs appear immediately after permission grant
-            val fastVideos = DeepMediaScanner.scanFastMediaStoreFirst(getApplication(), isVideo = true)
-            val fastMusic = DeepMediaScanner.scanFastMediaStoreFirst(getApplication(), isVideo = false)
-            if (fastVideos.isNotEmpty() || _videoItems.value.isEmpty()) {
-                _videoItems.value = fastVideos
-            }
-            if (fastMusic.isNotEmpty() || _musicItems.value.isEmpty()) {
-                _musicItems.value = fastMusic
-            }
-            _allMediaItems.value = _videoItems.value + _musicItems.value
-            restoreLastPlayedMusicSessionIfIdle(_allMediaItems.value)
-
-            // Stage 2: Full deep directory + WhatsApp Status + partial download scan
-            val videos = repository.getAvailableMedia(isVideo = true)
-            val music = repository.getAvailableMedia(isVideo = false)
-            _videoItems.value = videos
-            _musicItems.value = music
-            _allMediaItems.value = videos + music
-            restoreLastPlayedMusicSessionIfIdle(videos + music)
-            if (_syncedLyrics.value.isEmpty()) {
-                val track = _nowPlaying.value ?: music.firstOrNull()
-                if (track != null) {
-                    _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), track)
+            try {
+                // Stage 1: Emit fast MediaStore results (<80ms) so videos/songs appear immediately after permission grant
+                val fastVideos = DeepMediaScanner.scanFastMediaStoreFirst(getApplication(), isVideo = true).distinctBy { it.id }
+                val fastMusic = DeepMediaScanner.scanFastMediaStoreFirst(getApplication(), isVideo = false).distinctBy { it.id }
+                if (fastVideos.isNotEmpty() || _videoItems.value.isEmpty()) {
+                    _videoItems.value = fastVideos
                 }
+                if (fastMusic.isNotEmpty() || _musicItems.value.isEmpty()) {
+                    _musicItems.value = fastMusic
+                }
+                _allMediaItems.value = (_videoItems.value + _musicItems.value).distinctBy { it.id }
+                restoreLastPlayedMusicSessionIfIdle(_allMediaItems.value)
+            } catch (_: Throwable) {
             }
-            repository.syncMediaLibrary(videos + music)
+
+            try {
+                // Stage 2: Full deep directory + WhatsApp Status + partial download scan
+                val videos = repository.getAvailableMedia(isVideo = true).distinctBy { it.id }
+                val music = repository.getAvailableMedia(isVideo = false).distinctBy { it.id }
+                _videoItems.value = videos
+                _musicItems.value = music
+                val combined = (videos + music).distinctBy { it.id }
+                _allMediaItems.value = combined
+                restoreLastPlayedMusicSessionIfIdle(combined)
+                if (_syncedLyrics.value.isEmpty()) {
+                    val track = _nowPlaying.value ?: music.firstOrNull()
+                    if (track != null) {
+                        _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), track)
+                    }
+                }
+                repository.syncMediaLibrary(combined)
+            } catch (_: Throwable) {
+            }
         }
     }
 
@@ -1372,25 +1381,37 @@ class PlayerViewModel(application: Application) :
 
     fun setCompanionEnabled(enabled: Boolean) {
         _companionEnabled.value = enabled
+        prefs.edit().putBoolean("saved_companion_enabled_v3", enabled).apply()
     }
 
     fun selectCompanionBreed(breedName: String) {
         _companionBreed.value = breedName
         _companionEnabled.value = true
-        prefs.edit().putString("saved_companion_breed", breedName).apply()
+        if (!breedName.contains("Penguin", ignoreCase = true)) {
+            _penguinsOnlyMode.value = false
+            prefs.edit().putBoolean("companion_penguins_only_mode_v3", false).apply()
+        }
+        prefs.edit()
+            .putString("saved_companion_breed_v3", breedName)
+            .putString("saved_companion_breed", breedName)
+            .putBoolean("saved_companion_enabled_v3", true)
+            .apply()
     }
 
     fun togglePenguinsOnlyMode() {
         val next = !_penguinsOnlyMode.value
         _penguinsOnlyMode.value = next
         _companionEnabled.value = true
-        prefs.edit().putBoolean("companion_penguins_only_mode", next).apply()
+        prefs.edit()
+            .putBoolean("companion_penguins_only_mode_v3", next)
+            .putBoolean("saved_companion_enabled_v3", true)
+            .apply()
     }
 
     fun setPenguinsOnlyMode(enabled: Boolean) {
         _penguinsOnlyMode.value = enabled
         if (enabled) _companionEnabled.value = true
-        prefs.edit().putBoolean("companion_penguins_only_mode", enabled).apply()
+        prefs.edit().putBoolean("companion_penguins_only_mode_v3", enabled).apply()
     }
 
     fun toggleHybrid8kDecoder() {

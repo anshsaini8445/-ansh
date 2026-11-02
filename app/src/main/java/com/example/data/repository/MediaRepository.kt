@@ -174,15 +174,27 @@ class MediaRepository(
     val privateMediaFilesFlow: Flow<List<MediaFile>> = mediaFileDao.getPrivateMediaFiles()
 
     suspend fun syncMediaLibrary(items: List<MediaItem>) = withContext(Dispatchers.IO) {
-        val entities = mutableListOf<UserMediaEntity>()
-        val mediaFiles = mutableListOf<MediaFile>()
-        for (item in items) {
-            val isPriv = userMediaDao.isItemInPrivateVault(item.id) || mediaDao.isPrivateItem(item.id) || item.isPrivate
-            entities.add(UserMediaEntity.fromMediaItem(item, isPrivate = isPriv))
-            mediaFiles.add(MediaFile.fromMediaItem(item, isPrivate = isPriv))
+        if (items.isEmpty()) return@withContext
+        try {
+            val uniqueItems = items
+                .filter { it.id.isNotBlank() && it.path.isNotBlank() }
+                .distinctBy { it.path }
+                .distinctBy { it.id }
+            val entities = mutableListOf<UserMediaEntity>()
+            val mediaFiles = mutableListOf<MediaFile>()
+            for (item in uniqueItems) {
+                val isPriv = try {
+                    userMediaDao.isItemInPrivateVault(item.id) || mediaDao.isPrivateItem(item.id) || item.isPrivate
+                } catch (_: Throwable) {
+                    item.isPrivate
+                }
+                entities.add(UserMediaEntity.fromMediaItem(item, isPrivate = isPriv))
+                mediaFiles.add(MediaFile.fromMediaItem(item, isPrivate = isPriv))
+            }
+            userMediaDao.insertAll(entities)
+            mediaFileDao.insertAll(mediaFiles)
+        } catch (_: Throwable) {
         }
-        userMediaDao.insertAll(entities)
-        mediaFileDao.insertAll(mediaFiles)
     }
 
     fun getPrivateMediaFlow(allMediaList: List<MediaItem>): Flow<List<MediaItem>> {
