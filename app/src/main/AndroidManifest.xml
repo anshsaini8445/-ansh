@@ -23,19 +23,28 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:requestLegacyExternalStorage="true"
+        android:resizeableActivity="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication"
         android:usesCleartextTraffic="true">
 
-        <!-- Single Unified Compose MainActivity -->
+        <!-- Single Unified Compose MainActivity with Full Multi-Window, Split-Screen, Freeform & PiP Support -->
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|keyboard|keyboardHidden|navigation"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.MyApplication">
+            <layout
+                android:defaultHeight="680dp"
+                android:defaultWidth="420dp"
+                android:gravity="top|end"
+                android:minHeight="180dp"
+                android:minWidth="180dp" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

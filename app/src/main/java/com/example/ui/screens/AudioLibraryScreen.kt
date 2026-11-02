@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -35,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -228,17 +230,39 @@ fun AudioLibraryScreen(
         }
     }
 
+    val isCompactSplit = configuration.screenHeightDp < 440
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Transparent)
+            .pointerInput(activeTab, selectedFolderName, selectedPlaylistId, viewingFavoritesPlaylist) {
+                var totalHorizDrag = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { totalHorizDrag = 0f },
+                    onHorizontalDrag = { _, dragAmount ->
+                        totalHorizDrag += dragAmount
+                    },
+                    onDragEnd = {
+                        if (selectedFolderName == null && selectedPlaylistId == null && !viewingFavoritesPlaylist) {
+                            val tabs = AudioSubTab.entries
+                            val curIdx = tabs.indexOf(activeTab)
+                            if (totalHorizDrag < -95f && curIdx < tabs.lastIndex) {
+                                activeTab = tabs[curIdx + 1]
+                            } else if (totalHorizDrag > 95f && curIdx > 0) {
+                                activeTab = tabs[curIdx - 1]
+                            }
+                        }
+                    }
+                )
+            }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 1. Prominent 1.5x Enlarged Top Header Bar — App Icon (44.dp) + "Hybrid Player" (27.sp)
+            // 1. Prominent 1.5x Enlarged Top Header Bar — App Icon (44.dp) + "Hybrid Player" (27.sp), adaptive in Split-Screen
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(62.dp)
+                    .height(if (isCompactSplit) 44.dp else 62.dp)
                     .padding(horizontal = if (isTablet) 22.dp else 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -247,7 +271,7 @@ fun AudioLibraryScreen(
                     contentDescription = "Hybrid Player",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(if (isCompactSplit) 34.dp else 44.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .border(
                             1.5.dp,
@@ -261,7 +285,7 @@ fun AudioLibraryScreen(
                     style = MaterialTheme.typography.headlineSmall,
                     color = Color.White,
                     fontWeight = FontWeight.Black,
-                    fontSize = 27.sp,
+                    fontSize = if (isCompactSplit) 21.sp else 27.sp,
                     letterSpacing = 0.3.sp
                 )
             }

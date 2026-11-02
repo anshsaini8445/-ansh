@@ -588,6 +588,7 @@ class PlayerViewModel(application: Application) :
                 _musicItems.value = fastMusic
             }
             _allMediaItems.value = _videoItems.value + _musicItems.value
+            restoreLastPlayedMusicSessionIfIdle(_allMediaItems.value)
 
             // Stage 2: Full deep directory + WhatsApp Status + partial download scan
             val videos = repository.getAvailableMedia(isVideo = true)
@@ -595,6 +596,7 @@ class PlayerViewModel(application: Application) :
             _videoItems.value = videos
             _musicItems.value = music
             _allMediaItems.value = videos + music
+            restoreLastPlayedMusicSessionIfIdle(videos + music)
             if (_syncedLyrics.value.isEmpty()) {
                 val track = _nowPlaying.value ?: music.firstOrNull()
                 if (track != null) {
@@ -602,6 +604,17 @@ class PlayerViewModel(application: Application) :
                 }
             }
             repository.syncMediaLibrary(videos + music)
+        }
+    }
+
+    private fun restoreLastPlayedMusicSessionIfIdle(pool: List<MediaItem>) {
+        if (_nowPlaying.value != null || pool.isEmpty()) return
+        val savedId = prefs.getString("last_played_music_id", null) ?: return
+        val match = pool.firstOrNull { it.id == savedId } ?: return
+        val savedPos = prefs.getLong("last_played_music_pos_ms", 0L).coerceAtLeast(0L)
+        _nowPlaying.value = match
+        if (savedPos > 0L && (match.duration <= 0L || savedPos < match.duration - 1500L)) {
+            _playbackPosition.value = savedPos
         }
     }
 
@@ -690,6 +703,7 @@ class PlayerViewModel(application: Application) :
         _abPointAMs.value = null
         _abPointBMs.value = null
         _nowPlaying.value = item
+        prefs.edit().putString("last_played_music_id", item.id).apply()
         _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), item)
 
         // Start foreground service ONLY when audio playback is explicitly requested
@@ -1006,6 +1020,10 @@ class PlayerViewModel(application: Application) :
                 }
 
                 _nowPlaying.value?.let {
+                    prefs.edit()
+                        .putString("last_played_music_id", it.id)
+                        .putLong("last_played_music_pos_ms", currentPos)
+                        .apply()
                     repository.saveProgress(it.id, currentPos)
                 }
 
@@ -1384,13 +1402,21 @@ class PlayerViewModel(application: Application) :
     }
 
     fun saveVideoProgress(mediaId: String, positionMs: Long) {
+        if (positionMs > 0L) {
+            prefs.edit()
+                .putString("last_watched_video_id", mediaId)
+                .putLong("video_pos_$mediaId", positionMs)
+                .apply()
+        }
         viewModelScope.launch {
             repository.saveProgress(mediaId, positionMs)
         }
     }
 
     suspend fun getVideoProgress(mediaId: String): Long {
-        return repository.getProgress(mediaId)
+        val dbPos = repository.getProgress(mediaId)
+        val fastPrefPos = prefs.getLong("video_pos_$mediaId", 0L)
+        return maxOf(dbPos, fastPrefPos)
     }
 
     fun clearHistory() {

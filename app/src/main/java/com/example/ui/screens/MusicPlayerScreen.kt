@@ -358,9 +358,11 @@ fun MusicPlayerScreen(
                     .weight(1f),
                 contentAlignment = Alignment.Center
             ) {
+                val isCompactSplit = configuration.screenHeightDp < 480
                 when (centerMode) {
                     CenterDisplayMode.TURNTABLE -> {
                         val discSize: Dp = when {
+                            isCompactSplit -> 112.dp
                             isLandscape -> 170.dp
                             isTablet -> 290.dp
                             else -> 240.dp
@@ -387,16 +389,17 @@ fun MusicPlayerScreen(
             }
 
             // 3. Bottom Control Deck (Title, 5 Thumb-Friendly Action Orbs, Seekbar, Transport Row, Up Next Queue Bar)
+            val isCompactSplitDeck = configuration.screenHeightDp < 480
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 10.dp)
+                verticalArrangement = Arrangement.spacedBy(if (isCompactSplitDeck) 4.dp else if (isLandscape) 6.dp else 10.dp)
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
                         text = currentTrack?.cleanTitle ?: (if (isHindi) "कोई गाना नहीं चुना गया" else "No Track Selected"),
                         color = Color.White,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = if (isLandscape) 17.sp else 20.sp,
+                        fontSize = if (isCompactSplitDeck) 15.sp else if (isLandscape) 17.sp else 20.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

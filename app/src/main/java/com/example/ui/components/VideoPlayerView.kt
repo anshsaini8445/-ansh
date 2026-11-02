@@ -71,10 +71,12 @@ fun VideoPlayerView(
     videoTitle: String = "",
     allVideos: List<MediaItem> = emptyList(),
     onSelectVideo: (MediaItem) -> Unit = {},
-    onBackgroundAudioPlay: () -> Unit = {}
+    onBackgroundAudioPlay: () -> Unit = {},
+    onMinimizeToFloatingMiniPlayer: ((Long) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val hostView = LocalView.current
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val prefs = remember { context.getSharedPreferences("HYBRID_PLAYER_PREFS", Context.MODE_PRIVATE) }
 
@@ -83,7 +85,9 @@ fun VideoPlayerView(
     var loudnessEnhancer by remember { mutableStateOf<LoudnessEnhancer?>(null) }
 
     var isPlaying by remember { mutableStateOf(true) }
-    var currentPosMs by remember { mutableStateOf(initialPositionMs) }
+    var currentPosMs by remember(videoPath) { mutableStateOf(initialPositionMs) }
+    var latestKnownPositionMs by remember(videoPath) { mutableStateOf(initialPositionMs) }
+    var wasPlayingBeforeStop by remember(videoPath) { mutableStateOf(true) }
     var totalDurationMs by remember { mutableStateOf(1L) }
     var showControls by remember { mutableStateOf(true) }
     var isScreenLocked by remember { mutableStateOf(false) }
@@ -185,17 +189,27 @@ fun VideoPlayerView(
         }
     }
 
-    // Apply hardware PlaybackParams speed whenever playbackSpeed changes
-    LaunchedEffect(playbackSpeed, mediaPlayerRef) {
+    fun applyHardwarePlaybackSpeed(targetMp: android.media.MediaPlayer? = mediaPlayerRef) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            mediaPlayerRef?.let { mp ->
+            targetMp?.let { mp ->
                 try {
-                    if (mp.isPlaying) {
-                        mp.playbackParams = PlaybackParams().setSpeed(playbackSpeed.coerceIn(0.25f, 8.0f))
+                    val safeSpeed = playbackSpeed.coerceIn(0.25f, 4.0f)
+                    val params = try {
+                        mp.playbackParams
+                    } catch (_: Exception) {
+                        PlaybackParams()
                     }
+                    mp.playbackParams = params.setSpeed(safeSpeed)
                 } catch (_: Exception) {
                 }
             }
+        }
+    }
+
+    // Apply hardware PlaybackParams speed whenever playbackSpeed or active state changes
+    LaunchedEffect(playbackSpeed, mediaPlayerRef, isPlaying) {
+        if (isPlaying) {
+            applyHardwarePlaybackSpeed(mediaPlayerRef)
         }
     }
 
@@ -383,6 +397,9 @@ fun VideoPlayerView(
     fun seekVideoToMs(targetMs: Long) {
         val clamped = targetMs.coerceIn(0L, getTotalVideoDurationMs())
         currentPosMs = clamped
+        if (clamped > 0L) {
+            latestKnownPositionMs = clamped
+        }
         try {
             videoViewRef?.seekTo(clamped.toInt())
         } catch (_: Exception) {
@@ -394,6 +411,11 @@ fun VideoPlayerView(
     }
 
     fun pauseVideoPlayback() {
+        val pos = getCurrentVideoPositionMs()
+        if (pos > 0L) {
+            latestKnownPositionMs = pos
+            onProgressUpdate(pos)
+        }
         try {
             videoViewRef?.pause()
         } catch (_: Exception) {
@@ -414,7 +436,70 @@ fun VideoPlayerView(
             if (mediaPlayerRef?.isPlaying == false) mediaPlayerRef?.start()
         } catch (_: Exception) {
         }
+        applyHardwarePlaybackSpeed(mediaPlayerRef)
         isPlaying = true
+    }
+
+    // Multi-Window, Split-Screen, PiP & Close/Reopen Lifecycle Continuity
+    DisposableEffect(lifecycleOwner, videoPath) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            val activity = context as? Activity
+            val inMultiWindow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                activity?.isInMultiWindowMode == true
+            } else {
+                false
+            }
+            val inPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                activity?.isInPictureInPictureMode == true
+            } else {
+                false
+            }
+
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    val pos = getCurrentVideoPositionMs()
+                    if (pos > 0L) {
+                        latestKnownPositionMs = pos
+                        onProgressUpdate(pos)
+                    }
+                    // CRITICAL FOR MULTI-WINDOW & PIP: Keep playing when user taps the other split-screen app!
+                    if (inMultiWindow || inPip) {
+                        if (isPlaying && !isVideoCurrentlyPlaying()) {
+                            startVideoPlayback()
+                        }
+                    }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                    val pos = getCurrentVideoPositionMs()
+                    if (pos > 0L) {
+                        latestKnownPositionMs = pos
+                        onProgressUpdate(pos)
+                    }
+                    if (!inMultiWindow && !inPip) {
+                        wasPlayingBeforeStop = isPlaying
+                        pauseVideoPlayback()
+                    }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    if (latestKnownPositionMs > 0L && getCurrentVideoPositionMs() < latestKnownPositionMs - 1500L) {
+                        seekVideoToMs(latestKnownPositionMs)
+                    }
+                    if (wasPlayingBeforeStop && !isVideoCurrentlyPlaying()) {
+                        startVideoPlayback()
+                    }
+                    applyHardwarePlaybackSpeed(mediaPlayerRef)
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            val finalPos = getCurrentVideoPositionMs().takeIf { it > 0L } ?: latestKnownPositionMs
+            if (finalPos > 0L) {
+                onProgressUpdate(finalPos)
+            }
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     // Progress & A-B Repeat Loop Tracker
@@ -426,6 +511,9 @@ fun VideoPlayerView(
                     val pos = getCurrentVideoPositionMs()
                     val dur = getTotalVideoDurationMs()
                     currentPosMs = pos
+                    if (pos > 0L) {
+                        latestKnownPositionMs = pos
+                    }
                     totalDurationMs = dur
                     onProgressUpdate(pos)
 
@@ -544,9 +632,11 @@ fun VideoPlayerView(
                                     }
                                 }
                                 totalDurationMs = mp.duration.toLong().coerceAtLeast(1000L)
-                                if (initialPositionMs > 0 && initialPositionMs < totalDurationMs - 2000L) {
+                                val resumeTarget = maxOf(initialPositionMs, latestKnownPositionMs)
+                                if (resumeTarget > 0 && resumeTarget < totalDurationMs - 2000L) {
                                     try {
-                                        mp.seekTo(initialPositionMs.toInt())
+                                        mp.seekTo(resumeTarget.toInt())
+                                        currentPosMs = resumeTarget
                                     } catch (_: Exception) {
                                     }
                                 }
@@ -554,9 +644,14 @@ fun VideoPlayerView(
                                     mp.start()
                                 } catch (_: Exception) {
                                 }
+                                applyHardwarePlaybackSpeed(mp)
                                 isPlaying = true
                                 try {
                                     loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
+                                    if (volumePercent > 100) {
+                                        loudnessEnhancer?.setTargetGain((volumePercent - 100) * 18)
+                                        loudnessEnhancer?.enabled = true
+                                    }
                                 } catch (_: Exception) {
                                 }
                             }
@@ -785,215 +880,308 @@ fun VideoPlayerView(
             }
         }
 
-        // --- MINIMAL IMMERSIVE CONTROLS (Auto-Hide after 3s, Translucent Borderless Circles #33000000) ---
-        AnimatedVisibility(
-            visible = showControls && !isScreenLocked,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                // TOP BAR
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = onBackClick,
+        // --- MINIMAL IMMERSIVE CONTROLS (Auto-Hide after 3s, Adaptive for Split-Screen, Multi-Window & PiP) ---
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val activity = context as? Activity
+            val inSystemPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                activity?.isInPictureInPictureMode == true
+            } else {
+                false
+            }
+            val isPipOrMicroWindow = inSystemPip || maxHeight < 215.dp || maxWidth < 230.dp
+            val isCompactSplitWindow = !isPipOrMicroWindow && (maxHeight < 410.dp || maxWidth < 360.dp)
+
+            AnimatedVisibility(
+                visible = showControls && !isScreenLocked && !isPipOrMicroWindow,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    val topBtnSize = if (isCompactSplitWindow) 34.dp else 40.dp
+                    // TOP BAR
+                    Row(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(HybridTranslucentControl)
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(
+                                horizontal = if (isCompactSplitWindow) 10.dp else 16.dp,
+                                vertical = if (isCompactSplitWindow) 4.dp else 10.dp
+                            ),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
-                    }
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 10.dp)
-                    ) {
-                        Text(
-                            text = displayTitle,
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (videoSleepRemainingSeconds > 0) {
-                            Text(
-                                text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
-                                color = HybridGold,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1
-                            )
-                        }
-                    }
-
-                    // Background Audio Quick Icon
-                    IconButton(
-                        onClick = {
-                            onProgressUpdate(currentPosMs)
-                            onBackgroundAudioPlay()
-                        },
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(HybridTranslucentControl)
-                    ) {
-                        Icon(Icons.Default.Headphones, contentDescription = "Background Audio", tint = Color.White)
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Subtitles (.srt/.vtt/.ass) Quick Icon
-                    IconButton(
-                        onClick = { showSubtitleDialog = true },
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(HybridTranslucentControl)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Subtitles,
-                            contentDescription = "Subtitles",
-                            tint = if (subtitlesEnabled) HybridEmerald else Color.White
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // 3-Dot Player Menu
-                    IconButton(
-                        onClick = { showThreeDotSheet = true },
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(HybridTranslucentControl)
-                    ) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = Color.White)
-                    }
-                }
-
-                // CENTER PLAY / PAUSE, -10s / +10s SEEK & PREV / NEXT BUTTONS
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (allVideos.size > 1) {
                         IconButton(
                             onClick = {
-                                lastInteractionTime = System.currentTimeMillis()
-                                val idx = allVideos.indexOfFirst { it.path == videoPath }
-                                val prevIdx = if (idx > 0) idx - 1 else allVideos.lastIndex
-                                onSelectVideo(allVideos[prevIdx])
+                                val finalPos = getCurrentVideoPositionMs().takeIf { it > 0L } ?: latestKnownPositionMs
+                                if (finalPos > 0L) onProgressUpdate(finalPos)
+                                onBackClick()
                             },
                             modifier = Modifier
-                                .size(46.dp)
+                                .size(topBtnSize)
                                 .clip(CircleShape)
                                 .background(HybridTranslucentControl)
                         ) {
-                            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous Video", tint = Color.White, modifier = Modifier.size(26.dp))
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                         }
-                    }
 
-                    IconButton(
-                        onClick = {
-                            lastInteractionTime = System.currentTimeMillis()
-                            videoViewRef?.let { vv ->
-                                val target = (vv.currentPosition - 10_000).coerceAtLeast(0)
-                                vv.seekTo(target)
-                                currentPosMs = target.toLong()
-                                gestureOverlayText = "⏪ -10s"
-                            }
-                        },
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(CircleShape)
-                            .background(HybridTranslucentControl)
-                    ) {
-                        Icon(Icons.Default.Replay10, contentDescription = "Rewind 10s", tint = Color.White, modifier = Modifier.size(30.dp))
-                    }
+                        Spacer(modifier = Modifier.width(10.dp))
 
-                    IconButton(
-                        onClick = {
-                            lastInteractionTime = System.currentTimeMillis()
-                            videoViewRef?.let { vv ->
-                                if (vv.isPlaying) {
-                                    vv.pause()
-                                    isPlaying = false
-                                } else {
-                                    vv.start()
-                                    isPlaying = true
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        ) {
+                            Text(
+                                text = displayTitle,
+                                color = Color.White,
+                                fontSize = if (isCompactSplitWindow) 13.sp else 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (currentClockText.isNotEmpty() && !isCompactSplitWindow) {
+                                    Text(
+                                        text = "🕒 $currentClockText • 🔋 $currentBatteryPct%",
+                                        color = Color.White.copy(alpha = 0.78f),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
+                                    )
+                                }
+                                if (playbackSpeed != 1.0f) {
+                                    Text(
+                                        text = "⚡ ${playbackSpeed}x",
+                                        color = HybridEmerald,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        maxLines = 1
+                                    )
+                                }
+                                if (videoSleepRemainingSeconds > 0) {
+                                    Text(
+                                        text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
+                                        color = HybridGold,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
+                                    )
                                 }
                             }
-                        },
-                        modifier = Modifier
-                            .size(68.dp)
-                            .clip(CircleShape)
-                            .background(HybridEmerald.copy(alpha = 0.88f))
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = "Play/Pause",
-                            tint = Color.Black,
-                            modifier = Modifier.size(38.dp)
-                        )
-                    }
+                        }
 
-                    IconButton(
-                        onClick = {
-                            lastInteractionTime = System.currentTimeMillis()
-                            videoViewRef?.let { vv ->
-                                val target = (vv.currentPosition + 10_000).coerceAtMost(vv.duration.coerceAtLeast(1))
-                                vv.seekTo(target)
-                                currentPosMs = target.toLong()
-                                gestureOverlayText = "⏩ +10s"
-                            }
-                        },
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(CircleShape)
-                            .background(HybridTranslucentControl)
-                    ) {
-                        Icon(Icons.Default.Forward10, contentDescription = "Forward 10s", tint = Color.White, modifier = Modifier.size(30.dp))
-                    }
-
-                    if (allVideos.size > 1) {
+                        // Mini Floating Window / Picture-in-Picture Quick Button ("Chhota Karke Chalayen")
                         IconButton(
                             onClick = {
-                                lastInteractionTime = System.currentTimeMillis()
-                                val idx = allVideos.indexOfFirst { it.path == videoPath }
-                                val nextIdx = if (idx >= 0) (idx + 1) % allVideos.size else 0
-                                onSelectVideo(allVideos[nextIdx])
+                                val pos = getCurrentVideoPositionMs().takeIf { it > 0L } ?: latestKnownPositionMs
+                                onProgressUpdate(pos)
+                                if (onMinimizeToFloatingMiniPlayer != null) {
+                                    onMinimizeToFloatingMiniPlayer(pos)
+                                } else {
+                                    try {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
+                                            val params = PictureInPictureParams.Builder()
+                                                .setAspectRatio(Rational(16, 9))
+                                                .build()
+                                            activity.enterPictureInPictureMode(params)
+                                        }
+                                    } catch (_: Exception) {
+                                    }
+                                }
                             },
                             modifier = Modifier
-                                .size(46.dp)
+                                .size(topBtnSize)
                                 .clip(CircleShape)
                                 .background(HybridTranslucentControl)
                         ) {
-                            Icon(Icons.Default.SkipNext, contentDescription = "Next Video", tint = Color.White, modifier = Modifier.size(26.dp))
+                            Icon(
+                                imageVector = Icons.Default.PictureInPictureAlt,
+                                contentDescription = "Mini Floating Player",
+                                tint = HybridCyan
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // Background Audio Quick Icon
+                        IconButton(
+                            onClick = {
+                                val pos = getCurrentVideoPositionMs().takeIf { it > 0L } ?: latestKnownPositionMs
+                                onProgressUpdate(pos)
+                                onBackgroundAudioPlay()
+                            },
+                            modifier = Modifier
+                                .size(topBtnSize)
+                                .clip(CircleShape)
+                                .background(HybridTranslucentControl)
+                        ) {
+                            Icon(Icons.Default.Headphones, contentDescription = "Background Audio", tint = Color.White)
+                        }
+
+                        if (!isCompactSplitWindow) {
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            // Subtitles (.srt/.vtt/.ass) Quick Icon
+                            IconButton(
+                                onClick = { showSubtitleDialog = true },
+                                modifier = Modifier
+                                    .size(topBtnSize)
+                                    .clip(CircleShape)
+                                    .background(HybridTranslucentControl)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Subtitles,
+                                    contentDescription = "Subtitles",
+                                    tint = if (subtitlesEnabled) HybridEmerald else Color.White
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // 3-Dot Player Menu
+                        IconButton(
+                            onClick = { showThreeDotSheet = true },
+                            modifier = Modifier
+                                .size(topBtnSize)
+                                .clip(CircleShape)
+                                .background(HybridTranslucentControl)
+                        ) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = Color.White)
                         }
                     }
-                }
 
-                // BOTTOM CONTROLS & CLEAN ICON STRIP (Zero "8K" Clutter, Zero Duplicates)
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                ) {
+                    // CENTER PLAY / PAUSE, -10s / +10s SEEK & PREV / NEXT BUTTONS (Unified for normal + Pending movies!)
+                    val sideBtnSize = if (isCompactSplitWindow) 38.dp else 46.dp
+                    val seekBtnSize = if (isCompactSplitWindow) 44.dp else 54.dp
+                    val playBtnSize = if (isCompactSplitWindow) 54.dp else 68.dp
+                    Row(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalArrangement = Arrangement.spacedBy(if (isCompactSplitWindow) 12.dp else 20.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (allVideos.size > 1) {
+                            IconButton(
+                                onClick = {
+                                    lastInteractionTime = System.currentTimeMillis()
+                                    val idx = allVideos.indexOfFirst { it.path == videoPath }
+                                    val prevIdx = if (idx > 0) idx - 1 else allVideos.lastIndex
+                                    onSelectVideo(allVideos[prevIdx])
+                                },
+                                modifier = Modifier
+                                    .size(sideBtnSize)
+                                    .clip(CircleShape)
+                                    .background(HybridTranslucentControl)
+                            ) {
+                                Icon(
+                                    Icons.Default.SkipPrevious,
+                                    contentDescription = "Previous Video",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(if (isCompactSplitWindow) 22.dp else 26.dp)
+                                )
+                            }
+                        }
+
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                val target = (getCurrentVideoPositionMs() - 10_000L).coerceAtLeast(0L)
+                                seekVideoToMs(target)
+                                gestureOverlayText = "⏪ -10s"
+                            },
+                            modifier = Modifier
+                                .size(seekBtnSize)
+                                .clip(CircleShape)
+                                .background(HybridTranslucentControl)
+                        ) {
+                            Icon(
+                                Icons.Default.Replay10,
+                                contentDescription = "Rewind 10s",
+                                tint = Color.White,
+                                modifier = Modifier.size(if (isCompactSplitWindow) 24.dp else 30.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                if (isVideoCurrentlyPlaying()) {
+                                    pauseVideoPlayback()
+                                } else {
+                                    startVideoPlayback()
+                                }
+                            },
+                            modifier = Modifier
+                                .size(playBtnSize)
+                                .clip(CircleShape)
+                                .background(HybridEmerald.copy(alpha = 0.88f))
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = "Play/Pause",
+                                tint = Color.Black,
+                                modifier = Modifier.size(if (isCompactSplitWindow) 30.dp else 38.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                val target = (getCurrentVideoPositionMs() + 10_000L).coerceAtMost(getTotalVideoDurationMs())
+                                seekVideoToMs(target)
+                                gestureOverlayText = "⏩ +10s"
+                            },
+                            modifier = Modifier
+                                .size(seekBtnSize)
+                                .clip(CircleShape)
+                                .background(HybridTranslucentControl)
+                        ) {
+                            Icon(
+                                Icons.Default.Forward10,
+                                contentDescription = "Forward 10s",
+                                tint = Color.White,
+                                modifier = Modifier.size(if (isCompactSplitWindow) 24.dp else 30.dp)
+                            )
+                        }
+
+                        if (allVideos.size > 1) {
+                            IconButton(
+                                onClick = {
+                                    lastInteractionTime = System.currentTimeMillis()
+                                    val idx = allVideos.indexOfFirst { it.path == videoPath }
+                                    val nextIdx = if (idx >= 0) (idx + 1) % allVideos.size else 0
+                                    onSelectVideo(allVideos[nextIdx])
+                                },
+                                modifier = Modifier
+                                    .size(sideBtnSize)
+                                    .clip(CircleShape)
+                                    .background(HybridTranslucentControl)
+                            ) {
+                                Icon(
+                                    Icons.Default.SkipNext,
+                                    contentDescription = "Next Video",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(if (isCompactSplitWindow) 22.dp else 26.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // BOTTOM CONTROLS & CLEAN ICON STRIP (Zero "8K" Clutter, Zero Duplicates)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(
+                                horizontal = if (isCompactSplitWindow) 10.dp else 14.dp,
+                                vertical = if (isCompactSplitWindow) 4.dp else 12.dp
+                            )
+                    ) {
                     val filterPresets = remember {
                         listOf("Original", "Clear Sharp", "Crystal Ice Blue", "Warm Cinema", "AMOLED Contrast")
                     }
@@ -1148,8 +1336,7 @@ fun VideoPlayerView(
                             value = currentPosMs.toFloat().coerceIn(0f, totalDurationMs.toFloat()),
                             onValueChange = { newPos ->
                                 lastInteractionTime = System.currentTimeMillis()
-                                currentPosMs = newPos.toLong()
-                                videoViewRef?.seekTo(newPos.toInt())
+                                seekVideoToMs(newPos.toLong())
                             },
                             valueRange = 0f..totalDurationMs.toFloat().coerceAtLeast(1f),
                             colors = SliderDefaults.colors(
@@ -1170,6 +1357,7 @@ fun VideoPlayerView(
                     }
                 }
             }
+        }
         }
     }
 
