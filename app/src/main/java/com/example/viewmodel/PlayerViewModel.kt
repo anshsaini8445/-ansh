@@ -267,16 +267,21 @@ class PlayerViewModel(application: Application) :
     private val _oneHandMode = MutableStateFlow(false)
     val oneHandMode: StateFlow<Boolean> = _oneHandMode.asStateFlow()
 
-    // --- 3D Companion Mascot (3D Fluffy Cassette Puppies & Teddy Bears + Penguins Mode) ---
+    // --- 3D Companion Mascot (3D Fluffy Cassette Puppies & Teddy Bears + Studio Lion/Bunny/Penguins) ---
     private val _companionEnabled = MutableStateFlow(
         prefs.getBoolean("saved_companion_enabled_v3", true)
     )
     val companionEnabled: StateFlow<Boolean> = _companionEnabled.asStateFlow()
 
     private val _companionBreed = MutableStateFlow(
-        prefs.getString("saved_companion_breed_v3", "Honey Beat Teddy 🧸") ?: "Honey Beat Teddy 🧸"
+        prefs.getString("saved_companion_breed_v3", "Golden Lion DJ 🦁") ?: "Golden Lion DJ 🦁"
     )
     val companionBreed: StateFlow<String> = _companionBreed.asStateFlow()
+
+    private val _companionSizeDp = MutableStateFlow(
+        prefs.getInt("saved_companion_size_dp_v2", 88)
+    )
+    val companionSizeDp: StateFlow<Int> = _companionSizeDp.asStateFlow()
 
     private val _penguinsOnlyMode = MutableStateFlow(
         prefs.getBoolean("companion_penguins_only_mode_v3", false)
@@ -1382,6 +1387,12 @@ class PlayerViewModel(application: Application) :
     fun setCompanionEnabled(enabled: Boolean) {
         _companionEnabled.value = enabled
         prefs.edit().putBoolean("saved_companion_enabled_v3", enabled).apply()
+    }
+
+    fun setCompanionSize(sizeDp: Int) {
+        val clamped = sizeDp.coerceIn(56, 140)
+        _companionSizeDp.value = clamped
+        prefs.edit().putInt("saved_companion_size_dp_v2", clamped).apply()
     }
 
     fun selectCompanionBreed(breedName: String) {

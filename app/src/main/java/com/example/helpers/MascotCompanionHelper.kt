@@ -4,6 +4,8 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -24,13 +27,19 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -38,10 +47,10 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * 3D Fluffy Cassette Puppy & Teddy Bear Mascots + Chibi Studio Companions:
- * Features 10 brand-new, 100% distinct 3D Fluffy Plush Puppy & Teddy Bear mascots wearing
- * horned checkered streetwear bucket hats, starry galaxy eyes, neck headphones with smiley
- * & hanging star charm, and holding custom retro cassette tapes in their fluffy paws!
+ * 3D Studio Animals + Fluffy Cassette Puppies & Teddy Bear Mascots + Chibi Companions:
+ * Features the signature 3D Golden Lion Cub ("Sher"), Studio Bunny, and Polar Bear wearing
+ * over-ear studio DJ headphones with rotary dial volume calibrations, plus 10 Fluffy Cassette
+ * Puppies & Teddy Bears and 6 Chibi Penguins!
  */
 enum class CompanionBreed(
     val displayName: String,
@@ -56,6 +65,10 @@ enum class CompanionBreed(
     val wearsHeadphonesAlways: Boolean = true,
     val isFluffyCassetteMascot: Boolean = false,
     val isTeddyBear: Boolean = false,
+    val isLion: Boolean = false,
+    val isBunny: Boolean = false,
+    val isPolarBear: Boolean = false,
+    val isStudioHeadphonesMascot: Boolean = false,
     val hatPrimaryColor: Color = Color(0xFFFFB74D),
     val hatCheckColor: Color = Color(0xFF4DD0E1),
     val hornColor: Color = Color(0xFF80CBC4),
@@ -64,6 +77,47 @@ enum class CompanionBreed(
     val cassetteLabel: String = "MIX TAPE",
     val hatBadgeText: String = "PLAY"
 ) {
+    // ================= NEW SIGNATURE 3D STUDIO DJ ANIMALS (LION, BUNNY, POLAR BEAR) =================
+    GOLDEN_LION_DJ(
+        displayName = "Golden Lion DJ 🦁",
+        primaryFur = Color(0xFFF9C66B),
+        highlightFur = Color(0xFFFFF4D4),
+        shadowFur = Color(0xFFD69438),
+        earColor = Color(0xFFEA9E34),
+        muzzlePatch = Color(0xFFFFF9E8),
+        headphoneAccent = Color(0xFF26E7A6),
+        isLion = true,
+        isStudioHeadphonesMascot = true,
+        cassetteLabel = "LION GROOVE",
+        hatBadgeText = "SHER"
+    ),
+    WHITE_BUNNY_DJ(
+        displayName = "Studio Bunny DJ 🐰",
+        primaryFur = Color(0xFFF7F8FA),
+        highlightFur = Color(0xFFFFFFFF),
+        shadowFur = Color(0xFFD3D8E2),
+        earColor = Color(0xFFFFB2C9),
+        muzzlePatch = Color(0xFFFFFFFF),
+        headphoneAccent = Color(0xFFFF4081),
+        isBunny = true,
+        isStudioHeadphonesMascot = true,
+        cassetteLabel = "BUNNY BEAT",
+        hatBadgeText = "BUNNY"
+    ),
+    SNOW_BEAR_DJ(
+        displayName = "Polar Bear DJ 🐻‍❄️",
+        primaryFur = Color(0xFFEFF2F6),
+        highlightFur = Color(0xFFFFFFFF),
+        shadowFur = Color(0xFFBDC7D5),
+        earColor = Color(0xFFE2E7ED),
+        muzzlePatch = Color(0xFFFBFDFF),
+        headphoneAccent = Color(0xFF00E5FF),
+        isPolarBear = true,
+        isStudioHeadphonesMascot = true,
+        cassetteLabel = "POLAR MIX",
+        hatBadgeText = "POLAR"
+    ),
+
     // ================= 10 NEW 100% DISTINCT 3D FLUFFY CASSETTE PUPPY & TEDDY MASCOTS =================
     HONEY_BEAT_TEDDY(
         displayName = "Honey Beat Teddy 🧸",
@@ -389,8 +443,11 @@ enum class CompanionBreed(
     );
 
     companion object {
+        val FEATURED_STUDIO_ANIMALS: List<CompanionBreed>
+            get() = listOf(GOLDEN_LION_DJ, WHITE_BUNNY_DJ, SNOW_BEAR_DJ)
+
         val FLUFFY_CASSETTE_MASCOTS: List<CompanionBreed>
-            get() = entries.filter { it.isFluffyCassetteMascot }.take(10)
+            get() = entries.filter { it.isFluffyCassetteMascot }
 
         val PENGUIN_BREEDS: List<CompanionBreed>
             get() = entries.filter { it.isPenguin }
@@ -398,8 +455,75 @@ enum class CompanionBreed(
 }
 
 /**
+ * Timed Media Hold Gesture Modifier:
+ * - Quick tap (<800ms): regular click / open
+ * - 2-second hold: automatically plays track/video
+ * - 3.8-second hold: opens 3-dot action menu
+ * - Scrolling cancels automatically so list scrolling remains buttery smooth!
+ */
+fun Modifier.timedMediaTouchHold(
+    onClick: () -> Unit,
+    onHold2sPlay: () -> Unit,
+    onHold4sMenu: () -> Unit
+): Modifier = composed {
+    val haptic = LocalHapticFeedback.current
+    val currentOnClick by rememberUpdatedState(onClick)
+    val currentOnHold2s by rememberUpdatedState(onHold2sPlay)
+    val currentOnHold4s by rememberUpdatedState(onHold4sMenu)
+
+    pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val startTime = System.currentTimeMillis()
+            var actionTaken = false
+
+            val scope = CoroutineScope(Dispatchers.Main)
+            val job2s = scope.launch {
+                delay(2000L)
+                actionTaken = true
+                try {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                } catch (_: Exception) {}
+                currentOnHold2s()
+            }
+            val job4s = scope.launch {
+                delay(3800L)
+                actionTaken = true
+                try {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                } catch (_: Exception) {}
+                currentOnHold4s()
+            }
+
+            var finished = false
+            while (!finished) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (change == null || !change.pressed) {
+                    finished = true
+                    job2s.cancel()
+                    job4s.cancel()
+                    val pressDuration = System.currentTimeMillis() - startTime
+                    if (!actionTaken && pressDuration < 800L) {
+                        currentOnClick()
+                    }
+                } else {
+                    val dx = abs(change.position.x - down.position.x)
+                    val dy = abs(change.position.y - down.position.y)
+                    if (dx > 36f || dy > 36f) {
+                        job2s.cancel()
+                        job4s.cancel()
+                        finished = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
  * Reusable 3D Studio Portrait Composable for showcasing and saving the 3D Fluffy Cassette
- * Puppy & Teddy Bear Mascots in the Me Section & Companion Gallery!
+ * Puppies, Lion & Teddy Bear Mascots in the Me Section & Companion Gallery!
  */
 @Composable
 fun FluffyMascot3DStudioPortrait(
@@ -429,6 +553,16 @@ fun FluffyMascot3DStudioPortrait(
                 isGrooving = true,
                 happyJumpTicks = 0
             )
+        } else if (breed.isStudioHeadphonesMascot) {
+            if (showStudioBackdrop) {
+                drawPastel3DStudioBackdrop(breed)
+            }
+            draw3DStudioDJMascot(
+                breed = breed,
+                animTick = animTick,
+                isGrooving = true,
+                happyJumpTicks = 0
+            )
         } else {
             if (showStudioBackdrop) {
                 drawPastel3DStudioBackdrop(breed)
@@ -444,8 +578,13 @@ fun FluffyMascot3DStudioPortrait(
 }
 
 /**
- * Interactive 3D Companion Overlay supporting the 3D Fluffy Cassette Puppies & Teddy Bears
- * plus Chibi Penguins.
+ * Interactive 3D Companion Overlay supporting the 3D Golden Lion DJ ("Sher"),
+ * Studio Bunny, Polar Bear, and Fluffy Cassette Puppies & Teddy Bears:
+ * - Upward Fling & Gravity: Throwing upward sends mascot flying up, bouncing off top/ceiling
+ *   and falling gracefully under gravity over 2 to 3 seconds with floor landing bounce!
+ * - Dance: Mascots dance strictly when music is playing (isMusicPlaying == true). When music stops,
+ *   they stay calm, peaceful, and still.
+ * - Resizable: Accepts dynamic mascotSizeDp (64dp to 132dp) from PlayerViewModel.
  */
 @Composable
 fun RealisticCompanionOverlay(
@@ -453,6 +592,7 @@ fun RealisticCompanionOverlay(
     breedName: String,
     isMusicPlaying: Boolean,
     penguinsOnlyMode: Boolean = false,
+    mascotSizeDp: Dp = 88.dp,
     onQuickPlayTrigger: () -> Unit,
     onHideForSession: () -> Unit
 ) {
@@ -464,8 +604,8 @@ fun RealisticCompanionOverlay(
 
     val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-    val mascotSizePx = with(density) { 80.dp.toPx() }
-    val floorY = (screenHeightPx - mascotSizePx - with(density) { 126.dp.toPx() }).coerceAtLeast(100f)
+    val mascotSizePx = with(density) { mascotSizeDp.toPx() }
+    val floorY = (screenHeightPx - mascotSizePx - with(density) { 110.dp.toPx() }).coerceAtLeast(80f)
 
     var penguinCycleIndex by remember { mutableIntStateOf(0) }
 
@@ -481,7 +621,7 @@ fun RealisticCompanionOverlay(
     val breed = remember(breedName, penguinsOnlyMode, penguinCycleIndex) {
         val selected = CompanionBreed.entries.find {
             it.displayName == breedName || it.name == breedName
-        } ?: CompanionBreed.HONEY_BEAT_TEDDY
+        } ?: CompanionBreed.GOLDEN_LION_DJ
         if (penguinsOnlyMode) {
             if (selected.isPenguin && penguinCycleIndex == 0) selected
             else CompanionBreed.PENGUIN_BREEDS[penguinCycleIndex % CompanionBreed.PENGUIN_BREEDS.size]
@@ -490,43 +630,56 @@ fun RealisticCompanionOverlay(
         }
     }
 
-    var posX by remember { mutableFloatStateOf(with(density) { 12.dp.toPx() }) }
+    var posX by remember { mutableFloatStateOf(with(density) { 16.dp.toPx() }) }
     var posY by remember { mutableFloatStateOf(floorY) }
-    var velX by remember { mutableFloatStateOf(1.5f) }
+    var velX by remember { mutableFloatStateOf(0f) }
     var velY by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
-    var walkDirection by remember { mutableFloatStateOf(1f) }
     var animTick by remember { mutableFloatStateOf(0f) }
-    var manualDanceMode by remember { mutableStateOf(true) }
     var happyJumpTicks by remember { mutableIntStateOf(0) }
 
-    val isGrooving = isMusicPlaying || manualDanceMode
+    // DANCE RULE: Strictly dance only when music is playing!
+    val isGrooving = isMusicPlaying
 
     LaunchedEffect(isDragging, isGrooving, floorY, screenWidthPx) {
         while (true) {
-            delay(16L)
-            animTick += if (isGrooving) 0.18f else 0.08f
+            val delayMs = if (isDragging || posY < floorY - 1.5f || abs(velY) > 0.8f) 16L
+                          else if (isGrooving) 24L
+                          else 64L
+            delay(delayMs)
+
+            animTick += if (isGrooving) 0.18f else 0.02f
             if (happyJumpTicks > 0) happyJumpTicks--
 
             if (!isDragging) {
-                if (posY < floorY - 2f || abs(velY) > 1.5f) {
-                    velY += 1.35f
+                if (posY < floorY - 1.5f || abs(velY) > 0.8f) {
+                    // Upward flight & smooth realistic gravity
+                    velY += 1.25f
                     posX += velX
                     posY += velY
 
-                    if (posX <= 8f) {
-                        posX = 8f
-                        velX = abs(velX) * 0.78f
-                    } else if (posX >= screenWidthPx - mascotSizePx - 8f) {
-                        posX = screenWidthPx - mascotSizePx - 8f
-                        velX = -abs(velX) * 0.78f
+                    // Top ceiling collision bounce ("upar jaakar takra ke wapas aaye")
+                    if (posY <= 25f) {
+                        posY = 25f
+                        velY = abs(velY) * 0.45f
+                        velX = (velX * 0.85f) + if (velX >= 0) 3.0f else -3.0f
                     }
 
+                    // Left & Right screen boundary wall bounce
+                    if (posX <= 6f) {
+                        posX = 6f
+                        velX = abs(velX) * 0.72f
+                    } else if (posX >= screenWidthPx - mascotSizePx - 6f) {
+                        posX = screenWidthPx - mascotSizePx - 6f
+                        velX = -abs(velX) * 0.72f
+                    }
+
+                    // Floor landing with gentle dampening bounce
                     if (posY >= floorY) {
                         posY = floorY
-                        if (abs(velY) > 5.5f) {
-                            velY = -velY * 0.45f
-                            velX *= 0.8f
+                        if (abs(velY) > 4.5f) {
+                            velY = -velY * 0.42f
+                            velX *= 0.75f
                         } else {
                             velY = 0f
                             velX = 0f
@@ -534,14 +687,8 @@ fun RealisticCompanionOverlay(
                     }
                 } else {
                     posY = floorY
-                    if (!isMusicPlaying && !manualDanceMode) {
-                        posX += walkDirection * 1.05f
-                        if (posX >= screenWidthPx * 0.55f) {
-                            walkDirection = -1f
-                        } else if (posX <= 12f) {
-                            walkDirection = 1f
-                        }
-                    }
+                    velY = 0f
+                    velX = 0f
                 }
             }
         }
@@ -551,22 +698,24 @@ fun RealisticCompanionOverlay(
         Canvas(
             modifier = Modifier
                 .offset { IntOffset(posX.roundToInt(), posY.roundToInt()) }
-                .size(80.dp)
+                .size(mascotSizeDp)
                 .pointerInput(isMusicPlaying, penguinsOnlyMode, breed) {
                     detectTapGestures(
                         onTap = {
-                            velY = -16f
-                            happyJumpTicks = 55
+                            velY = -18f
+                            happyJumpTicks = 50
                             if (penguinsOnlyMode || breed.isPenguin) {
                                 penguinCycleIndex = (penguinCycleIndex + 1) % CompanionBreed.PENGUIN_BREEDS.size
                             }
-                            manualDanceMode = !manualDanceMode
                             val icon = when {
+                                breed.isLion -> "🦁"
+                                breed.isBunny -> "🐰"
+                                breed.isPolarBear -> "🐻‍❄️"
                                 breed.isPenguin -> "🐧"
                                 breed.isTeddyBear -> "🧸"
                                 else -> "🐶"
                             }
-                            val status = if (manualDanceMode) "Spinning ${breed.cassetteLabel}!" else "Chill Mode"
+                            val status = if (isMusicPlaying) "Grooving to Music!" else "Ready to Jam (Play a song!)"
                             Toast.makeText(
                                 context,
                                 "$icon ${breed.displayName}: $status",
@@ -574,13 +723,12 @@ fun RealisticCompanionOverlay(
                             ).show()
                         },
                         onDoubleTap = {
-                            velY = -20f
+                            velY = -22f
                             happyJumpTicks = 80
-                            manualDanceMode = true
                             onQuickPlayTrigger()
                             Toast.makeText(
                                 context,
-                                "🎧 ${breed.displayName} (${breed.cassetteLabel}) Beat Drop!",
+                                "🎧 ${breed.displayName} DJ Drop!",
                                 Toast.LENGTH_SHORT
                             ).show()
                         },
@@ -588,7 +736,7 @@ fun RealisticCompanionOverlay(
                             onHideForSession()
                             Toast.makeText(
                                 context,
-                                "Mascot hidden for session (Re-enable in Me section)",
+                                "Mascot hidden (Re-enable in Me section)",
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
@@ -600,22 +748,30 @@ fun RealisticCompanionOverlay(
                             isDragging = true
                             velX = 0f
                             velY = 0f
-                            happyJumpTicks = 40
+                            happyJumpTicks = 35
                         },
                         onDragEnd = { isDragging = false },
                         onDragCancel = { isDragging = false },
                         onDrag = { change, dragAmount ->
                             change.consume()
                             posX = (posX + dragAmount.x).coerceIn(0f, screenWidthPx - mascotSizePx)
-                            posY = (posY + dragAmount.y).coerceIn(40f, floorY)
-                            velX = (dragAmount.x * 0.65f).coerceIn(-26f, 26f)
-                            velY = (dragAmount.y * 0.65f).coerceIn(-26f, 26f)
+                            posY = (posY + dragAmount.y).coerceIn(20f, floorY)
+                            // Responsive throw fling with high upward sensitivity
+                            velX = (dragAmount.x * 0.95f).coerceIn(-35f, 35f)
+                            velY = (dragAmount.y * 1.35f).coerceIn(-55f, 35f)
                         }
                     )
                 }
         ) {
             if (breed.isPenguin) {
                 drawColorfulChibiPenguin(
+                    breed = breed,
+                    animTick = animTick,
+                    isGrooving = isGrooving,
+                    happyJumpTicks = happyJumpTicks
+                )
+            } else if (breed.isStudioHeadphonesMascot) {
+                draw3DStudioDJMascot(
                     breed = breed,
                     animTick = animTick,
                     isGrooving = isGrooving,
@@ -719,6 +875,449 @@ private fun DrawScope.drawPastel3DStudioBackdrop(breed: CompanionBreed) {
     drawFourPointSparkle(Offset(w * 0.76f, h * 0.09f), w * 0.042f, Color.White)
     drawFourPointSparkle(Offset(w * 0.24f, h * 0.08f), w * 0.030f, Color(0xFFFFF59D))
     drawFourPointSparkle(Offset(w * 0.86f, h * 0.55f), w * 0.035f, Color.White)
+}
+
+/**
+ * 3D Studio Animals Renderer (Golden Lion DJ "Sher", Studio Bunny, Polar Bear):
+ * 100% faithful to the user's reference images:
+ * - Fluffy golden lion cub with warm mane collar, head tuft, tufted brush tail, pink paw pads
+ * - Studio Bunny with upright rabbit ears poking through DJ headphones, buck teeth, fluffy tail
+ * - Studio Polar Bear with cute round ears, blue eyes, and DJ headphones
+ * - Over-ear studio DJ headphones in luxurious cream/ivory with padded leather headband,
+ *   concentric rotary volume dial with calibrated tick marks (0, 8, 10, 20...), and knob!
+ * - Dancing animation strictly synchronized with music playback (isGrooving == true),
+ *   completely calm and peaceful when music is paused.
+ */
+private fun DrawScope.draw3DStudioDJMascot(
+    breed: CompanionBreed,
+    animTick: Float,
+    isGrooving: Boolean,
+    happyJumpTicks: Int
+) {
+    val w = size.width
+    val h = size.height
+    val cx = w / 2f
+
+    // Grooving bounces ONLY when music is playing!
+    val bounceY = if (isGrooving) {
+        val hop = if (happyJumpTicks > 0) abs(sin(animTick * 6f)) * h * 0.12f else 0f
+        abs(sin(animTick * 3.5f)) * h * 0.055f + hop
+    } else {
+        sin(animTick * 0.5f) * (h * 0.004f)
+    }
+
+    val headTiltDeg = if (isGrooving) sin(animTick * 2.5f) * 6.5f else 0f
+    val tailWag = if (isGrooving) sin(animTick * 4f) * 16f else sin(animTick * 0.5f) * 2f
+    val armBob = if (isGrooving) sin(animTick * 3.5f) * 4f else 0f
+
+    // 1. Soft Dynamic Ambient Shadow on the Floor
+    val shadowWidth = w * (if (isGrooving) 0.58f + sin(animTick * 3.5f) * 0.04f else 0.58f)
+    drawOval(
+        brush = Brush.radialGradient(
+            colors = listOf(Color(0xFF000000).copy(alpha = 0.28f), Color.Transparent),
+            center = Offset(cx, h * 0.94f),
+            radius = shadowWidth / 2f
+        ),
+        topLeft = Offset(cx - shadowWidth / 2f, h * 0.90f),
+        size = Size(shadowWidth, h * 0.08f)
+    )
+
+    // 2. Fluffy Paws / Feet with Soft Pink Paw Pads & Toe Beans
+    val feetY = h * 0.84f - bounceY * 0.25f
+    for (side in listOf(-1f, 1f)) {
+        val footCx = cx + side * w * 0.18f
+        // Main foot fur
+        drawOval(
+            brush = Brush.radialGradient(
+                colors = listOf(breed.highlightFur, breed.primaryFur, breed.shadowFur),
+                center = Offset(footCx, feetY),
+                radius = w * 0.12f
+            ),
+            topLeft = Offset(footCx - w * 0.11f, feetY - h * 0.055f),
+            size = Size(w * 0.22f, h * 0.11f)
+        )
+        // Main pink foot pad
+        drawOval(
+            color = Color(0xFFFFB2C9),
+            topLeft = Offset(footCx - w * 0.045f, feetY - h * 0.02f),
+            size = Size(w * 0.09f, h * 0.05f)
+        )
+        // 3 Cute Pink Toe Beans
+        for (toe in listOf(-1f, 0f, 1f)) {
+            drawCircle(
+                color = Color(0xFFFFB2C9),
+                radius = w * 0.016f,
+                center = Offset(footCx + toe * w * 0.032f, feetY - h * 0.032f)
+            )
+        }
+    }
+
+    // 3. Fluffy Tail
+    if (breed.isLion) {
+        val tailPivot = Offset(cx + w * 0.18f, h * 0.72f - bounceY)
+        rotate(degrees = tailWag, pivot = tailPivot) {
+            val tailPath = Path().apply {
+                moveTo(tailPivot.x, tailPivot.y)
+                cubicTo(
+                    tailPivot.x + w * 0.18f, tailPivot.y - h * 0.08f,
+                    tailPivot.x + w * 0.26f, tailPivot.y - h * 0.22f,
+                    tailPivot.x + w * 0.19f, tailPivot.y - h * 0.32f
+                )
+            }
+            drawPath(
+                path = tailPath,
+                color = breed.primaryFur,
+                style = Stroke(width = w * 0.052f, cap = StrokeCap.Round)
+            )
+            val tuftTip = Offset(tailPivot.x + w * 0.19f, tailPivot.y - h * 0.32f)
+            drawFluffyCluster(
+                center = tuftTip,
+                radiusX = w * 0.095f,
+                radiusY = h * 0.085f,
+                primary = breed.earColor,
+                highlight = breed.highlightFur,
+                shadow = breed.shadowFur,
+                tuftCount = 10
+            )
+        }
+    } else if (breed.isBunny) {
+        val bunnyTailPivot = Offset(cx + w * 0.22f, h * 0.72f - bounceY)
+        drawFluffyCluster(
+            center = Offset(bunnyTailPivot.x + tailWag * 0.2f, bunnyTailPivot.y),
+            radiusX = w * 0.085f,
+            radiusY = h * 0.085f,
+            primary = breed.primaryFur,
+            highlight = breed.highlightFur,
+            shadow = breed.shadowFur,
+            tuftCount = 10
+        )
+    }
+
+    // 4. Plush Body & Soft Cream Belly Patch
+    val bodyCy = h * 0.62f - bounceY * 0.7f
+    drawFluffyCluster(
+        center = Offset(cx, bodyCy),
+        radiusX = w * 0.25f,
+        radiusY = h * 0.19f,
+        primary = breed.primaryFur,
+        highlight = breed.highlightFur,
+        shadow = breed.shadowFur,
+        tuftCount = 18
+    )
+    drawOval(
+        brush = Brush.radialGradient(
+            colors = listOf(Color(0xFFFFF9EC), breed.highlightFur.copy(alpha = 0.5f)),
+            center = Offset(cx, bodyCy + h * 0.02f),
+            radius = w * 0.16f
+        ),
+        topLeft = Offset(cx - w * 0.14f, bodyCy - h * 0.06f),
+        size = Size(w * 0.28f, h * 0.21f)
+    )
+
+    // 5. Front Arms / Paws with Pink Paw Pads
+    for (side in listOf(-1f, 1f)) {
+        val handPos = Offset(cx + side * w * 0.26f, bodyCy + h * 0.08f + armBob * side)
+        drawOval(
+            brush = Brush.radialGradient(
+                colors = listOf(breed.highlightFur, breed.primaryFur, breed.shadowFur),
+                center = handPos,
+                radius = w * 0.08f
+            ),
+            topLeft = Offset(handPos.x - w * 0.075f, handPos.y - h * 0.065f),
+            size = Size(w * 0.15f, h * 0.13f)
+        )
+        drawCircle(
+            color = Color(0xFFFFB2C9),
+            radius = w * 0.026f,
+            center = Offset(handPos.x, handPos.y)
+        )
+        for (f in listOf(-1f, 0f, 1f)) {
+            drawCircle(
+                color = Color(0xFFFFB2C9),
+                radius = w * 0.012f,
+                center = Offset(handPos.x + f * w * 0.022f, handPos.y - h * 0.022f)
+            )
+        }
+    }
+
+    // 6. Fluffy Golden Lion Mane Collar framing neck & cheeks
+    val headCy = h * 0.35f - bounceY
+    if (breed.isLion) {
+        val maneCenter = Offset(cx, headCy + h * 0.09f)
+        drawFluffyCluster(
+            center = maneCenter,
+            radiusX = w * 0.32f,
+            radiusY = h * 0.18f,
+            primary = Color(0xFFF9C66B),
+            highlight = Color(0xFFFFF2D0),
+            shadow = Color(0xFFD69438),
+            tuftCount = 18
+        )
+    }
+
+    // 7. Head, Face & Ears
+    rotate(degrees = headTiltDeg, pivot = Offset(cx, headCy + h * 0.10f)) {
+        if (breed.isBunny) {
+            for (side in listOf(-1f, 1f)) {
+                val earAngle = side * 10f + if (isGrooving) sin(animTick * 3f + side) * 5f else 0f
+                val earRoot = Offset(cx + side * w * 0.12f, headCy - h * 0.16f)
+                rotate(degrees = earAngle, pivot = earRoot) {
+                    drawOval(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(breed.highlightFur, breed.primaryFur)
+                        ),
+                        topLeft = Offset(earRoot.x - w * 0.065f, earRoot.y - h * 0.24f),
+                        size = Size(w * 0.13f, h * 0.26f)
+                    )
+                    drawOval(
+                        color = Color(0xFFFFB2C9),
+                        topLeft = Offset(earRoot.x - w * 0.038f, earRoot.y - h * 0.20f),
+                        size = Size(w * 0.076f, h * 0.20f)
+                    )
+                }
+            }
+        } else {
+            for (side in listOf(-1f, 1f)) {
+                val earCx = cx + side * w * 0.26f
+                val earCy = headCy - h * 0.12f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(breed.highlightFur, breed.primaryFur, breed.shadowFur),
+                        center = Offset(earCx, earCy),
+                        radius = w * 0.09f
+                    ),
+                    radius = w * 0.085f,
+                    center = Offset(earCx, earCy)
+                )
+                drawCircle(
+                    color = Color(0xFFFFB2C9),
+                    radius = w * 0.046f,
+                    center = Offset(earCx, earCy)
+                )
+            }
+        }
+
+        // Main Fluffy Head Sphere
+        drawFluffyCluster(
+            center = Offset(cx, headCy),
+            radiusX = w * 0.27f,
+            radiusY = h * 0.21f,
+            primary = breed.primaryFur,
+            highlight = breed.highlightFur,
+            shadow = breed.shadowFur,
+            tuftCount = 20
+        )
+
+        // Top head lock / tuft
+        if (breed.isLion || breed.isPolarBear) {
+            val tuftPath = Path().apply {
+                moveTo(cx - w * 0.06f, headCy - h * 0.18f)
+                quadraticTo(cx - w * 0.02f, headCy - h * 0.26f, cx + w * 0.02f, headCy - h * 0.27f)
+                quadraticTo(cx + w * 0.06f, headCy - h * 0.25f, cx + w * 0.07f, headCy - h * 0.18f)
+                close()
+            }
+            drawPath(path = tuftPath, color = breed.primaryFur)
+        }
+
+        // Rosy Airbrushed Pink Cheeks & Whiskers
+        val cheekY = headCy + h * 0.055f
+        for (side in listOf(-1f, 1f)) {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFFFF6E9E).copy(alpha = 0.50f), Color.Transparent),
+                    center = Offset(cx + side * w * 0.165f, cheekY),
+                    radius = w * 0.065f
+                ),
+                radius = w * 0.065f,
+                center = Offset(cx + side * w * 0.165f, cheekY)
+            )
+            if (breed.isLion || breed.isBunny) {
+                for (wi in 0..1) {
+                    val wy = cheekY + (wi - 0.5f) * h * 0.022f
+                    drawLine(
+                        color = Color(0xFF6B4538).copy(alpha = 0.65f),
+                        start = Offset(cx + side * w * 0.14f, wy),
+                        end = Offset(cx + side * (w * 0.23f), wy + (wi - 0.5f) * h * 0.015f),
+                        strokeWidth = w * 0.012f,
+                        cap = StrokeCap.Round
+                    )
+                }
+            }
+        }
+
+        // Kawaii Sapphire Blue Galaxy Eyes
+        val eyeY = headCy + h * 0.005f
+        val eyeRadius = w * 0.068f
+        val isBlinking = ((animTick * 10f).toInt() % 100) in 0..2 && happyJumpTicks <= 0
+        if (isBlinking) {
+            for (side in listOf(-1f, 1f)) {
+                drawArc(
+                    color = Color(0xFF231815),
+                    startAngle = 195f,
+                    sweepAngle = 150f,
+                    useCenter = false,
+                    topLeft = Offset(cx + side * w * 0.11f - eyeRadius, eyeY - eyeRadius * 0.5f),
+                    size = Size(eyeRadius * 2f, eyeRadius),
+                    style = Stroke(width = w * 0.022f, cap = StrokeCap.Round)
+                )
+            }
+        } else {
+            drawStarryGalaxyEye(Offset(cx - w * 0.11f, eyeY), eyeRadius, Color(0xFF38BDF8))
+            drawStarryGalaxyEye(Offset(cx + w * 0.11f, eyeY), eyeRadius, Color(0xFF38BDF8))
+        }
+
+        // Muzzle & Soft Nose
+        val snoutCy = headCy + h * 0.080f
+        drawOval(
+            brush = Brush.radialGradient(
+                colors = listOf(Color(0xFFFFFDF7), breed.highlightFur),
+                center = Offset(cx, snoutCy - h * 0.008f),
+                radius = w * 0.09f
+            ),
+            topLeft = Offset(cx - w * 0.08f, snoutCy - h * 0.045f),
+            size = Size(w * 0.16f, h * 0.09f)
+        )
+
+        val noseColor = if (breed.isPolarBear) Color(0xFF212529) else Color(0xFFE57373)
+        drawRoundRect(
+            color = noseColor,
+            topLeft = Offset(cx - w * 0.030f, snoutCy - h * 0.032f),
+            size = Size(w * 0.060f, h * 0.034f),
+            cornerRadius = CornerRadius(w * 0.024f, w * 0.024f)
+        )
+
+        // Open Happy Smile with Rosy Pink Tongue
+        val mouthPath = Path().apply {
+            moveTo(cx - w * 0.040f, snoutCy + h * 0.006f)
+            quadraticTo(cx, snoutCy + h * 0.016f, cx + w * 0.040f, snoutCy + h * 0.006f)
+            quadraticTo(cx + w * 0.030f, snoutCy + h * 0.058f, cx, snoutCy + h * 0.058f)
+            quadraticTo(cx - w * 0.030f, snoutCy + h * 0.058f, cx - w * 0.040f, snoutCy + h * 0.006f)
+            close()
+        }
+        drawPath(path = mouthPath, color = Color(0xFF5D232C))
+        drawOval(
+            color = Color(0xFFFF80AB),
+            topLeft = Offset(cx - w * 0.024f, snoutCy + h * 0.026f),
+            size = Size(w * 0.048f, h * 0.028f)
+        )
+
+        if (breed.isBunny) {
+            drawRoundRect(
+                color = Color.White,
+                topLeft = Offset(cx - w * 0.022f, snoutCy + h * 0.006f),
+                size = Size(w * 0.044f, h * 0.022f),
+                cornerRadius = CornerRadius(w * 0.008f, w * 0.008f)
+            )
+            drawLine(
+                color = Color(0xFF6B4538).copy(alpha = 0.5f),
+                start = Offset(cx, snoutCy + h * 0.006f),
+                end = Offset(cx, snoutCy + h * 0.028f),
+                strokeWidth = w * 0.008f
+            )
+        }
+
+        // ================= 8. OVER-EAR STUDIO DJ HEADPHONES WITH ROTARY DIALS =================
+        val bandPath = Path().apply {
+            moveTo(cx - w * 0.27f, headCy - h * 0.04f)
+            cubicTo(
+                cx - w * 0.28f, headCy - h * 0.24f,
+                cx + w * 0.28f, headCy - h * 0.24f,
+                cx + w * 0.27f, headCy - h * 0.04f
+            )
+        }
+        drawPath(
+            path = bandPath,
+            color = Color(0xFFDED0B6),
+            style = Stroke(width = w * 0.075f, cap = StrokeCap.Round)
+        )
+        drawPath(
+            path = bandPath,
+            color = Color(0xFFF3ECE0),
+            style = Stroke(width = w * 0.045f, cap = StrokeCap.Round)
+        )
+
+        for (side in listOf(-1f, 1f)) {
+            val cupCx = cx + side * w * 0.285f
+            val cupCy = headCy - h * 0.015f
+
+            drawRoundRect(
+                color = Color(0xFFC7B9A0),
+                topLeft = Offset(cupCx - w * 0.028f, cupCy - h * 0.12f),
+                size = Size(w * 0.056f, h * 0.04f),
+                cornerRadius = CornerRadius(w * 0.015f, w * 0.015f)
+            )
+
+            // Padded Leather Cushion Ring
+            drawOval(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFFFAF5EC), Color(0xFFE4D5BC), Color(0xFFBAA78A)),
+                    center = Offset(cupCx, cupCy),
+                    radius = w * 0.14f
+                ),
+                topLeft = Offset(cupCx - w * 0.125f, cupCy - h * 0.13f),
+                size = Size(w * 0.25f, h * 0.26f)
+            )
+
+            // Outer Earcup Housing
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFFEFE6D5), Color(0xFFD6C6AA)),
+                    center = Offset(cupCx, cupCy),
+                    radius = w * 0.09f
+                ),
+                radius = w * 0.088f,
+                center = Offset(cupCx, cupCy)
+            )
+
+            // Rotary Volume Dial Metallic Faceplate
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFFFFFFFF), Color(0xFFE8DDCC), Color(0xFFBAA88C)),
+                    center = Offset(cupCx, cupCy),
+                    radius = w * 0.072f
+                ),
+                radius = w * 0.072f,
+                center = Offset(cupCx, cupCy)
+            )
+
+            // Calibrated Tick Marks around Volume Dial
+            val dialSpin = if (isGrooving) animTick * 2.5f else 0f
+            for (tick in 0..11) {
+                val tickAngle = (tick * 30f + dialSpin) * (PI / 180f).toFloat()
+                val innerR = w * (if (tick % 3 == 0) 0.055f else 0.061f)
+                val outerR = w * 0.069f
+                val p1 = Offset(cupCx + cos(tickAngle) * innerR, cupCy + sin(tickAngle) * innerR)
+                val p2 = Offset(cupCx + cos(tickAngle) * outerR, cupCy + sin(tickAngle) * outerR)
+                drawLine(
+                    color = Color(0xFF5A4D3E),
+                    start = p1,
+                    end = p2,
+                    strokeWidth = w * (if (tick % 3 == 0) 0.012f else 0.007f),
+                    cap = StrokeCap.Round
+                )
+            }
+
+            // Central Rotary Volume Knob with Pointer Indicator Notch
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFFF7F3EA), Color(0xFFC7B79D)),
+                    center = Offset(cupCx - w * 0.008f, cupCy - h * 0.008f),
+                    radius = w * 0.038f
+                ),
+                radius = w * 0.036f,
+                center = Offset(cupCx, cupCy)
+            )
+            val pointerAngle = (dialSpin * 1.5f)
+            val pointerR = w * 0.028f
+            drawLine(
+                color = Color(0xFF3E3224),
+                start = Offset(cupCx, cupCy),
+                end = Offset(cupCx + cos(pointerAngle) * pointerR, cupCy + sin(pointerAngle) * pointerR),
+                strokeWidth = w * 0.010f,
+                cap = StrokeCap.Round
+            )
+        }
+    }
 }
 
 /**

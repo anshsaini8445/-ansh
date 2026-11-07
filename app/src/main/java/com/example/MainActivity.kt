@@ -60,10 +60,6 @@ enum class MainBottomTab(val label: String) {
 
 class MainActivity : ComponentActivity() {
 
-    companion object {
-        private var hasShownColdSplashInProcess = false
-    }
-
     private val viewModel: PlayerViewModel by viewModels()
     private var shouldAutoEnterPipOnLeave: Boolean = false
 
@@ -90,6 +86,7 @@ class MainActivity : ComponentActivity() {
             val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
             val companionEnabled by viewModel.companionEnabled.collectAsState()
             val companionBreed by viewModel.companionBreed.collectAsState()
+            val companionSizeDp by viewModel.companionSizeDp.collectAsState()
             val penguinsOnlyMode by viewModel.penguinsOnlyMode.collectAsState()
             val isMusicPlaying by viewModel.isPlaying.collectAsState()
             val videos by viewModel.videoItems.collectAsState()
@@ -148,14 +145,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                var showBrandIntro by remember { mutableStateOf(!hasShownColdSplashInProcess) }
-                LaunchedEffect(Unit) {
-                    if (!hasShownColdSplashInProcess) {
-                        kotlinx.coroutines.delay(1400L)
-                        hasShownColdSplashInProcess = true
-                        showBrandIntro = false
-                    }
-                }
+                // Direct instant launch into main app without artificial splash delay or duplicate popups
 
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val isPipMicroWindow = maxHeight < 215.dp || maxWidth < 230.dp
@@ -580,32 +570,18 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // --- REALISTIC 3D ARTICULATED PUPPY & PENGUIN COMPANION OVERLAY ---
-                    if (currentScreen == ActiveScreen.MainTabs && !showBrandIntro && !isPipMicroWindow) {
+                    if (currentScreen == ActiveScreen.MainTabs && !isPipMicroWindow) {
                         RealisticCompanionOverlay(
                             enabled = companionEnabled,
                             breedName = companionBreed,
                             isMusicPlaying = isMusicPlaying,
                             penguinsOnlyMode = penguinsOnlyMode,
+                            mascotSizeDp = companionSizeDp.dp,
                             onQuickPlayTrigger = {
                                 music.firstOrNull()?.let { viewModel.playMusic(it) }
                             },
                             onHideForSession = {
                                 viewModel.setCompanionEnabled(false)
-                            }
-                        )
-                    }
-
-                    // --- FAST 1.4s LARGE HYBRID PLAYER BRANDED SPLASH OVERLAY (Cold Start Only) ---
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = showBrandIntro,
-                        enter = androidx.compose.animation.fadeIn(),
-                        exit = androidx.compose.animation.fadeOut()
-                    ) {
-                        HybridFastSplashOverlay(
-                            accentColor = accentColor,
-                            onDismissNow = {
-                                hasShownColdSplashInProcess = true
-                                showBrandIntro = false
                             }
                         )
                     }
@@ -897,108 +873,6 @@ private fun BoxScope.HybridFloatingMiniVideoWindow(
                         tint = Color.White,
                         modifier = Modifier.size(16.dp)
                     )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun HybridFastSplashOverlay(
-    accentColor: Color,
-    onDismissNow: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                androidx.compose.ui.graphics.Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF050811),
-                        Color(0xFF0A1424),
-                        Color(0xFF050811)
-                    )
-                )
-            ),
-        contentAlignment = androidx.compose.ui.Alignment.Center
-    ) {
-        LiquidGlassBox(
-            modifier = Modifier
-                .fillMaxWidth(0.88f)
-                .widthIn(max = 420.dp),
-            cornerRadius = 32.dp,
-            tintColor = accentColor,
-            glassAlpha = 0.22f,
-            onClick = onDismissNow
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 32.dp),
-                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
-            ) {
-                // Large 136.dp Glowing Hybrid Player App Icon
-                Surface(
-                    modifier = Modifier.size(136.dp),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(32.dp),
-                    color = Color(0xFF0D1322),
-                    border = androidx.compose.foundation.BorderStroke(2.5.dp, accentColor.copy(alpha = 0.75f)),
-                    shadowElevation = 18.dp
-                ) {
-                    androidx.compose.foundation.Image(
-                        painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_app_custom_logo),
-                        contentDescription = "Hybrid Player Logo",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Text(
-                    text = "Hybrid Player",
-                    color = Color.White,
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 0.6.sp
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = "ULTRA HD MEDIA ENGINE • LIQUID GLASS STUDIO",
-                    color = accentColor,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 1.1.sp
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // Feature Showcase Pills
-                val features = listOf(
-                    "⚡ 8K / 4K Ultra-Fast Video & Pending Movie Playback",
-                    "🎵 200% Volume Boost • 3D Visualizer • Pro Equalizer",
-                    "🚀 High-Speed Wi-Fi Direct Share & Dual-PIN Vault"
-                )
-                features.forEach { featureText ->
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                        color = Color.White.copy(alpha = 0.07f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
-                    ) {
-                        Text(
-                            text = featureText,
-                            color = Color.White.copy(alpha = 0.92f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
-                        )
-                    }
                 }
             }
         }

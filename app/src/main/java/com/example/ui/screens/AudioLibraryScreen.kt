@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.helpers.PermanentDeleteHelper
+import com.example.helpers.timedMediaTouchHold
 import com.example.ui.components.GuaranteedAlbumArt
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
@@ -1133,9 +1134,13 @@ private fun CleanAudioTrackRow(
     LiquidGlassBox(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(
+            .timedMediaTouchHold(
                 onClick = onPlay,
-                onLongClick = onLongClick
+                onHold2sPlay = onPlay,
+                onHold4sMenu = {
+                    onLongClick()
+                    onOpenMenu()
+                }
             )
             .testTag("audio_track_row_${track.id}"),
         cornerRadius = 16.dp,

@@ -48,6 +48,7 @@ import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
 import com.example.helpers.PermanentDeleteHelper
 import com.example.helpers.WifiDirectTransferEngine
+import com.example.helpers.timedMediaTouchHold
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.persona.DemographicMode
 import com.example.ui.theme.*
@@ -1836,9 +1837,10 @@ private fun VideoDetailedRowItem(
                 },
                 shape = RoundedCornerShape(cornerRad)
             )
-            .combinedClickable(
+            .timedMediaTouchHold(
                 onClick = onClick,
-                onLongClick = onLongClick
+                onHold2sPlay = onClick,
+                onHold4sMenu = onLongClick
             )
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -2016,7 +2018,11 @@ private fun VideoGridCard(
                 },
                 RoundedCornerShape(14.dp)
             )
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .timedMediaTouchHold(
+                onClick = onClick,
+                onHold2sPlay = onClick,
+                onHold4sMenu = onLongClick
+            )
             .padding(8.dp)
     ) {
         Box(

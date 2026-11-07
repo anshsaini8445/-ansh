@@ -7,6 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -131,6 +132,7 @@ fun MeToolkitScreen(
     val shakeToSkipEnabled by viewModel.doubleShakeEnabled.collectAsState()
     val companionEnabled by viewModel.companionEnabled.collectAsState()
     val selectedCompanionName by viewModel.companionBreed.collectAsState()
+    val companionSizeDp by viewModel.companionSizeDp.collectAsState()
 
     var subScreen by remember { mutableStateOf(MeSubScreen.MAIN_LIST) }
     var activeBottomModal by remember { mutableStateOf<String?>(null) }
@@ -289,7 +291,9 @@ fun MeToolkitScreen(
                     // SAVED 3D FLUFFY PUPPY & TEDDY BEAR MASCOT STUDIO SHOWCASE (IN ME SECTION)
                     // =====================================================================
                     item {
-                        val fluffyMascots = remember { CompanionBreed.FLUFFY_CASSETTE_MASCOTS }
+                        val studioMascots = remember {
+                            CompanionBreed.FEATURED_STUDIO_ANIMALS + CompanionBreed.FLUFFY_CASSETTE_MASCOTS
+                        }
                         LiquidGlassBox(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -323,7 +327,7 @@ fun MeToolkitScreen(
                                         ) {
                                             val activeBreed = CompanionBreed.entries.find {
                                                 it.displayName == selectedCompanionName || it.name == selectedCompanionName
-                                            } ?: CompanionBreed.HONEY_BEAT_TEDDY
+                                            } ?: CompanionBreed.GOLDEN_LION_DJ
                                             FluffyMascot3DStudioPortrait(
                                                 breed = activeBreed,
                                                 showStudioBackdrop = false,
@@ -334,7 +338,7 @@ fun MeToolkitScreen(
                                         Spacer(modifier = Modifier.width(10.dp))
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = if (isHindi) "3D पपी और टेडी मैस्कॉट (Saved)" else "3D Puppy & Teddy Mascots (Saved)",
+                                                text = if (isHindi) "3D शेर, पपी और टेडी मैस्कॉट" else "3D Lion, Pets & Teddy Mascots",
                                                 color = Color.White,
                                                 fontWeight = FontWeight.Black,
                                                 fontSize = 13.5.sp,
@@ -365,13 +369,49 @@ fun MeToolkitScreen(
                                     }
                                 }
 
+                                // Mascot Resizable Control (Small, Medium, Large, Extra Large)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (isHindi) "आकार:" else "Size:",
+                                        color = Color.White.copy(alpha = 0.78f),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                    listOf(
+                                        64 to (if (isHindi) "छोटा (64dp)" else "S (64dp)"),
+                                        88 to (if (isHindi) "मध्यम (88dp)" else "M (88dp)"),
+                                        110 to (if (isHindi) "बड़ा (110dp)" else "L (110dp)"),
+                                        132 to (if (isHindi) "विशाल (132dp)" else "XL (132dp)")
+                                    ).forEach { (size, label) ->
+                                        val isSelectedSize = companionSizeDp == size
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(if (isSelectedSize) Color(0xFFFF80AB) else Color.White.copy(alpha = 0.12f))
+                                                .clickable { viewModel.setCompanionSize(size) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                color = if (isSelectedSize) Color.Black else Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 10.5.sp
+                                            )
+                                        }
+                                    }
+                                }
+
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    fluffyMascots.forEach { breed ->
+                                    studioMascots.forEach { breed ->
                                         val isSavedActive = breed.displayName == selectedCompanionName || breed.name == selectedCompanionName
                                         LiquidGlassBox(
                                             modifier = Modifier
@@ -790,13 +830,52 @@ fun MeToolkitScreen(
             // =========================================================================
             MeSubScreen.COMPANION_GALLERY -> {
                 val breeds = CompanionBreed.entries
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 152.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 28.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Size Selector Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (isHindi) "मैस्कॉट आकार:" else "Mascot Size:",
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.5.sp
+                        )
+                        listOf(
+                            64 to (if (isHindi) "छोटा (64dp)" else "S (64dp)"),
+                            88 to (if (isHindi) "मध्यम (88dp)" else "M (88dp)"),
+                            110 to (if (isHindi) "बड़ा (110dp)" else "L (110dp)"),
+                            132 to (if (isHindi) "विशाल (132dp)" else "XL (132dp)")
+                        ).forEach { (size, label) ->
+                            val isSelectedSize = companionSizeDp == size
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isSelectedSize) Color(0xFFFF80AB) else Color.White.copy(alpha = 0.14f))
+                                    .clickable { viewModel.setCompanionSize(size) }
+                                    .padding(horizontal = 9.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (isSelectedSize) Color.Black else Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 152.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(bottom = 28.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
                     items(breeds.size) { index ->
                         val breed = breeds[index]
                         val isSelected = breed.displayName == selectedCompanionName || breed.name == selectedCompanionName
@@ -881,6 +960,7 @@ fun MeToolkitScreen(
                     }
                 }
             }
+        }
 
             // =========================================================================
             // SUB-SCREEN: 56 GLOBAL LANGUAGES PICKER

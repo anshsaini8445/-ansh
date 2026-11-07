@@ -15,7 +15,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [33])
 class ExampleRobolectricTest {
 
     @get:Rule
@@ -36,7 +36,6 @@ class ExampleRobolectricTest {
         assertTrue(fluffyMascots.any { !it.isTeddyBear && it.cassetteLabel == "SKY PUPPY" })
         assertEquals(10, fluffyMascots.map { it.cassetteLabel }.distinct().size)
 
-        composeTestRule.mainClock.advanceTimeBy(1600L)
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("nav_tab_me").performClick()
         composeTestRule.waitForIdle()
