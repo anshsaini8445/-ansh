@@ -2,10 +2,12 @@ package com.example.ui.screens
 
 import android.app.Activity
 import android.content.res.Configuration
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -23,6 +25,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -49,6 +52,8 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.helpers.PermanentDeleteHelper
+import com.example.helpers.ScenicBackdropPresets
+import com.example.helpers.WifiDirectTransferEngine
 import com.example.helpers.timedMediaTouchHold
 import com.example.ui.components.GuaranteedAlbumArt
 import com.example.ui.components.LiquidGlassBox
@@ -56,6 +61,7 @@ import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+import java.util.Locale
 
 private enum class AudioSubTab {
     ALL, NEW, VIDEOS, PLAYLIST, FOLDERS
@@ -90,10 +96,41 @@ fun AudioLibraryScreen(
     val isPlaying by viewModel.isPlaying.collectAsState()
     val audioSortOrder by viewModel.audioSortOrder.collectAsState()
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
+    val activeTheme by viewModel.activeTheme.collectAsState()
+    val scenicBackdropPreset by viewModel.scenicBackdropPreset.collectAsState()
+    val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
 
     val isHindi = remember(selectedLanguage) {
-        selectedLanguage.contains("Hindi", ignoreCase = true) ||
-            selectedLanguage.contains("हिन्दी")
+        com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
+    }
+
+    var headerClockText by remember { mutableStateOf("") }
+    var headerBatteryPct by remember { mutableIntStateOf(100) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                val sdf = java.text.SimpleDateFormat("hh:mm a", Locale.getDefault())
+                headerClockText = sdf.format(java.util.Date())
+                val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                val cap = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+                if (cap in 1..100) headerBatteryPct = cap
+            } catch (_: Exception) {
+            }
+            kotlinx.coroutines.delay(10_000L)
+        }
+    }
+
+    val galleryWallpaperLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.saveCustomGalleryWallpaperFromUri(uri)
+            Toast.makeText(
+                context,
+                if (isHindi) "✨ आपकी फोटो हर स्क्रीन पर स्थायी रूप से सेट हो गई!" else "✨ Your Gallery Photo is set permanently across all screens!",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     val configuration = LocalConfiguration.current
@@ -107,14 +144,18 @@ fun AudioLibraryScreen(
     var viewingFavoritesPlaylist by remember { mutableStateOf(false) }
 
     var showSortDialog by remember { mutableStateOf(false) }
+    var showThemeStudioDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
     var sevenMenuTargetItem by remember { mutableStateOf<MediaItem?>(null) }
 
-    // Multi-select state for batch permanent delete (1 to 1000+ songs at once)
+    // Multi-select state for 2-second hold selection + bottom 4-action dock
     var multiSelectMode by remember { mutableStateOf(false) }
     val selectedTrackIds = remember { mutableStateListOf<String>() }
     var pendingBatchDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var showBatchDetailsDialog by remember { mutableStateOf(false) }
+    var showBatchMoreDialog by remember { mutableStateOf(false) }
+    var showBatchPlaylistPickerDialog by remember { mutableStateOf(false) }
 
     val batchDeleteLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
@@ -259,36 +300,114 @@ fun AudioLibraryScreen(
             }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 1. Prominent 1.5x Enlarged Top Header Bar — App Icon (44.dp) + "Hybrid Player" (27.sp), adaptive in Split-Screen
+            // 1. Prominent Top Header Bar — App Icon + "Hybrid Player" + Live Time & Battery + Gallery Photo & Scenic Theme Picker
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (isCompactSplit) 44.dp else 62.dp)
-                    .padding(horizontal = if (isTablet) 22.dp else 16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .height(if (isCompactSplit) 48.dp else 64.dp)
+                    .padding(horizontal = if (isTablet) 22.dp else 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_app_custom_logo),
-                    contentDescription = "Hybrid Player",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(if (isCompactSplit) 34.dp else 44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .border(
-                            1.5.dp,
-                            Brush.linearGradient(listOf(HybridEmerald, HybridCyan)),
-                            RoundedCornerShape(12.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                        contentDescription = "Hybrid Player",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(if (isCompactSplit) 34.dp else 42.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(
+                                1.5.dp,
+                                Brush.linearGradient(listOf(HybridEmerald, HybridCyan)),
+                                RoundedCornerShape(12.dp)
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
+                            color = Color.White,
+                            fontWeight = FontWeight.Black,
+                            fontSize = if (isCompactSplit) 19.sp else 22.sp,
+                            letterSpacing = 0.2.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = if (isCompactSplit) 21.sp else 27.sp,
-                    letterSpacing = 0.3.sp
-                )
+                        if (headerClockText.isNotEmpty() && !isCompactSplit) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Color(0xCC0D1829))
+                                    .border(1.dp, HybridCyan.copy(alpha = 0.45f), RoundedCornerShape(50))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "🕒 $headerClockText • 🔋 $headerBatteryPct%",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Quick Gallery Photo Wallpaper & Scenic Theme Picker right in Audio Section Header!
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            galleryWallpaperLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (customWallpaperUri != null) HybridEmerald.copy(alpha = 0.24f)
+                                else HybridCardBg
+                            )
+                            .border(
+                                1.dp,
+                                if (customWallpaperUri != null) HybridEmerald else HybridCardBorder,
+                                CircleShape
+                            )
+                            .testTag("audio_header_gallery_wallpaper_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Wallpaper,
+                            contentDescription = if (isHindi) "गैलरी से फोटो लगाएं" else "Set Gallery Photo Wallpaper",
+                            tint = if (customWallpaperUri != null) HybridEmerald else Color.White,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showThemeStudioDialog = true },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(HybridCardBg)
+                            .border(1.dp, HybridCardBorder, CircleShape)
+                            .testTag("audio_header_theme_studio_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Palette,
+                            contentDescription = if (isHindi) "थीम बदलें" else "Change Theme",
+                            tint = HybridCyan,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
             }
 
             // Multi-Select Action Bar (Select All + Permanent Batch Delete for 1 to 1000+ songs)
@@ -734,116 +853,630 @@ fun AudioLibraryScreen(
             }
         }
 
-        // 4. Floating Mini Now-Playing Dock Bar — Sits cleanly at bottom = 8.dp right above the Scaffold Nav Bar!
-        val activeTrack = nowPlaying ?: sortedMusicItems.firstOrNull()
-        if (activeTrack != null) {
-            Box(
+        // 4. Bottom Multi-Select 4-Action Dock (Hybrid Share, Delete, Details, 3-Dot More) OR Floating Mini Now-Playing Dock
+        val selectedMediaObjects = remember(selectedTrackIds.toList(), musicItems, videoItems) {
+            val pool = (musicItems + videoItems).distinctBy { it.id }
+            pool.filter { it.id in selectedTrackIds }
+        }
+
+        if (multiSelectMode && selectedMediaObjects.isNotEmpty()) {
+            Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = if (isTablet) 24.dp else 12.dp)
-                    .padding(bottom = 8.dp)
                     .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = Color(0xF50B1220),
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, HybridEmerald.copy(alpha = 0.70f)),
+                shadowElevation = 18.dp
             ) {
-                LiquidGlassBox(
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("open_full_music_player_bar"),
-                    cornerRadius = 22.dp,
-                    tintColor = HybridEmerald,
-                    glassAlpha = 0.34f,
-                    onClick = onOpenFullMusicPlayer
+                        .padding(vertical = 10.dp, horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
+                    // 1. Hybrid Share
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                val first = selectedMediaObjects.firstOrNull()
+                                if (selectedMediaObjects.size == 1 && first != null) {
+                                    onOpenHybridShareForItem(first)
+                                } else {
+                                    WifiDirectTransferEngine.shareRealFilesViaSystem(context, selectedMediaObjects)
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .testTag("audio_multiselect_action_hybrid_share")
+                    ) {
+                        Icon(Icons.Default.WifiTethering, contentDescription = "Hybrid Share", tint = HybridEmerald, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(if (isHindi) "हाइब्रिड शेयर" else "Hybrid Share", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // 2. Delete
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                executeBatchPermanentDelete(selectedMediaObjects)
+                            }
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .testTag("audio_multiselect_action_delete")
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFFF5252), modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(if (isHindi) "हटाएं" else "Delete", color = Color(0xFFFF5252), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // 3. Details
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { showBatchDetailsDialog = true }
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .testTag("audio_multiselect_action_details")
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = "Details", tint = HybridCyan, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(if (isHindi) "विवरण" else "Details", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // 4. 3-Dot More Menu
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { showBatchMoreDialog = true }
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .testTag("audio_multiselect_action_more")
+                    ) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = HybridGold, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(if (isHindi) "और विकल्प" else "More", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        } else {
+            val activeTrack = nowPlaying ?: sortedMusicItems.firstOrNull()
+            if (activeTrack != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = if (isTablet) 24.dp else 12.dp)
+                        .padding(bottom = 8.dp)
+                        .fillMaxWidth()
+                ) {
+                    LiquidGlassBox(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .testTag("open_full_music_player_bar"),
+                        cornerRadius = 22.dp,
+                        tintColor = HybridEmerald,
+                        glassAlpha = 0.34f,
+                        onClick = onOpenFullMusicPlayer
                     ) {
-                        GuaranteedAlbumArt(
-                            mediaPath = activeTrack.path,
-                            title = activeTrack.cleanTitle,
-                            isVideo = activeTrack.isVideo,
-                            modifier = Modifier.size(44.dp),
-                            cornerRadius = 12.dp,
-                            accentColor = HybridEmerald
-                        )
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = activeTrack.cleanTitle,
-                                color = Color.White,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${activeTrack.artist.ifBlank { if (activeTrack.isVideo) "Video Song" else "Local Artist" }} • ${activeTrack.format}",
-                                color = HybridEmerald,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { viewModel.playPrevious() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.SkipPrevious,
-                                contentDescription = "Previous",
-                                tint = Color.White
-                            )
-                        }
-
-                        IconButton(
-                            onClick = {
-                                if (nowPlaying == null) {
-                                    viewModel.playMusic(activeTrack)
-                                } else {
-                                    viewModel.togglePlayPause()
-                                }
-                            },
+                        Row(
                             modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(HybridEmerald)
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "Play/Pause",
-                                tint = Color.Black
+                            GuaranteedAlbumArt(
+                                mediaPath = activeTrack.path,
+                                title = activeTrack.cleanTitle,
+                                isVideo = activeTrack.isVideo,
+                                modifier = Modifier.size(44.dp),
+                                cornerRadius = 12.dp,
+                                accentColor = HybridEmerald
                             )
-                        }
 
-                        IconButton(
-                            onClick = { viewModel.playNext() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.SkipNext,
-                                contentDescription = "Next",
-                                tint = Color.White
-                            )
-                        }
+                            Spacer(modifier = Modifier.width(10.dp))
 
-                        IconButton(
-                            onClick = { sevenMenuTargetItem = activeTrack },
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.MoreVert,
-                                contentDescription = "More",
-                                tint = HybridTextSecondary
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = activeTrack.cleanTitle,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${activeTrack.artist.ifBlank { if (activeTrack.isVideo) "Video Song" else "Local Artist" }} • ${activeTrack.format}",
+                                    color = HybridEmerald,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.playPrevious() },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.SkipPrevious,
+                                    contentDescription = "Previous",
+                                    tint = Color.White
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    if (nowPlaying == null) {
+                                        viewModel.playMusic(activeTrack)
+                                    } else {
+                                        viewModel.togglePlayPause()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(HybridEmerald)
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = "Play/Pause",
+                                    tint = Color.Black
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.playNext() },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.SkipNext,
+                                    contentDescription = "Next",
+                                    tint = Color.White
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { sevenMenuTargetItem = activeTrack },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = "More",
+                                    tint = HybridTextSecondary
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    val selectedBatchItems = remember(selectedTrackIds.toList(), musicItems, videoItems) {
+        val pool = (musicItems + videoItems).distinctBy { it.id }
+        pool.filter { it.id in selectedTrackIds }
+    }
+
+    if (showBatchDetailsDialog && selectedBatchItems.isNotEmpty()) {
+        val totalBytes = selectedBatchItems.sumOf { it.size }
+        val totalDurationMs = selectedBatchItems.sumOf { it.duration }
+        val totalMb = String.format(Locale.US, "%.2f MB", totalBytes / (1024.0 * 1024.0))
+        val totalMins = (totalDurationMs / 60_000L)
+        val single = selectedBatchItems.singleOrNull()
+        AlertDialog(
+            onDismissRequest = { showBatchDetailsDialog = false },
+            containerColor = Color(0xFF0E1626),
+            title = {
+                Text(
+                    text = if (single != null) (if (isHindi) "गाने का विवरण" else "Song Details")
+                    else (if (isHindi) "${selectedBatchItems.size} गानों का विवरण" else "${selectedBatchItems.size} Songs Details"),
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (single != null) {
+                        Text("🎵 ${single.cleanTitle}", color = HybridEmerald, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("🎤 ${if (isHindi) "कलाकार" else "Artist"}: ${single.artist.ifBlank { "Local Artist" }}", color = Color.White, fontSize = 12.sp)
+                        Text("📁 ${if (isHindi) "फ़ोल्डर" else "Folder"}: ${single.folderName}", color = Color.White, fontSize = 12.sp)
+                        Text("⏱️ ${if (isHindi) "अवधि" else "Duration"}: ${single.formattedDuration} • ${single.format}", color = Color.White, fontSize = 12.sp)
+                        Text("💾 ${if (isHindi) "आकार" else "Size"}: ${single.formattedSize}", color = Color.White, fontSize = 12.sp)
+                        Text("📍 ${single.path}", color = HybridTextSecondary, fontSize = 11.sp)
+                    } else {
+                        Text("🎵 ${if (isHindi) "कुल चुने गए गाने" else "Selected Songs"}: ${selectedBatchItems.size}", color = HybridEmerald, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("💾 ${if (isHindi) "कुल आकार" else "Total Size"}: $totalMb", color = Color.White, fontSize = 13.sp)
+                        Text("⏱️ ${if (isHindi) "कुल समय" else "Total Duration"}: $totalMins min", color = Color.White, fontSize = 13.sp)
+                        Text("📁 ${if (isHindi) "फ़ोल्डर" else "Folders"}: ${selectedBatchItems.map { it.folderName }.distinct().joinToString(", ")}", color = HybridTextSecondary, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBatchDetailsDialog = false }) {
+                    Text(if (isHindi) "ठीक है" else "OK", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    if (showBatchMoreDialog && selectedBatchItems.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showBatchMoreDialog = false },
+            containerColor = Color(0xFF0E1626),
+            title = {
+                Text(
+                    text = if (isHindi) "अतिरिक्त विकल्प (${selectedBatchItems.size} चुने गए)" else "More Actions (${selectedBatchItems.size} Selected)",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 17.sp
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // 1. Play Selected
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = HybridEmerald,
+                        glassAlpha = 0.22f,
+                        onClick = {
+                            selectedBatchItems.firstOrNull()?.let { first ->
+                                viewModel.playMusic(first)
+                                showBatchMoreDialog = false
+                                multiSelectMode = false
+                                selectedTrackIds.clear()
+                                onOpenFullMusicPlayer()
+                            }
+                        }
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.PlayCircle, contentDescription = null, tint = HybridEmerald)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(if (isHindi) "चुने गए गाने चलाएं (Play Now)" else "Play Selected Songs Now", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+
+                    // 2. Add to Favourites
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = Color(0xFFFF4081),
+                        glassAlpha = 0.20f,
+                        onClick = {
+                            selectedBatchItems.forEach { viewModel.toggleFavorite(it) }
+                            Toast.makeText(context, if (isHindi) "❤️ पसंदीदा में जोड़े गए!" else "❤️ Updated Favourites!", Toast.LENGTH_SHORT).show()
+                            showBatchMoreDialog = false
+                            multiSelectMode = false
+                            selectedTrackIds.clear()
+                        }
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Favorite, contentDescription = null, tint = Color(0xFFFF4081))
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(if (isHindi) "पसंदीदा (Favourite) में जोड़ें" else "Add to Favourites", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+
+                    // 3. Add to Playlist
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = HybridCyan,
+                        glassAlpha = 0.20f,
+                        onClick = {
+                            showBatchMoreDialog = false
+                            showBatchPlaylistPickerDialog = true
+                        }
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = HybridCyan)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(if (isHindi) "प्लेलिस्ट में जोड़ें (Add to Playlist)" else "Add to Playlist", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+
+                    // 4. Lock in Private Vault
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = HybridGold,
+                        glassAlpha = 0.20f,
+                        onClick = {
+                            selectedBatchItems.forEach { viewModel.toggleVaultLock(it) }
+                            Toast.makeText(context, if (isHindi) "🔒 प्राइवेट वॉल्ट में सुरक्षित किए गए!" else "🔒 Locked in Private Vault!", Toast.LENGTH_SHORT).show()
+                            showBatchMoreDialog = false
+                            multiSelectMode = false
+                            selectedTrackIds.clear()
+                        }
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = HybridGold)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(if (isHindi) "प्राइवेट वॉल्ट में छुपाएं (Lock in Vault)" else "Lock in Private Vault", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+
+                    // 5. System Share
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = HybridPurple,
+                        glassAlpha = 0.20f,
+                        onClick = {
+                            WifiDirectTransferEngine.shareRealFilesViaSystem(context, selectedBatchItems)
+                            showBatchMoreDialog = false
+                        }
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Share, contentDescription = null, tint = HybridPurple)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(if (isHindi) "अन्य ऐप्स पर शेयर करें (System Share)" else "Share via Other Apps", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+
+                    // 6. Full 7-Action Menu / Rename (when 1 track selected)
+                    if (selectedBatchItems.size == 1) {
+                        LiquidGlassBox(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 14.dp,
+                            tintColor = HybridEmerald,
+                            glassAlpha = 0.20f,
+                            onClick = {
+                                sevenMenuTargetItem = selectedBatchItems.first()
+                                showBatchMoreDialog = false
+                            }
+                        ) {
+                            Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.DriveFileRenameOutline, contentDescription = null, tint = HybridEmerald)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(if (isHindi) "नाम बदलें और 7-एक्शन मेनू" else "Rename & Full 7-Action Menu", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                        }
+                    }
+
+                    // 7. Move to Recycle Bin
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = HybridCoralRed,
+                        glassAlpha = 0.20f,
+                        onClick = {
+                            viewModel.moveBatchToRecycleBin(selectedBatchItems)
+                            Toast.makeText(context, if (isHindi) "रीसायकल बिन में भेजे गए" else "Moved to Recycle Bin", Toast.LENGTH_SHORT).show()
+                            showBatchMoreDialog = false
+                            multiSelectMode = false
+                            selectedTrackIds.clear()
+                        }
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = HybridCoralRed)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(if (isHindi) "रीसायकल बिन में भेजें" else "Move to Recycle Bin", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBatchMoreDialog = false }) {
+                    Text(if (isHindi) "बंद करें" else "Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    if (showBatchPlaylistPickerDialog && selectedBatchItems.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showBatchPlaylistPickerDialog = false },
+            containerColor = Color(0xFF0E1626),
+            title = {
+                Text(
+                    text = if (isHindi) "प्लेलिस्ट चुनें" else "Select Playlist",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (playlists.isEmpty()) {
+                        Text(
+                            text = if (isHindi) "कोई प्लेलिस्ट नहीं है। नीचे नई बनाएं:" else "No playlists yet. Create one:",
+                            color = HybridTextSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+                    playlists.forEach { pl ->
+                        LiquidGlassBox(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 12.dp,
+                            tintColor = HybridCyan,
+                            glassAlpha = 0.22f,
+                            onClick = {
+                                selectedBatchItems.forEach { item ->
+                                    viewModel.addToPlaylist(pl.id, item.id)
+                                }
+                                Toast.makeText(context, "Added to ${pl.name}", Toast.LENGTH_SHORT).show()
+                                showBatchPlaylistPickerDialog = false
+                                multiSelectMode = false
+                                selectedTrackIds.clear()
+                            }
+                        ) {
+                            Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = HybridCyan)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(pl.name, color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            showBatchPlaylistPickerDialog = false
+                            showCreatePlaylistDialog = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (isHindi) "+ नई प्लेलिस्ट बनाएं" else "+ Create New Playlist", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBatchPlaylistPickerDialog = false }) {
+                    Text(if (isHindi) "बंद करें" else "Close", color = HybridEmerald)
+                }
+            }
+        )
+    }
+
+    if (showThemeStudioDialog) {
+        val colorThemes = listOf(
+            "Hybrid Emerald" to HybridEmerald,
+            "Cyberpunk Neon" to Color(0xFFFF2A85),
+            "Gold Studio" to HybridGold,
+            "Ocean Blue" to HybridCyan,
+            "Royal Purple" to HybridPurple,
+            "Crimson Red" to HybridCoralRed
+        )
+        AlertDialog(
+            onDismissRequest = { showThemeStudioDialog = false },
+            containerColor = Color(0xFF0E1626),
+            title = {
+                Text(
+                    text = if (isHindi) "🎨 गैलरी फोटो और सीनिक थीम स्टूडियो" else "🎨 Gallery Wallpaper & Scenic Theme Studio",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // 1. Custom Gallery Photo Picker Button
+                    Button(
+                        onClick = {
+                            showThemeStudioDialog = false
+                            galleryWallpaperLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Wallpaper, contentDescription = null, tint = Color.Black)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            if (isHindi) "गैलरी से अपनी फोटो लगाएं (हर जगह)" else "Pick Photo from Gallery (All Screens)",
+                            color = Color.Black,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    if (customWallpaperUri != null) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.setCustomWallpaper(null)
+                                Toast.makeText(context, if (isHindi) "डिफ़ॉल्ट सीनिक थीम लागू की गई" else "Restored Scenic Picture Theme", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (isHindi) "गैलरी फोटो हटाएं (डिफ़ॉल्ट पिक्चर थीम दिखाएं)" else "Clear Gallery Photo (Use Scenic Theme)", color = HybridCoralRed, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+
+                    Text(
+                        text = if (isHindi) "🌌 डिफ़ॉल्ट सीनिक पिक्चर बैकग्राउंड (Scenic Themes)" else "🌌 System Default Scenic Picture Backdrops",
+                        color = HybridCyan,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp
+                    )
+                    ScenicBackdropPresets.PRESETS.forEach { preset ->
+                        val isSelected = scenicBackdropPreset == preset.name && customWallpaperUri == null
+                        LiquidGlassBox(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 14.dp,
+                            tintColor = preset.primaryGlow,
+                            glassAlpha = if (isSelected) 0.34f else 0.16f,
+                            isActive = isSelected,
+                            onClick = {
+                                viewModel.setCustomWallpaper(null)
+                                viewModel.selectScenicBackdropPreset(preset.name)
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .background(Brush.linearGradient(listOf(preset.primaryGlow, preset.secondaryGlow)))
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = if (isHindi) preset.titleHi else preset.name,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                if (isSelected) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = preset.primaryGlow, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = if (isHindi) "✨ ऐप कलर एक्सेंट थीम" else "✨ App Accent Color Themes",
+                        color = HybridGold,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp
+                    )
+                    colorThemes.forEach { (tName, tColor) ->
+                        val active = activeTheme == tName
+                        LiquidGlassBox(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 12.dp,
+                            tintColor = tColor,
+                            glassAlpha = if (active) 0.32f else 0.14f,
+                            onClick = { viewModel.selectTheme(tName) }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(tName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                if (active) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = tColor, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showThemeStudioDialog = false }) {
+                    Text(if (isHindi) "पूर्ण" else "Done", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
     }
 
     if (showCreatePlaylistDialog) {
@@ -1136,7 +1769,10 @@ private fun CleanAudioTrackRow(
             .fillMaxWidth()
             .timedMediaTouchHold(
                 onClick = onPlay,
-                onHold2sPlay = onPlay,
+                onHold2sPlay = {
+                    // 2-Second Hold selects the song and activates Multi-Select Mode!
+                    onLongClick()
+                },
                 onHold4sMenu = {
                     onLongClick()
                     onOpenMenu()

@@ -67,8 +67,7 @@ fun SmartSearchScreen(
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
 
     val isHindi = remember(selectedLanguage) {
-        selectedLanguage.contains("Hindi", ignoreCase = true) ||
-            selectedLanguage.contains("हिन्दी")
+        com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
     }
 
     val configuration = LocalConfiguration.current

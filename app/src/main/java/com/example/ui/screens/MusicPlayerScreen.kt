@@ -17,12 +17,15 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.TrendingFlat
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -33,10 +36,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -47,17 +52,21 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.data.model.MediaItem
+import com.example.helpers.GlobalScenicThemeBackdrop
 import com.example.helpers.Music3DAnimatedBackdrop
 import com.example.helpers.Music3DThemeEngine
 import com.example.helpers.Music3DThemeSpec
 import com.example.helpers.SyncedLyricLine
 import com.example.helpers.SyncedLyricsEngine
+import com.example.helpers.VerticalVolumeBrightnessPillHud
 import com.example.helpers.WifiDirectTransferEngine
 import com.example.ui.components.*
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -107,6 +116,14 @@ fun MusicPlayerScreen(
     val isShuffleMode by viewModel.isShuffleMode.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
     val sleepTimerMinutes by viewModel.sleepTimerMinutes.collectAsState()
+    val sleepTimerRemainingMs by viewModel.sleepTimerRemainingMs.collectAsState()
+    val djCrossfadeEnabled by viewModel.djCrossfadeEnabled.collectAsState()
+    val isDjCrossfadingNow by viewModel.isDjCrossfadingNow.collectAsState()
+    val audioBalanceMode by viewModel.audioBalanceMode.collectAsState()
+    val bassBoostEnabled by viewModel.bassBoostEnabled.collectAsState()
+    val equalizerPreset by viewModel.equalizerPreset.collectAsState()
+    val scenicBackdropPreset by viewModel.scenicBackdropPreset.collectAsState()
+    val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
     val abPointAMs by viewModel.abPointAMs.collectAsState()
     val abPointBMs by viewModel.abPointBMs.collectAsState()
     val syncedLyrics by viewModel.syncedLyrics.collectAsState()
@@ -165,6 +182,9 @@ fun MusicPlayerScreen(
     var showEditLyricsDialog by remember { mutableStateOf(false) }
     var showFileActionDialog by remember { mutableStateOf(false) }
 
+    // 7-Heart Burst Animation Trigger (6-7 hearts rising and fading out within 2 seconds)
+    var heartBurstTrigger by remember { mutableIntStateOf(0) }
+
     var showVolumeHud by remember { mutableStateOf(false) }
     var lastVolumeTouchTimestamp by remember { mutableLongStateOf(0L) }
     var dragStartVolume by remember { mutableIntStateOf(audioVolumePercent) }
@@ -172,7 +192,7 @@ fun MusicPlayerScreen(
 
     LaunchedEffect(lastVolumeTouchTimestamp) {
         if (lastVolumeTouchTimestamp > 0L) {
-            kotlinx.coroutines.delay(1300L)
+            kotlinx.coroutines.delay(1400L)
             showVolumeHud = false
         }
     }
@@ -204,8 +224,8 @@ fun MusicPlayerScreen(
                         )
                     } else {
                         listOf(
-                            Color(0xFF0A1412),
-                            Color(0xFF060B0E),
+                            Color(0xFF0A1418),
+                            Color(0xFF060B12),
                             Color(0xFF04060B)
                         )
                     }
@@ -230,7 +250,7 @@ fun MusicPlayerScreen(
             .pointerInput(Unit) {
                 detectVerticalDragGestures(
                     onDragStart = { offset ->
-                        if (offset.x >= size.width * 0.5f) {
+                        if (offset.x >= size.width * 0.45f) {
                             dragStartVolume = viewModel.syncSystemAudioVolumeFromHardware()
                             dragAccumulatedDy = 0f
                             showVolumeHud = true
@@ -243,7 +263,8 @@ fun MusicPlayerScreen(
                         if (!dragAccumulatedDy.isNaN()) {
                             change.consume()
                             dragAccumulatedDy += dragAmount
-                            val maxDragPx = (size.height * 0.55f).coerceAtLeast(220f)
+                            // Smooth, gradual volume swipe ("slowly-slowly badhe aur ghate" 1% by 1%)
+                            val maxDragPx = (size.height * 1.45f).coerceAtLeast(520f)
                             val deltaPct = ((-dragAccumulatedDy / maxDragPx) * 200f).toInt()
                             viewModel.setAudioVolumeWithBoost((dragStartVolume + deltaPct).coerceIn(0, 200))
                             showVolumeHud = true
@@ -253,7 +274,8 @@ fun MusicPlayerScreen(
                 )
             }
     ) {
-        // Optional 3D Animated Backdrop ONLY when 3D Visualizer is enabled in 3-Dot Menu
+        // 1. When 3D Visualizer is ON, render the 15-theme 3D Animated Visualizer Backdrop;
+        //    When OFF, render the user's Scenic Theme / Custom Gallery Wallpaper with zero 3D CPU overhead!
         if (visualizer3DEnabled) {
             Music3DAnimatedBackdrop(
                 themeSpec = themeSpec,
@@ -261,6 +283,21 @@ fun MusicPlayerScreen(
                 frequencies = frequencies,
                 modifier = Modifier.fillMaxSize()
             )
+        } else {
+            GlobalScenicThemeBackdrop(
+                presetName = scenicBackdropPreset,
+                accentColor = accentColor,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (customWallpaperUri != null) {
+                AsyncImage(
+                    model = customWallpaperUri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    alpha = 0.42f,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         Column(
@@ -409,8 +446,8 @@ fun MusicPlayerScreen(
                         currentTrack?.folderName?.takeIf { it.isNotBlank() }?.let {
                             append(" • $it")
                         }
-                        if (sleepTimerMinutes > 0) {
-                            append(" • ⏱️ ${sleepTimerMinutes}m")
+                        currentTrack?.format?.takeIf { it.isNotBlank() }?.let {
+                            append(" • $it")
                         }
                         if (abPointAMs != null) {
                             append(" • A-B")
@@ -423,77 +460,144 @@ fun MusicPlayerScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+
+                    // Live Millisecond / Tenth-Second Sleep Timer Pill OR 5s DJ Crossfade Pill
+                    if (sleepTimerRemainingMs > 0L || isDjCrossfadingNow) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (sleepTimerRemainingMs > 0L) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color(0x33FFD54F))
+                                        .border(1.dp, HybridGold, RoundedCornerShape(50))
+                                        .clickable { showSleepTimerSheet = true }
+                                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = "⏱️ ${formatLiveSleepTimerMs(sleepTimerRemainingMs)}",
+                                        color = HybridGold,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            if (isDjCrossfadingNow) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color(0x3300E5FF))
+                                        .border(1.dp, HybridCyan, RoundedCornerShape(50))
+                                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = if (isHindi) "🎧 5s DJ क्रॉसफ़ेड मिक्स..." else "🎧 5s DJ Crossfade Mix...",
+                                        color = HybridCyan,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // 5 Thumb-Friendly Middle Action Orbs (Right above Seekbar):
-                // 1. Favourite (❤️) | 2. Equalizer (🎚️) | 3. Sleep Timer (⏱️) | 4. 2x Shake (📳) | 5. 3-Dot Menu (⋮)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // 1. Favourite (❤️)
-                    LiquidGlassIconOrb(
-                        icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Favourite",
-                        tintColor = if (isFavorite) Color(0xFFFF4081) else Color.White,
-                        size = 46.dp,
-                        iconSize = 21.dp,
-                        isActive = isFavorite,
-                        testTag = "music_fav_btn",
-                        onClick = {
-                            currentTrack?.let {
-                                viewModel.toggleFavorite(it)
-                                Toast.makeText(
-                                    context,
-                                    if (!isFavorite) {
-                                        if (isHindi) "पसंदीदा में सेव किया गया ❤️" else "Saved to Favourites ❤️"
-                                    } else {
-                                        if (isHindi) "पसंदीदा से हटाया गया" else "Removed from Favourites"
-                                    },
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                // 1. Favourite (❤️ + 7-Heart Burst) | 2. Equalizer (🎚️) | 3. Sleep Timer (⏱️ Live Countdown) | 4. 2x Shake (📳) | 5. 3-Dot Menu (⋮)
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // 1. Favourite (❤️) with 7-Heart 2-Second Burst Animation
+                        Box(contentAlignment = Alignment.Center) {
+                            LiquidGlassIconOrb(
+                                icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Favourite",
+                                tintColor = if (isFavorite) Color(0xFFFF4081) else Color.White,
+                                size = 46.dp,
+                                iconSize = 21.dp,
+                                isActive = isFavorite,
+                                testTag = "music_fav_btn",
+                                onClick = {
+                                    heartBurstTrigger++
+                                    currentTrack?.let {
+                                        viewModel.toggleFavorite(it)
+                                        Toast.makeText(
+                                            context,
+                                            if (!isFavorite) {
+                                                if (isHindi) "पसंदीदा में सेव किया गया ❤️" else "Saved to Favourites ❤️"
+                                            } else {
+                                                if (isHindi) "पसंदीदा से हटाया गया" else "Removed from Favourites"
+                                            },
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            )
+                            SevenHeartBurstEffect(trigger = heartBurstTrigger)
+                        }
+
+                        // 2. Colorful Equalizer Orb (🎚️)
+                        ColorfulEqualizerOrb(
+                            onClick = onOpenEqualizer,
+                            size = 46.dp
+                        )
+
+                        // 3. Sleep Timer Orb (⏱️ — Live MM:SS.d Countdown)
+                        Box(contentAlignment = Alignment.TopEnd) {
+                            LiquidGlassIconOrb(
+                                icon = Icons.Default.Timer,
+                                contentDescription = "Sleep Timer",
+                                tintColor = if (sleepTimerRemainingMs > 0L) HybridGold else Color.White,
+                                size = 46.dp,
+                                iconSize = 21.dp,
+                                isActive = sleepTimerRemainingMs > 0L,
+                                testTag = "music_sleep_timer_btn",
+                                onClick = { showSleepTimerSheet = true }
+                            )
+                            if (sleepTimerRemainingMs > 0L) {
+                                Box(
+                                    modifier = Modifier
+                                        .offset(x = 6.dp, y = (-4).dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(HybridGold)
+                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        text = formatLiveSleepTimerMs(sleepTimerRemainingMs),
+                                        color = Color.Black,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 8.sp
+                                    )
+                                }
                             }
                         }
-                    )
 
-                    // 2. Colorful Equalizer Orb (🎚️)
-                    ColorfulEqualizerOrb(
-                        onClick = onOpenEqualizer,
-                        size = 46.dp
-                    )
+                        // 4. Single 2x Shake Vibration Orb (📳)
+                        DoubleShakeVibrationOrb(
+                            isEnabled = doubleShakeEnabled,
+                            onClick = { showShakeConfigSheet = true },
+                            size = 46.dp
+                        )
 
-                    // 3. Sleep Timer Orb (⏱️ — 5m, 10m, 20m, 45m, 60m + Custom Minutes)
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.Timer,
-                        contentDescription = "Sleep Timer",
-                        tintColor = if (sleepTimerMinutes > 0) HybridGold else Color.White,
-                        size = 46.dp,
-                        iconSize = 21.dp,
-                        isActive = sleepTimerMinutes > 0,
-                        testTag = "music_sleep_timer_btn",
-                        onClick = { showSleepTimerSheet = true }
-                    )
-
-                    // 4. Single 2x Shake Vibration Orb (📳 — Only here, removed from top!)
-                    DoubleShakeVibrationOrb(
-                        isEnabled = doubleShakeEnabled,
-                        onClick = { showShakeConfigSheet = true },
-                        size = 46.dp
-                    )
-
-                    // 5. 3-Dot Menu Orb (⋮ — Moved to bottom-right of middle row for easy thumb reach!)
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.MoreVert,
-                        contentDescription = "More Options",
-                        tintColor = Color.White,
-                        size = 46.dp,
-                        iconSize = 22.dp,
-                        testTag = "music_3dot_menu_btn",
-                        onClick = { showMoreOptionsSheet = true }
-                    )
+                        // 5. 3-Dot Menu Orb (⋮)
+                        LiquidGlassIconOrb(
+                            icon = Icons.Default.MoreVert,
+                            contentDescription = "More Options",
+                            tintColor = Color.White,
+                            size = 46.dp,
+                            iconSize = 22.dp,
+                            testTag = "music_3dot_menu_btn",
+                            onClick = { showMoreOptionsSheet = true }
+                        )
+                    }
                 }
 
                 // Precision Seekbar + Timestamps
@@ -527,37 +631,64 @@ fun MusicPlayerScreen(
                 }
 
                 // Bottom Transport Row:
-                // Left: Shuffle (🔀) | Center: Prev (⏮), Play/Pause (▶/⏸), Next (⏭) | Right: Repeat (🔁/🔂)
+                // Left: Shuffle (🔀) vs Straight Line-by-Line Order (➡️ 1→2) | Center: Prev, Play/Pause, Next | Right: Repeat
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Leftmost ("Ulte Haath"): Shuffle Toggle Button
-                    IconButton(
-                        onClick = {
-                            viewModel.toggleShuffleMode()
-                            val msg = if (!isShuffleMode) {
-                                if (isHindi) "शफ़ल चालू (बिना रिपीट के)" else "Shuffle ON (Non-Repeating)"
-                            } else {
-                                if (isHindi) "शफ़ल बंद" else "Shuffle OFF"
-                            }
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                        },
+                    // Leftmost ("Ulte Haath"): Distinct Shuffle vs Straight Line-by-Line Sequential Button
+                    Box(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isShuffleMode) HybridEmerald.copy(alpha = 0.22f) else Color.Transparent
+                                if (isShuffleMode) HybridEmerald.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.10f)
                             )
-                            .testTag("music_shuffle_btn")
+                            .border(
+                                1.2.dp,
+                                if (isShuffleMode) HybridEmerald else HybridCyan.copy(alpha = 0.55f),
+                                CircleShape
+                            )
+                            .clickable {
+                                viewModel.toggleShuffleMode()
+                                val msg = if (!isShuffleMode) {
+                                    if (isHindi) "🔀 रैंडम शफ़ल चालू (Shuffle Mode)" else "🔀 Shuffle Mode ON (Random)"
+                                } else {
+                                    if (isHindi) "➡️ सीधा क्रम चालू (1→2 Line-by-Line)" else "➡️ Straight Line-by-Line Order (1→2)"
+                                }
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            }
+                            .testTag("music_shuffle_btn"),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = if (isShuffleMode) HybridEmerald else Color.White,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        if (isShuffleMode) {
+                            Icon(
+                                imageVector = Icons.Default.Shuffle,
+                                contentDescription = "Shuffle ON",
+                                tint = HybridEmerald,
+                                modifier = Modifier.size(23.dp)
+                            )
+                        } else {
+                            // Straight Line-by-Line Sequential Icon + "1→2" Badge
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.TrendingFlat,
+                                    contentDescription = "Straight Line Order",
+                                    tint = HybridCyan,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = "1→2",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 8.sp
+                                )
+                            }
+                        }
                     }
 
                     // Previous Track
@@ -707,45 +838,23 @@ fun MusicPlayerScreen(
             }
         }
 
-        if (showVolumeHud) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 18.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xEB0B0F1A))
-                    .border(
-                        1.5.dp,
-                        if (audioVolumePercent > 100) Color(0xFFFF6D00) else HybridEmerald,
-                        RoundedCornerShape(18.dp)
-                    )
-                    .padding(horizontal = 14.dp, vertical = 12.dp)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = null,
-                        tint = if (audioVolumePercent > 100) Color(0xFFFF6D00) else HybridEmerald,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Text(
-                        text = "$audioVolumePercent%",
-                        color = Color.White,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 14.sp
-                    )
-                }
-            }
-        }
+        // Smooth Vertical Volume Pill HUD on Right Side
+        VerticalVolumeBrightnessPillHud(
+            visible = showVolumeHud,
+            isVolume = true,
+            percentValue = audioVolumePercent,
+            maxValue = 200,
+            accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else HybridEmerald,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 16.dp)
+        )
     }
 
-    // --- Sleep Timer Dialog (5m, 10m, 20m, 45m, 60m + Custom Minutes Input) ---
+    // --- Sleep Timer Dialog with Live Millisecond / Tenth-Second Countdown ---
     if (showSleepTimerSheet) {
         var customMinutesText by remember { mutableStateOf("") }
-        val presets = listOf(5, 10, 20, 45, 60)
+        val presets = listOf(5, 10, 15, 30, 45, 60)
 
         AlertDialog(
             onDismissRequest = { showSleepTimerSheet = false },
@@ -757,7 +866,7 @@ fun MusicPlayerScreen(
                 ) {
                     Icon(Icons.Default.Timer, contentDescription = null, tint = HybridGold)
                     Text(
-                        text = if (isHindi) "स्लीप टाइमर (Sleep Timer)" else "Sleep Timer",
+                        text = if (isHindi) "लाइव स्लीप टाइमर (Live Countdown)" else "Live Sleep Timer Countdown",
                         color = Color.White,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 17.sp
@@ -766,20 +875,47 @@ fun MusicPlayerScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = if (sleepTimerMinutes > 0) {
-                            if (isHindi) "सक्रिय टाइमर: $sleepTimerMinutes मिनट बाद गाना रुक जाएगा" else "Active: Music stops in $sleepTimerMinutes min"
-                        } else {
-                            if (isHindi) "समय चुनें या नीचे अपना समय लिखें:" else "Select a preset or enter custom minutes below:"
-                        },
-                        color = if (sleepTimerMinutes > 0) HybridGold else HybridTextSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    if (sleepTimerRemainingMs > 0L) {
+                        LiquidGlassBox(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 16.dp,
+                            tintColor = HybridGold,
+                            glassAlpha = 0.28f
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp, horizontal = 14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = if (isHindi) "लाइव उल्टी गिनती (मिनट : सेकंड : नैनो)" else "LIVE COUNTDOWN (MIN : SEC . TENTHS)",
+                                    color = HybridGold,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = formatLiveSleepTimerMs(sleepTimerRemainingMs),
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 28.sp,
+                                    letterSpacing = 1.2.sp
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = if (isHindi) "समय चुनें या नीचे अपना समय लिखें:" else "Select a preset or enter custom minutes below:",
+                            color = HybridTextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         presets.forEach { mins ->
                             val selected = sleepTimerMinutes == mins
@@ -799,10 +935,9 @@ fun MusicPlayerScreen(
                                         viewModel.setSleepTimer(mins)
                                         Toast.makeText(
                                             context,
-                                            if (isHindi) "स्लीप टाइमर: $mins मिनट सेट किया गया" else "Sleep Timer set for $mins minutes",
+                                            if (isHindi) "स्लीप टाइमर: $mins मिनट चालू!" else "Live Sleep Timer started: $mins min",
                                             Toast.LENGTH_SHORT
                                         ).show()
-                                        showSleepTimerSheet = false
                                     }
                                     .padding(vertical = 10.dp),
                                 contentAlignment = Alignment.Center
@@ -811,7 +946,7 @@ fun MusicPlayerScreen(
                                     text = "${mins}m",
                                     color = if (selected) HybridGold else Color.White,
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 13.sp
+                                    fontSize = 12.sp
                                 )
                             }
                         }
@@ -831,7 +966,7 @@ fun MusicPlayerScreen(
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             label = {
                                 Text(
-                                    text = if (isHindi) "कस्टम मिनट (जैसे 15, 30, 90)" else "Custom Minutes (e.g. 15, 30, 90)",
+                                    text = if (isHindi) "कस्टम मिनट (जैसे 9, 15, 30)" else "Custom Minutes (e.g. 9, 15, 30)",
                                     fontSize = 12.sp
                                 )
                             },
@@ -847,20 +982,19 @@ fun MusicPlayerScreen(
                                         if (isHindi) "स्लीप टाइमर: $mins मिनट सेट किया गया" else "Sleep Timer set for $mins minutes",
                                         Toast.LENGTH_SHORT
                                     ).show()
-                                    showSleepTimerSheet = false
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald)
                         ) {
                             Text(
-                                text = if (isHindi) "सेट" else "Set",
+                                text = if (isHindi) "शुरू" else "Start",
                                 color = Color.Black,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         }
                     }
 
-                    if (sleepTimerMinutes > 0) {
+                    if (sleepTimerRemainingMs > 0L) {
                         LiquidGlassBox(
                             modifier = Modifier.fillMaxWidth(),
                             cornerRadius = 12.dp,
@@ -898,29 +1032,44 @@ fun MusicPlayerScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showSleepTimerSheet = false }) {
-                    Text(if (isHindi) "बंद करें" else "Close", color = HybridTextSecondary)
+                    Text(if (isHindi) "बंद करें" else "Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
                 }
             }
         )
     }
 
-    // --- 3-Dot More Options Sheet ---
+    // --- Expanded 16-Tool 3-Dot More Options Studio Sheet ---
     if (showMoreOptionsSheet) {
         AlertDialog(
             onDismissRequest = { showMoreOptionsSheet = false },
             containerColor = HybridCardBg,
             title = {
-                Text(
-                    text = currentTrack?.cleanTitle ?: (if (isHindi) "गाने के विकल्प" else "Song Options"),
-                    color = Color.White,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 16.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Column {
+                    Text(
+                        text = currentTrack?.cleanTitle ?: (if (isHindi) "गाने के प्रो विकल्प" else "Pro Audio Studio Options"),
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = if (isHindi) "16+ एडवांस ऑडियो और डीजे फीचर्स" else "16+ Advanced Audio & DJ Controls",
+                        color = HybridEmerald,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Row 1: Fast Share & System Share
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -936,20 +1085,12 @@ fun MusicPlayerScreen(
                             }
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(11.dp),
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Icon(Icons.Default.Bolt, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(20.dp))
-                                Text(
-                                    text = if (isHindi) "तेज़ शेयर" else "Fast Share",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1
-                                )
+                                Text(if (isHindi) "तेज़ शेयर" else "Fast Share", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
                             }
                         }
 
@@ -966,25 +1107,17 @@ fun MusicPlayerScreen(
                             }
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(11.dp),
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Icon(Icons.Default.Share, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(20.dp))
-                                Text(
-                                    text = if (isHindi) "ऐप शेयर" else "Share App",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1
-                                )
+                                Text(if (isHindi) "ऐप शेयर" else "Share Song", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
                             }
                         }
                     }
 
-                    // Permanent 3D Visualizer ON/OFF Switch
+                    // Row 2: Permanent 3D Visualizer ON/OFF Switch
                     LiquidGlassBox(
                         modifier = Modifier.fillMaxWidth(),
                         cornerRadius = 14.dp,
@@ -993,9 +1126,7 @@ fun MusicPlayerScreen(
                         onClick = { viewModel.toggleVisualizer3DEnabled() }
                     ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -1011,16 +1142,16 @@ fun MusicPlayerScreen(
                                 )
                                 Column {
                                     Text(
-                                        text = if (isHindi) "3D विज़ुअलाइज़र (ON / OFF)" else "3D Visualizer Animation",
+                                        text = if (isHindi) "3D इक्वलाइज़र और विज़ुअलाइज़र" else "3D Visualizer Animation",
                                         color = Color.White,
                                         fontWeight = FontWeight.ExtraBold,
                                         fontSize = 13.sp
                                     )
                                     Text(
                                         text = if (visualizer3DEnabled) {
-                                            if (isHindi) "चालू है • बंद करने के लिए टैप करें" else "Active • Tap to turn OFF permanently"
+                                            if (isHindi) "चालू है • बंद करने के लिए टैप करें" else "Active • Runs only when ON"
                                         } else {
-                                            if (isHindi) "बंद है (बैटरी और मेमोरी सेवर)" else "OFF (Clean & Smooth Mode)"
+                                            if (isHindi) "बंद है (जब ऑन करेंगे तभी चलेगा)" else "OFF (Only runs when turned ON)"
                                         },
                                         color = HybridTextSecondary,
                                         fontSize = 11.sp
@@ -1035,7 +1166,7 @@ fun MusicPlayerScreen(
                         }
                     }
 
-                    // 15 3D Visualizer Themes Picker
+                    // Row 3: 15 Distinct 3D Visualizer Themes Picker
                     LiquidGlassBox(
                         modifier = Modifier.fillMaxWidth(),
                         cornerRadius = 14.dp,
@@ -1047,9 +1178,7 @@ fun MusicPlayerScreen(
                         }
                     ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 11.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -1060,7 +1189,7 @@ fun MusicPlayerScreen(
                                 Icon(Icons.Default.Palette, contentDescription = null, tint = Color(0xFFB388FF))
                                 Column {
                                     Text(
-                                        text = if (isHindi) "15 3D म्यूज़िक थीम्स चुनें" else "15 3D Visualizer Themes",
+                                        text = if (isHindi) "15 अलग-अलग 3D थीम्स चुनें" else "15 Distinct 3D Visualizer Themes",
                                         color = Color.White,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp
@@ -1076,7 +1205,48 @@ fun MusicPlayerScreen(
                         }
                     }
 
-                    // 200% Volume Boost & Speed/Pitch Row
+                    // Row 4: 5-Second DJ Crossfade / Slow Mix Toggle
+                    LiquidGlassBox(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 14.dp,
+                        tintColor = if (djCrossfadeEnabled) HybridCyan else Color.White,
+                        glassAlpha = if (djCrossfadeEnabled) 0.24f else 0.12f,
+                        onClick = { viewModel.toggleDjCrossfade() }
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Album, contentDescription = null, tint = if (djCrossfadeEnabled) HybridCyan else HybridTextSecondary)
+                                Column {
+                                    Text(
+                                        text = if (isHindi) "5s DJ क्रॉसफ़ेड रीमिक्स ट्रांज़िशन" else "5-Second DJ Crossfade Transition",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 13.sp
+                                    )
+                                    Text(
+                                        text = if (isHindi) "आखिरी 5 सेकंड में स्मूथ स्लो फेड और अगला गाना मिक्स" else "Smooth 5s slow fade-out & DJ mix into next track",
+                                        color = HybridTextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = djCrossfadeEnabled,
+                                onCheckedChange = { viewModel.toggleDjCrossfade() },
+                                colors = SwitchDefaults.colors(checkedThumbColor = HybridCyan)
+                            )
+                        }
+                    }
+
+                    // Row 5: 200% Volume Boost & Speed/Pitch Studio
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1089,9 +1259,7 @@ fun MusicPlayerScreen(
                             onClick = { viewModel.toggle200Boost() }
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(11.dp),
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -1099,14 +1267,9 @@ fun MusicPlayerScreen(
                                     Icons.AutoMirrored.Filled.VolumeUp,
                                     contentDescription = null,
                                     tint = if (audioVolumePercent > 100) Color(0xFFFF6D00) else HybridGold,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(19.dp)
                                 )
-                                Text(
-                                    text = "Vol $audioVolumePercent%",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
+                                Text("Vol $audioVolumePercent%", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
 
@@ -1121,24 +1284,155 @@ fun MusicPlayerScreen(
                             }
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(11.dp),
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.Speed, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.Speed, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(19.dp))
+                                Text("${playbackSpeed}x Speed", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    // Row 6: 5-Band Studio Equalizer & Deep Bass Boost
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 14.dp,
+                            tintColor = HybridEmerald,
+                            glassAlpha = 0.22f,
+                            onClick = {
+                                showMoreOptionsSheet = false
+                                onOpenEqualizer()
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Equalizer, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(19.dp))
+                                Text("EQ: $equalizerPreset", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+                            }
+                        }
+
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 14.dp,
+                            tintColor = if (bassBoostEnabled) HybridGold else Color.White,
+                            glassAlpha = if (bassBoostEnabled) 0.28f else 0.16f,
+                            onClick = { viewModel.toggleBassBoost() }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Speaker, contentDescription = null, tint = if (bassBoostEnabled) HybridGold else Color.White, modifier = Modifier.size(19.dp))
+                                Text(if (bassBoostEnabled) "Bass: ON" else "Bass: OFF", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    // Row 7: Stereo Channel Balance & Live Sleep Timer
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 14.dp,
+                            tintColor = HybridPurple,
+                            glassAlpha = 0.22f,
+                            onClick = { viewModel.cycleAudioBalanceMode() }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.SurroundSound, contentDescription = null, tint = HybridPurple, modifier = Modifier.size(19.dp))
+                                Text(audioBalanceMode, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 14.dp,
+                            tintColor = HybridGold,
+                            glassAlpha = 0.22f,
+                            onClick = {
+                                showMoreOptionsSheet = false
+                                showSleepTimerSheet = true
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Timer, contentDescription = null, tint = HybridGold, modifier = Modifier.size(19.dp))
                                 Text(
-                                    text = "${playbackSpeed}x Speed",
+                                    text = if (sleepTimerRemainingMs > 0L) formatLiveSleepTimerMs(sleepTimerRemainingMs) else "Sleep Timer",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
+                                    fontSize = 12.sp,
+                                    maxLines = 1
                                 )
                             }
                         }
                     }
 
-                    // A-B Repeat & Full File Actions
+                    // Row 8: Synced Lyrics (.LRC) & Up Next Queue Manager
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 14.dp,
+                            tintColor = HybridCyan,
+                            glassAlpha = 0.20f,
+                            onClick = {
+                                showMoreOptionsSheet = false
+                                showEditLyricsDialog = true
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Lyrics, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(18.dp))
+                                Text(if (isHindi) "लिरिक्स (.LRC)" else "Edit Lyrics", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 14.dp,
+                            tintColor = HybridEmerald,
+                            glassAlpha = 0.20f,
+                            onClick = {
+                                showMoreOptionsSheet = false
+                                showUpNextQueueSheet = true
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(18.dp))
+                                Text("Queue (${activeQueue.size})", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    // Row 9: A-B Repeat Loop & File / Vault / Delete
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1151,9 +1445,7 @@ fun MusicPlayerScreen(
                             onClick = { viewModel.toggleAbRepeatPoint() }
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(11.dp),
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -1182,19 +1474,12 @@ fun MusicPlayerScreen(
                             }
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(11.dp),
+                                modifier = Modifier.fillMaxWidth().padding(11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Icon(Icons.Default.FolderShared, contentDescription = null, tint = HybridCoralRed, modifier = Modifier.size(18.dp))
-                                Text(
-                                    text = if (isHindi) "फ़ाइल/हटाएं" else "File / Delete",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
+                                Text(if (isHindi) "फ़ाइल/हटाएं" else "File / Delete", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }
@@ -1403,18 +1688,98 @@ fun MusicPlayerScreen(
         )
     }
 
-    // --- Up Next Queue Dialog with REAL Album Art / Video Thumbnails (Fixes Screenshot 3) ---
+    // --- Up Next Queue Dialog with Shuffle, Repeat, Track Swap Up/Down & Real Album Art ---
     if (showUpNextQueueSheet) {
         AlertDialog(
             onDismissRequest = { showUpNextQueueSheet = false },
             containerColor = HybridCardBg,
             title = {
-                Text(
-                    text = if (isHindi) "अगले गाने (${activeQueue.size})" else "Up Next Queue (${activeQueue.size})",
-                    color = Color.White,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 18.sp
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isHindi) "प्लेइंग क्यू (${activeQueue.size})" else "Playing Queue (${activeQueue.size})",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 17.sp
+                        )
+                        Text(
+                            text = "${currentTrackIndex + 1}/${activeQueue.size}",
+                            color = HybridEmerald,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    // Queue Control Bar: Shuffle / Straight Order Toggle + Repeat Mode Toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 12.dp,
+                            tintColor = if (isShuffleMode) HybridEmerald else HybridCyan,
+                            glassAlpha = 0.24f,
+                            onClick = { viewModel.toggleShuffleMode() }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isShuffleMode) Icons.Default.Shuffle else Icons.AutoMirrored.Filled.TrendingFlat,
+                                    contentDescription = null,
+                                    tint = if (isShuffleMode) HybridEmerald else HybridCyan,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isShuffleMode) (if (isHindi) "शफ़ल ON" else "Shuffle ON") else (if (isHindi) "क्रम 1→2" else "Order 1→2"),
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        LiquidGlassBox(
+                            modifier = Modifier.weight(1f),
+                            cornerRadius = 12.dp,
+                            tintColor = if (repeatMode == 2) HybridGold else HybridCyan,
+                            glassAlpha = 0.24f,
+                            onClick = { viewModel.cycleRepeatMode() }
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (repeatMode == 2) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                    contentDescription = null,
+                                    tint = if (repeatMode == 2) HybridGold else HybridCyan,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = when (repeatMode) {
+                                        2 -> if (isHindi) "रिपीट 1" else "Repeat 1"
+                                        1 -> if (isHindi) "रिपीट ऑल" else "Repeat All"
+                                        else -> if (isHindi) "एक बार" else "Play Once"
+                                    },
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
             },
             text = {
                 LazyColumn(
@@ -1423,7 +1788,7 @@ fun MusicPlayerScreen(
                         .heightIn(max = 380.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    itemsIndexed(activeQueue, key = { _, item -> item.id }) { _, item ->
+                    itemsIndexed(activeQueue, key = { _, item -> item.id }) { idx, item ->
                         val isCurrent = item.id == currentTrack?.id
                         LiquidGlassBox(
                             modifier = Modifier.fillMaxWidth(),
@@ -1438,19 +1803,25 @@ fun MusicPlayerScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    .padding(horizontal = 8.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Real Album Art / Video Frame Photo instead of generic music note!
+                                Text(
+                                    text = "${idx + 1}",
+                                    color = if (isCurrent) HybridEmerald else HybridTextSecondary,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.width(22.dp)
+                                )
                                 GuaranteedAlbumArt(
                                     mediaPath = item.path,
                                     title = item.cleanTitle,
                                     isVideo = item.isVideo,
-                                    modifier = Modifier.size(44.dp),
+                                    modifier = Modifier.size(42.dp),
                                     cornerRadius = 10.dp,
                                     accentColor = if (isCurrent) HybridEmerald else HybridCyan
                                 )
-                                Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = item.cleanTitle,
@@ -1461,19 +1832,43 @@ fun MusicPlayerScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = item.artist.ifBlank { if (item.isVideo) "Video Song" else "Local Artist" },
+                                        text = "${item.artist.ifBlank { if (item.isVideo) "Video Song" else "Local Artist" }} • ${item.formattedDuration}",
                                         color = HybridTextSecondary,
                                         fontSize = 11.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                Text(
-                                    text = item.formattedDuration,
-                                    color = HybridTextSecondary,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+
+                                // Move Song Up / Down Swap Buttons
+                                IconButton(
+                                    onClick = {
+                                        if (idx > 0) viewModel.moveTrackInMusicQueue(idx, idx - 1)
+                                    },
+                                    enabled = idx > 0,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowUp,
+                                        contentDescription = "Move Up",
+                                        tint = if (idx > 0) Color.White else Color.White.copy(alpha = 0.2f),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        if (idx < activeQueue.lastIndex) viewModel.moveTrackInMusicQueue(idx, idx + 1)
+                                    },
+                                    enabled = idx < activeQueue.lastIndex,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Move Down",
+                                        tint = if (idx < activeQueue.lastIndex) Color.White else Color.White.copy(alpha = 0.2f),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1713,4 +2108,79 @@ private fun formatDurationMs(ms: Long): String {
     val mins = totalSec / 60L
     val secs = totalSec % 60L
     return "%02d:%02d".format(mins, secs)
+}
+
+private fun formatLiveSleepTimerMs(remMs: Long): String {
+    val safe = remMs.coerceAtLeast(0L)
+    val mins = safe / 60_000L
+    val secs = (safe % 60_000L) / 1000L
+    val tenths = (safe % 1000L) / 100L
+    return String.format(Locale.US, "%02d:%02d.%d", mins, secs, tenths)
+}
+
+/**
+ * 7-Heart Burst Animation that erupts when clicking the Favourite Heart Button
+ * and smoothly rises & fades out over 2 seconds (2000ms).
+ */
+@Composable
+private fun SevenHeartBurstEffect(trigger: Int) {
+    if (trigger <= 0) return
+    val progress = remember(trigger) { Animatable(0f) }
+    LaunchedEffect(trigger) {
+        progress.snapTo(0f)
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 1950, easing = FastOutSlowInEasing)
+        )
+    }
+
+    val p = progress.value
+    if (p >= 0.99f) return
+
+    val heartColors = remember {
+        listOf(
+            Color(0xFFFF1744),
+            Color(0xFFFF4081),
+            Color(0xFFF50057),
+            Color(0xFFFFD54F),
+            Color(0xFFE040FB),
+            Color(0xFFFF5252),
+            Color(0xFF00E5FF)
+        )
+    }
+    val xAngles = remember { listOf(-52f, -34f, -16f, 0f, 18f, 36f, 54f) }
+    val speedFactors = remember { listOf(0.85f, 1.05f, 0.92f, 1.18f, 0.96f, 1.08f, 0.88f) }
+
+    Canvas(modifier = Modifier.size(46.dp)) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val alpha = (1f - (p * p)).coerceIn(0f, 1f)
+
+        for (i in 0 until 7) {
+            val spreadPx = (xAngles[i] * p * 1.4f).dp.toPx() + sin(p * 6f + i) * 6.dp.toPx()
+            val risePx = -(p * 125f * speedFactors[i]).dp.toPx()
+            val hx = cx + spreadPx
+            val hy = cy + risePx
+            val heartSize = (10f + (1f - kotlin.math.abs(p - 0.35f)) * 8f).dp.toPx()
+
+            val path = Path().apply {
+                moveTo(hx, hy + heartSize * 0.35f)
+                cubicTo(
+                    hx - heartSize * 0.8f, hy - heartSize * 0.2f,
+                    hx - heartSize * 0.45f, hy - heartSize * 0.85f,
+                    hx, hy - heartSize * 0.35f
+                )
+                cubicTo(
+                    hx + heartSize * 0.45f, hy - heartSize * 0.85f,
+                    hx + heartSize * 0.8f, hy - heartSize * 0.2f,
+                    hx, hy + heartSize * 0.35f
+                )
+                close()
+            }
+            drawPath(
+                path = path,
+                color = heartColors[i].copy(alpha = alpha)
+            )
+        }
+    }
 }

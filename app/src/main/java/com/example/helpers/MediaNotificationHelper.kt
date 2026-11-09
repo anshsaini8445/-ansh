@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -16,6 +17,7 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Shader
 import android.graphics.drawable.Icon
+import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.MediaMetadataRetriever
 import android.media.session.MediaSession
@@ -24,6 +26,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
+import android.util.LruCache
 import android.view.KeyEvent
 import com.example.R
 import java.io.File
@@ -72,8 +76,7 @@ object MediaNotificationHelper {
 
     private var delegateRef: WeakReference<ControlDelegate>? = null
     private var mediaSession: MediaSession? = null
-    private var cachedArtPath: String? = null
-    private var cachedArtBitmap: Bitmap? = null
+    private val artworkCache = LruCache<String, Bitmap>(32)
 
     fun setControlDelegate(delegate: ControlDelegate?) {
         delegateRef = if (delegate != null) WeakReference(delegate) else null
@@ -215,8 +218,10 @@ object MediaNotificationHelper {
     }
 
     private fun extractOrCreateArtwork(path: String, title: String, isVideo: Boolean): Bitmap {
-        if (path.isNotBlank() && path == cachedArtPath && cachedArtBitmap != null) {
-            return cachedArtBitmap!!
+        val cacheKey = "$path|$title|$isVideo"
+        val cached = artworkCache.get(cacheKey)
+        if (cached != null && !cached.isRecycled) {
+            return cached
         }
 
         var extracted: Bitmap? = null
@@ -243,43 +248,103 @@ object MediaNotificationHelper {
         val finalBitmap = if (extracted != null) {
             Bitmap.createScaledBitmap(extracted, 256, 256, true)
         } else {
-            createFallbackGradientArtwork(title)
+            createFallbackGradientArtwork(title, isVideo)
         }
 
-        cachedArtPath = path
-        cachedArtBitmap = finalBitmap
+        artworkCache.put(cacheKey, finalBitmap)
         return finalBitmap
     }
 
-    private fun createFallbackGradientArtwork(title: String): Bitmap {
+    private fun createFallbackGradientArtwork(title: String, isVideo: Boolean): Bitmap {
         val size = 256
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        paint.shader = LinearGradient(
-            0f,
-            0f,
-            size.toFloat(),
-            size.toFloat(),
-            intArrayOf(0xFF0A1F17.toInt(), 0xFF00E676.toInt(), 0xFF00E5FF.toInt()),
-            floatArrayOf(0f, 0.6f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        canvas.drawRect(0f, 0f, size.toFloat(), size.toFloat(), paint)
 
-        val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0x44000000
-        }
-        canvas.drawCircle(size / 2f, size / 2f, size * 0.34f, circlePaint)
+        if (isVideo) {
+            // Sleek cinematic widescreen / film frame aesthetic
+            paint.shader = LinearGradient(
+                0f, 0f, size.toFloat(), size.toFloat(),
+                intArrayOf(0xFF0A1026.toInt(), 0xFF14243B.toInt(), 0xFF003847.toInt()),
+                floatArrayOf(0f, 0.5f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, size.toFloat(), size.toFloat(), paint)
 
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt()
-            textSize = 92f
-            textAlign = Paint.Align.CENTER
-            isFakeBoldText = true
+            // Film reel accent circles
+            val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0x2200E5FF.toInt()
+                style = Paint.Style.STROKE
+                strokeWidth = 4f
+            }
+            canvas.drawCircle(size / 2f, size / 2f, size * 0.42f, accentPaint)
+            canvas.drawCircle(size / 2f, size / 2f, size * 0.36f, accentPaint)
+
+            // Center glowing badge
+            val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0x3300E5FF.toInt()
+                style = Paint.Style.FILL
+            }
+            canvas.drawCircle(size / 2f, size / 2f, size * 0.28f, badgePaint)
+
+            // Video icon / Title Initial
+            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFF00E5FF.toInt()
+                textSize = 96f
+                textAlign = Paint.Align.CENTER
+                isFakeBoldText = true
+            }
+            val initial = title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "▶"
+            canvas.drawText(initial, size / 2f, size / 2f + 34f, textPaint)
+        } else {
+            // Hi-Fi Vinyl Disc Aesthetic
+            paint.shader = LinearGradient(
+                0f, 0f, size.toFloat(), size.toFloat(),
+                intArrayOf(0xFF07120D.toInt(), 0xFF0A2417.toInt(), 0xFF05170E.toInt()),
+                floatArrayOf(0f, 0.5f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, size.toFloat(), size.toFloat(), paint)
+
+            // Vinyl Disc Grooves
+            val groovePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+            }
+            val radii = floatArrayOf(0.44f, 0.40f, 0.36f, 0.32f, 0.28f)
+            radii.forEachIndexed { i, r ->
+                groovePaint.color = if (i % 2 == 0) 0x1AFFFFFF else 0x0DFFFFFF
+                groovePaint.strokeWidth = 2f
+                canvas.drawCircle(size / 2f, size / 2f, size * r, groovePaint)
+            }
+
+            // Center Vinyl Label Disc with Emerald Glow
+            val discPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = LinearGradient(
+                    size * 0.3f, size * 0.3f, size * 0.7f, size * 0.7f,
+                    intArrayOf(0xFF00E676.toInt(), 0xFF00B0FF.toInt()),
+                    null,
+                    Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawCircle(size / 2f, size / 2f, size * 0.22f, discPaint)
+
+            // Center spindle hole
+            val holePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFF07120D.toInt()
+            }
+            canvas.drawCircle(size / 2f, size / 2f, size * 0.06f, holePaint)
+
+            // Clean Title initial or Note
+            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFFFFFFFF.toInt()
+                textSize = 58f
+                textAlign = Paint.Align.CENTER
+                isFakeBoldText = true
+            }
+            val initial = title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "♪"
+            canvas.drawText(initial, size / 2f, size / 2f + 20f, textPaint)
         }
-        val initial = title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "♪"
-        canvas.drawText(initial, size / 2f, size / 2f + 32f, textPaint)
+
         return bmp
     }
 
@@ -355,7 +420,23 @@ object MediaNotificationHelper {
             .setState(
                 if (isPlaying) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
                 safePosition,
-                if (isPlaying) playbackSpeed else 0f
+                if (isPlaying) playbackSpeed else 0f,
+                SystemClock.elapsedRealtime()
+            )
+            // Fast 10s Rewind / Forward custom actions for lock screen controls
+            .addCustomAction(
+                PlaybackState.CustomAction.Builder(
+                    ACTION_MEDIA_REWIND_10S,
+                    "-10s",
+                    R.drawable.ic_notif_rewind
+                ).build()
+            )
+            .addCustomAction(
+                PlaybackState.CustomAction.Builder(
+                    ACTION_MEDIA_FFWD_10S,
+                    "+10s",
+                    R.drawable.ic_notif_ffwd
+                ).build()
             )
             // Custom actions for Android 13+ system media player controls (Left = Shuffle, Right = Repeat)
             .addCustomAction(
@@ -387,11 +468,11 @@ object MediaNotificationHelper {
             )
         }
 
-        val shufflePending = buildActionPendingIntent(context, ACTION_MEDIA_SHUFFLE, 201)
+        val rewindPending = buildActionPendingIntent(context, ACTION_MEDIA_REWIND_10S, 201)
         val prevPending = buildActionPendingIntent(context, ACTION_MEDIA_PREV, 202)
         val playPausePending = buildActionPendingIntent(context, ACTION_MEDIA_PLAY_PAUSE, 203)
         val nextPending = buildActionPendingIntent(context, ACTION_MEDIA_NEXT, 204)
-        val repeatPending = buildActionPendingIntent(context, ACTION_MEDIA_REPEAT, 205)
+        val ffwdPending = buildActionPendingIntent(context, ACTION_MEDIA_FFWD_10S, 205)
         val stopPending = buildActionPendingIntent(context, ACTION_MEDIA_STOP, 206)
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -405,8 +486,10 @@ object MediaNotificationHelper {
             .setSmallIcon(R.drawable.ic_notif_play)
             .setLargeIcon(artwork)
             .setContentTitle(title)
-            .setContentText("$subtitle • ${if (isShuffle) "🔀" else "▶"} $repeatLabel")
-            .setSubText(formatTimeMs(safePosition) + " / " + formatTimeMs(safeDuration))
+            .setContentText(subtitle)
+            .setSubText(if (isVideo) "🎬 Video Player • Background Play" else "🎵 Hybrid Audio • Hi-Fi Engine")
+            .setColor(0xFF00E676.toInt())
+            .setColorized(true)
             .setOngoing(isPlaying)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
@@ -414,15 +497,15 @@ object MediaNotificationHelper {
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setCategory(Notification.CATEGORY_TRANSPORT)
             .setDeleteIntent(stopPending)
-            // 1. Leftmost (Ulte Haath): Shuffle (🔀)
+            // 0. Rewind 10s (-10s)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, R.drawable.ic_notif_shuffle),
-                    shuffleLabel,
-                    shufflePending
+                    Icon.createWithResource(context, R.drawable.ic_notif_rewind),
+                    "-10s",
+                    rewindPending
                 ).build()
             )
-            // 2. Previous Track (⏮)
+            // 1. Previous Track (⏮)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(context, R.drawable.ic_notif_prev),
@@ -430,7 +513,7 @@ object MediaNotificationHelper {
                     prevPending
                 ).build()
             )
-            // 3. Play / Pause (▶ / ⏸)
+            // 2. Play / Pause (▶ / ⏸)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(
@@ -441,7 +524,7 @@ object MediaNotificationHelper {
                     playPausePending
                 ).build()
             )
-            // 4. Next Track (⏭)
+            // 3. Next Track (⏭)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(context, R.drawable.ic_notif_next),
@@ -449,12 +532,12 @@ object MediaNotificationHelper {
                     nextPending
                 ).build()
             )
-            // 5. Rightmost (Seedhe Haath): Repeat (🔁 / 🔂 / Order)
+            // 4. Fast Forward 10s (+10s)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, repeatIconRes),
-                    repeatLabel,
-                    repeatPending
+                    Icon.createWithResource(context, R.drawable.ic_notif_ffwd),
+                    "+10s",
+                    ffwdPending
                 ).build()
             )
             .setStyle(
@@ -572,6 +655,15 @@ class MediaNotificationReceiver : BroadcastReceiver() {
 class AudioService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var noisyReceiverRegistered = false
+
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                MediaNotificationHelper.getControlDelegate()?.onNotificationPlayPause()
+            }
+        }
+    }
 
     companion object {
         @Volatile
@@ -618,6 +710,12 @@ class AudioService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeInstance = this
+        try {
+            val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            registerReceiver(noisyReceiver, filter)
+            noisyReceiverRegistered = true
+        } catch (_: Exception) {
+        }
     }
 
     internal fun acquireWakeLockIfNeeded() {
@@ -714,6 +812,13 @@ class AudioService : Service() {
     override fun onDestroy() {
         if (activeInstance === this) {
             activeInstance = null
+        }
+        if (noisyReceiverRegistered) {
+            try {
+                unregisterReceiver(noisyReceiver)
+            } catch (_: Exception) {
+            }
+            noisyReceiverRegistered = false
         }
         releaseWakeLockIfHeld()
         wakeLock = null

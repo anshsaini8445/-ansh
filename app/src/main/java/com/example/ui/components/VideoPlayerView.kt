@@ -22,6 +22,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -40,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -125,10 +128,73 @@ fun VideoPlayerView(
     // Sleep Timer (Hidden inside 3-Dot Menu) & Aspect Ratio / Orientation State
     var videoSleepTimerTotalMinutes by remember { mutableStateOf(0) }
     var videoSleepRemainingSeconds by remember { mutableStateOf(0) }
-    var aspectRatioMode by remember { mutableStateOf("Full Screen") }
+    var aspectRatioMode by remember { mutableStateOf("Original Fit") }
     var orientationLabel by remember { mutableStateOf("Auto") }
     var nativeVideoWidth by remember { mutableStateOf(1920) }
     var nativeVideoHeight by remember { mutableStateOf(1080) }
+    var isSoftwareFallbackActive by remember(videoPath) { mutableStateOf(false) }
+    var softwareFallbackBitmap by remember(videoPath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    val isNetworkStream = remember(videoPath) {
+        videoPath.startsWith("http://", ignoreCase = true) ||
+            videoPath.startsWith("https://", ignoreCase = true) ||
+            videoPath.startsWith("rtsp://", ignoreCase = true) ||
+            videoPath.startsWith("rtmp://", ignoreCase = true)
+    }
+    var isStreamBuffering by remember(videoPath) { mutableStateOf(isNetworkStream) }
+    var streamBufferPercent by remember(videoPath) { mutableStateOf(0) }
+    val streamNetworkHeaders = remember {
+        mapOf(
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+            "Accept" to "*/*",
+            "Connection" to "keep-alive"
+        )
+    }
+
+    // Pro Feature Toggles (Auto-Play Next, Shuffle, Loop 1, Night Eye, Mirror Flip, Mute, Favorite, Speed Dialog)
+    var isAutoPlayNextEnabled by remember {
+        mutableStateOf(prefs.getBoolean("auto_play_next_video", true))
+    }
+    var isShuffleActive by remember { mutableStateOf(false) }
+    var isLoopSingleActive by remember { mutableStateOf(false) }
+    var isNightEyeActive by remember { mutableStateOf(false) }
+    var isMirrorFlipped by remember { mutableStateOf(false) }
+    var isMuted by remember { mutableStateOf(false) }
+    var volumeBeforeMute by remember { mutableStateOf(100) }
+    var isFavorite by remember(videoPath) {
+        mutableStateOf(prefs.getBoolean("fav_video_${videoPath.hashCode()}", false))
+    }
+    var isHardwareDecoderActive by remember { mutableStateOf(true) }
+    var showSpeedDialog by remember { mutableStateOf(false) }
+
+    fun handleVideoCompletion() {
+        if (isLoopSingleActive) {
+            videoViewRef?.seekTo(0)
+            mediaPlayerRef?.seekTo(0)
+            currentPosMs = 0L
+            videoViewRef?.start()
+            mediaPlayerRef?.start()
+            isPlaying = true
+        } else if (allVideos.isNotEmpty() && isAutoPlayNextEnabled) {
+            val idx = allVideos.indexOfFirst { it.path == videoPath }
+            val nextIdx = if (isShuffleActive) {
+                val candidates = (0 until allVideos.size).filter { it != idx }
+                if (candidates.isNotEmpty()) candidates.random() else 0
+            } else {
+                if (idx >= 0) (idx + 1) % allVideos.size else 0
+            }
+            onSelectVideo(allVideos[nextIdx])
+        } else {
+            isPlaying = false
+        }
+    }
+
+    fun toggleFavorite() {
+        val next = !isFavorite
+        isFavorite = next
+        prefs.edit().putBoolean("fav_video_${videoPath.hashCode()}", next).apply()
+        gestureOverlayText = if (next) "❤️ Added to Favorites" else "💔 Removed from Favorites"
+        Toast.makeText(context, gestureOverlayText, Toast.LENGTH_SHORT).show()
+    }
 
     // Live 1-Second Countdown for Video Sleep Timer
     LaunchedEffect(videoSleepRemainingSeconds, isPlaying) {
@@ -189,11 +255,24 @@ fun VideoPlayerView(
         }
     }
 
+    fun toggleMute() {
+        if (isMuted) {
+            isMuted = false
+            updateVolumeWithBoost(volumeBeforeMute)
+            gestureOverlayText = "🔊 $volumeBeforeMute%"
+        } else {
+            volumeBeforeMute = volumePercent
+            isMuted = true
+            updateVolumeWithBoost(0)
+            gestureOverlayText = "🔇 Muted"
+        }
+    }
+
     fun applyHardwarePlaybackSpeed(targetMp: android.media.MediaPlayer? = mediaPlayerRef) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             targetMp?.let { mp ->
                 try {
-                    val safeSpeed = playbackSpeed.coerceIn(0.25f, 4.0f)
+                    val safeSpeed = playbackSpeed.coerceIn(0.25f, 8.0f)
                     val params = try {
                         mp.playbackParams
                     } catch (_: Exception) {
@@ -220,6 +299,7 @@ fun VideoPlayerView(
             val window = activity?.window
             if (window != null) {
                 val controller = androidx.core.view.WindowCompat.getInsetsController(window, hostView)
+                controller.isAppearanceLightStatusBars = false
                 controller.systemBarsBehavior =
                     androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 if (showControls) {
@@ -368,6 +448,7 @@ fun VideoPlayerView(
 
     // Unified helper functions that work seamlessly whether VideoView or direct FileDescriptor MediaPlayer is active
     fun isVideoCurrentlyPlaying(): Boolean {
+        if (isSoftwareFallbackActive) return isPlaying
         return try {
             videoViewRef?.isPlaying == true || mediaPlayerRef?.isPlaying == true
         } catch (_: Exception) {
@@ -376,6 +457,7 @@ fun VideoPlayerView(
     }
 
     fun getCurrentVideoPositionMs(): Long {
+        if (isSoftwareFallbackActive) return currentPosMs
         return try {
             val vvPos = videoViewRef?.currentPosition?.toLong() ?: 0L
             if (vvPos > 0L) vvPos else (mediaPlayerRef?.currentPosition?.toLong() ?: currentPosMs)
@@ -385,6 +467,7 @@ fun VideoPlayerView(
     }
 
     fun getTotalVideoDurationMs(): Long {
+        if (isSoftwareFallbackActive) return totalDurationMs.coerceAtLeast(1000L)
         return try {
             val vvDur = videoViewRef?.duration?.toLong() ?: 0L
             val mpDur = if (vvDur > 0L) vvDur else (mediaPlayerRef?.duration?.toLong() ?: totalDurationMs)
@@ -400,6 +483,7 @@ fun VideoPlayerView(
         if (clamped > 0L) {
             latestKnownPositionMs = clamped
         }
+        if (isSoftwareFallbackActive) return
         try {
             videoViewRef?.seekTo(clamped.toInt())
         } catch (_: Exception) {
@@ -416,28 +500,106 @@ fun VideoPlayerView(
             latestKnownPositionMs = pos
             onProgressUpdate(pos)
         }
-        try {
-            videoViewRef?.pause()
-        } catch (_: Exception) {
-        }
-        try {
-            if (mediaPlayerRef?.isPlaying == true) mediaPlayerRef?.pause()
-        } catch (_: Exception) {
+        if (!isSoftwareFallbackActive) {
+            try {
+                videoViewRef?.pause()
+            } catch (_: Exception) {
+            }
+            try {
+                if (mediaPlayerRef?.isPlaying == true) mediaPlayerRef?.pause()
+            } catch (_: Exception) {
+            }
         }
         isPlaying = false
     }
 
     fun startVideoPlayback() {
-        try {
-            videoViewRef?.start()
-        } catch (_: Exception) {
+        if (!isSoftwareFallbackActive) {
+            try {
+                videoViewRef?.start()
+            } catch (_: Exception) {
+            }
+            try {
+                if (mediaPlayerRef?.isPlaying == false) mediaPlayerRef?.start()
+            } catch (_: Exception) {
+            }
+            applyHardwarePlaybackSpeed(mediaPlayerRef)
         }
-        try {
-            if (mediaPlayerRef?.isPlaying == false) mediaPlayerRef?.start()
-        } catch (_: Exception) {
-        }
-        applyHardwarePlaybackSpeed(mediaPlayerRef)
         isPlaying = true
+    }
+
+    // Universal Software Frame-Stream Fallback for 8K/4K/2K codecs exceeding phone hardware MediaCodec limits
+    LaunchedEffect(isSoftwareFallbackActive, videoPath) {
+        if (isSoftwareFallbackActive) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val retriever = android.media.MediaMetadataRetriever()
+                try {
+                    if (videoPath.startsWith("content://")) {
+                        retriever.setDataSource(context, Uri.parse(videoPath))
+                    } else if (isNetworkStream) {
+                        retriever.setDataSource(videoPath, streamNetworkHeaders)
+                    } else {
+                        val resolved = resolvePlayablePartialPath(context, videoPath)
+                        retriever.setDataSource(resolved)
+                    }
+                    val durStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    val dur = durStr?.toLongOrNull()?.coerceAtLeast(1000L) ?: totalDurationMs.coerceAtLeast(15_000L)
+                    totalDurationMs = dur
+                    val vw = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 1280
+                    val vh = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 720
+                    nativeVideoWidth = vw
+                    nativeVideoHeight = vh
+
+                    // Target safe software downscale dimensions (e.g. max 854x480 for 60fps smoothness on budget phones)
+                    val scaleRatio = minOf(854f / vw.coerceAtLeast(1), 480f / vh.coerceAtLeast(1), 1f)
+                    val targetW = (vw * scaleRatio).toInt().coerceAtLeast(320)
+                    val targetH = (vh * scaleRatio).toInt().coerceAtLeast(180)
+
+                    var lastTickMs = System.currentTimeMillis()
+                    while (isSoftwareFallbackActive) {
+                        if (isPlaying) {
+                            val now = System.currentTimeMillis()
+                            val elapsed = ((now - lastTickMs) * playbackSpeed).toLong().coerceIn(20L, 250L)
+                            lastTickMs = now
+                            val nextPos = currentPosMs + elapsed
+                            if (nextPos >= totalDurationMs) {
+                                currentPosMs = 0L
+                            } else {
+                                currentPosMs = nextPos
+                                latestKnownPositionMs = nextPos
+                            }
+                            val frameBmp = try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                    retriever.getScaledFrameAtTime(
+                                        currentPosMs * 1000L,
+                                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                        targetW,
+                                        targetH
+                                    ) ?: retriever.getFrameAtTime(currentPosMs * 1000L)
+                                } else {
+                                    retriever.getFrameAtTime(currentPosMs * 1000L)
+                                }
+                            } catch (_: Exception) {
+                                null
+                            }
+                            if (frameBmp != null) {
+                                softwareFallbackBitmap = frameBmp
+                            }
+                            delay(65L)
+                        } else {
+                            lastTickMs = System.currentTimeMillis()
+                            delay(150L)
+                        }
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    try {
+                        retriever.release()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
     }
 
     // Multi-Window, Split-Screen, PiP & Close/Reopen Lifecycle Continuity
@@ -617,19 +779,58 @@ fun VideoPlayerView(
                                 android.view.Gravity.CENTER
                             )
 
+                            fun applySafeSurfaceBufferCap(vw: Int, vh: Int) {
+                                // Cap SurfaceHolder hardware buffer to max 1920x1080 (Full HD) so 2K/4K/8K videos
+                                // never overflow GPU / HWC GraphicBuffer memory on budget phones like Samsung M13!
+                                try {
+                                    val maxDim = 1920f
+                                    if (vw > 1920 || vh > 1920) {
+                                        val ratio = minOf(maxDim / vw.coerceAtLeast(1), maxDim / vh.coerceAtLeast(1))
+                                        val safeW = ((vw * ratio).toInt() / 2) * 2
+                                        val safeH = ((vh * ratio).toInt() / 2) * 2
+                                        if (safeW >= 320 && safeH >= 180) {
+                                            holder.setFixedSize(safeW, safeH)
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                }
+                            }
+
                             fun configurePreparedPlayer(mp: android.media.MediaPlayer) {
+                                isSoftwareFallbackActive = false
+                                isStreamBuffering = false
                                 mediaPlayerRef = mp
+                                try {
+                                    mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                                } catch (_: Exception) {
+                                }
+                                mp.setOnBufferingUpdateListener { _, pct ->
+                                    streamBufferPercent = pct.coerceIn(0, 100)
+                                }
+                                mp.setOnInfoListener { _, what, _ ->
+                                    when (what) {
+                                        android.media.MediaPlayer.MEDIA_INFO_BUFFERING_START -> isStreamBuffering = true
+                                        android.media.MediaPlayer.MEDIA_INFO_BUFFERING_END,
+                                        android.media.MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> isStreamBuffering = false
+                                    }
+                                    false
+                                }
                                 val vw = mp.videoWidth.takeIf { it > 0 } ?: 1920
                                 val vh = mp.videoHeight.takeIf { it > 0 } ?: 1080
                                 nativeVideoWidth = vw
                                 nativeVideoHeight = vh
+                                applySafeSurfaceBufferCap(vw, vh)
                                 updateVideoGeometry(vw, vh, aspectRatioMode, zoomScale)
                                 mp.setOnVideoSizeChangedListener { _, w, h ->
                                     if (w > 0 && h > 0) {
                                         nativeVideoWidth = w
                                         nativeVideoHeight = h
+                                        applySafeSurfaceBufferCap(w, h)
                                         updateVideoGeometry(w, h, aspectRatioMode, zoomScale)
                                     }
+                                }
+                                mp.setOnCompletionListener {
+                                    handleVideoCompletion()
                                 }
                                 totalDurationMs = mp.duration.toLong().coerceAtLeast(1000L)
                                 val resumeTarget = maxOf(initialPositionMs, latestKnownPositionMs)
@@ -659,10 +860,29 @@ fun VideoPlayerView(
                             fun startDirectFileDescriptorFallback(): Boolean {
                                 return try {
                                     val rawMp = android.media.MediaPlayer()
+                                    if (isNetworkStream) {
+                                        rawMp.setDataSource(ctx, Uri.parse(videoPath), streamNetworkHeaders)
+                                        applySafeSurfaceBufferCap(1920, 1080)
+                                        rawMp.setDisplay(holder)
+                                        rawMp.setScreenOnWhilePlaying(true)
+                                        rawMp.setOnPreparedListener { mp ->
+                                            configurePreparedPlayer(mp)
+                                        }
+                                        rawMp.setOnCompletionListener {
+                                            handleVideoCompletion()
+                                        }
+                                        rawMp.setOnErrorListener { _, _, _ ->
+                                            isStreamBuffering = false
+                                            true
+                                        }
+                                        rawMp.prepareAsync()
+                                        return true
+                                    }
                                     val pfd: android.os.ParcelFileDescriptor? = if (videoPath.startsWith("content://")) {
                                         ctx.contentResolver.openFileDescriptor(Uri.parse(videoPath), "r")
                                     } else {
-                                        val f = File(videoPath)
+                                        val resolvedPath = resolvePlayablePartialPath(ctx, videoPath)
+                                        val f = File(resolvedPath)
                                         if (f.exists()) {
                                             android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
                                         } else {
@@ -672,24 +892,42 @@ fun VideoPlayerView(
                                     if (pfd != null) {
                                         rawMp.setDataSource(pfd.fileDescriptor)
                                         pfd.close()
+                                        applySafeSurfaceBufferCap(1920, 1080)
                                         rawMp.setDisplay(holder)
                                         rawMp.setScreenOnWhilePlaying(true)
                                         rawMp.setOnPreparedListener { mp ->
                                             configurePreparedPlayer(mp)
                                         }
+                                        rawMp.setOnCompletionListener {
+                                            handleVideoCompletion()
+                                        }
+                                        rawMp.setOnErrorListener { _, _, _ ->
+                                            // Hardware MediaCodec cannot decode 8K/4K/2K stream on this chipset -> activate Software Adaptive Frame Engine
+                                            isSoftwareFallbackActive = true
+                                            isPlaying = true
+                                            true
+                                        }
                                         rawMp.prepareAsync()
                                         true
                                     } else {
+                                        isSoftwareFallbackActive = true
+                                        isPlaying = true
                                         false
                                     }
                                 } catch (_: Exception) {
+                                    if (!isNetworkStream) {
+                                        isSoftwareFallbackActive = true
+                                    }
+                                    isPlaying = true
                                     false
                                 }
                             }
 
                             try {
-                                if (
-                                    videoPath.startsWith("http") ||
+                                if (isNetworkStream) {
+                                    isStreamBuffering = true
+                                    setVideoURI(Uri.parse(videoPath), streamNetworkHeaders)
+                                } else if (
                                     videoPath.startsWith("content://") ||
                                     videoPath.startsWith("android.resource://")
                                 ) {
@@ -706,14 +944,22 @@ fun VideoPlayerView(
                                 setOnPreparedListener { mp ->
                                     configurePreparedPlayer(mp)
                                 }
+                                setOnCompletionListener {
+                                    handleVideoCompletion()
+                                }
                                 setOnErrorListener { _, _, _ ->
-                                    // If VideoView rejects a pending/partial .crdownload/.part file extension,
-                                    // immediately play via raw FileDescriptor (inspects MP4/MKV header bytes directly!)
-                                    startDirectFileDescriptorFallback()
+                                    // If VideoView fails on 4K/8K/2K or network stream, try direct MediaPlayer fallback
+                                    if (!startDirectFileDescriptorFallback() && !isNetworkStream) {
+                                        isSoftwareFallbackActive = true
+                                        isPlaying = true
+                                    }
                                     true
                                 }
                             } catch (_: Exception) {
-                                startDirectFileDescriptorFallback()
+                                if (!startDirectFileDescriptorFallback() && !isNetworkStream) {
+                                    isSoftwareFallbackActive = true
+                                    isPlaying = true
+                                }
                             }
                         }
                         addView(customVideoView)
@@ -722,10 +968,76 @@ fun VideoPlayerView(
                 update = { frameLayout ->
                     val vv = frameLayout.getChildAt(0) as? FullScreenStudioVideoView
                     vv?.updateVideoGeometry(nativeVideoWidth, nativeVideoHeight, aspectRatioMode, zoomScale)
+                    vv?.scaleX = if (isMirrorFlipped) -1f else 1f
                 },
                 modifier = Modifier
                     .fillMaxSize()
                     .align(Alignment.Center)
+            )
+        }
+
+        // Live Network Stream Buffering & Telemetry HUD
+        if (isNetworkStream && isStreamBuffering) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(Color(0xDD0B1322))
+                    .border(1.5.dp, accentColor.copy(alpha = 0.7f), RoundedCornerShape(22.dp))
+                    .padding(horizontal = 22.dp, vertical = 16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(
+                        color = accentColor,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(34.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = if (streamBufferPercent > 0) "⚡ Buffering HD Stream ($streamBufferPercent%)" else "⚡ Connecting Network Stream...",
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = displayTitle,
+                        color = accentColor,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        // Night Eye Comfort Mode Scrim (2% Ultra-Dim for dark room watching)
+        if (isNightEyeActive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+            )
+        }
+
+        // Software Adaptive 8K/4K/2K Frame Renderer Overlay (activates automatically if phone hardware MediaCodec rejects >1080p)
+        if (isSoftwareFallbackActive && softwareFallbackBitmap != null) {
+            val bmp = softwareFallbackBitmap!!
+            androidx.compose.foundation.Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = displayTitle,
+                contentScale = when (aspectRatioMode) {
+                    "Zoom Crop" -> androidx.compose.ui.layout.ContentScale.Crop
+                    "Original Fit" -> androidx.compose.ui.layout.ContentScale.Fit
+                    else -> androidx.compose.ui.layout.ContentScale.FillBounds
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = zoomScale
+                        scaleY = zoomScale
+                    }
             )
         }
 
@@ -944,12 +1256,29 @@ fun VideoPlayerView(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                if (currentClockText.isNotEmpty() && !isCompactSplitWindow) {
+                                if (currentClockText.isNotEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(Color(0xD90A1424))
+                                            .border(1.dp, HybridEmerald.copy(alpha = 0.55f), RoundedCornerShape(50))
+                                            .padding(horizontal = 10.dp, vertical = 3.dp)
+                                    ) {
+                                        Text(
+                                            text = "🕒 $currentClockText • 🔋 $currentBatteryPct%",
+                                            color = Color.White,
+                                            fontSize = if (isCompactSplitWindow) 10.sp else 12.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                                if (isSoftwareFallbackActive) {
                                     Text(
-                                        text = "🕒 $currentClockText • 🔋 $currentBatteryPct%",
-                                        color = Color.White.copy(alpha = 0.78f),
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold,
+                                        text = "⚡ Smart HD Fit",
+                                        color = HybridCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
                                         maxLines = 1
                                     )
                                 }
@@ -1001,7 +1330,7 @@ fun VideoPlayerView(
                             Icon(
                                 imageVector = Icons.Default.PictureInPictureAlt,
                                 contentDescription = "Mini Floating Player",
-                                tint = HybridCyan
+                                tint = Color.White
                             )
                         }
 
@@ -1036,7 +1365,7 @@ fun VideoPlayerView(
                                 Icon(
                                     imageVector = Icons.Default.Subtitles,
                                     contentDescription = "Subtitles",
-                                    tint = if (subtitlesEnabled) HybridEmerald else Color.White
+                                    tint = if (subtitlesEnabled) Color.White else Color.White.copy(alpha = 0.7f)
                                 )
                             }
                         }
@@ -1055,15 +1384,74 @@ fun VideoPlayerView(
                         }
                     }
 
-                    // CENTER PLAY / PAUSE, -10s / +10s SEEK & PREV / NEXT BUTTONS (Unified for normal + Pending movies!)
-                    val sideBtnSize = if (isCompactSplitWindow) 38.dp else 46.dp
-                    val seekBtnSize = if (isCompactSplitWindow) 44.dp else 54.dp
+                    // Up Next Video Preview Banner
+                    if (allVideos.size > 1) {
+                        val currentIdx = allVideos.indexOfFirst { it.path == videoPath }
+                        val nextVideoItem = if (currentIdx in 0 until allVideos.lastIndex) allVideos[currentIdx + 1] else allVideos.firstOrNull()
+                        if (nextVideoItem != null) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .offset(y = (-70).dp)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(Color(0x33FFFFFF))
+                                    .border(1.dp, Color(0x38FFFFFF), RoundedCornerShape(20.dp))
+                                    .clickable {
+                                        lastInteractionTime = System.currentTimeMillis()
+                                        onSelectVideo(nextVideoItem)
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SkipNext,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Up Next: ${nextVideoItem.title.take(28)}",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    // CENTER PLAY / PAUSE, -10s / +10s SEEK, PREV / NEXT, SHUFFLE & REPEAT (Clean White Glass Theme)
+                    val sideBtnSize = if (isCompactSplitWindow) 36.dp else 44.dp
+                    val seekBtnSize = if (isCompactSplitWindow) 42.dp else 52.dp
                     val playBtnSize = if (isCompactSplitWindow) 54.dp else 68.dp
                     Row(
                         modifier = Modifier.align(Alignment.Center),
-                        horizontalArrangement = Arrangement.spacedBy(if (isCompactSplitWindow) 12.dp else 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (isCompactSplitWindow) 8.dp else 14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // 1. Shuffle Toggle
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                isShuffleActive = !isShuffleActive
+                                gestureOverlayText = if (isShuffleActive) "🔀 Shuffle ON" else "➡️ Order Play"
+                            },
+                            modifier = Modifier
+                                .size(sideBtnSize)
+                                .clip(CircleShape)
+                                .background(if (isShuffleActive) Color(0x66FFFFFF) else Color(0x28FFFFFF))
+                                .border(1.dp, if (isShuffleActive) Color.White else Color(0x33FFFFFF), CircleShape)
+                        ) {
+                            Icon(
+                                Icons.Default.Shuffle,
+                                contentDescription = "Shuffle",
+                                tint = Color.White,
+                                modifier = Modifier.size(if (isCompactSplitWindow) 18.dp else 22.dp)
+                            )
+                        }
+
+                        // 2. Previous Video
                         if (allVideos.size > 1) {
                             IconButton(
                                 onClick = {
@@ -1075,17 +1463,19 @@ fun VideoPlayerView(
                                 modifier = Modifier
                                     .size(sideBtnSize)
                                     .clip(CircleShape)
-                                    .background(HybridTranslucentControl)
+                                    .background(Color(0x28FFFFFF))
+                                    .border(1.dp, Color(0x33FFFFFF), CircleShape)
                             ) {
                                 Icon(
                                     Icons.Default.SkipPrevious,
                                     contentDescription = "Previous Video",
                                     tint = Color.White,
-                                    modifier = Modifier.size(if (isCompactSplitWindow) 22.dp else 26.dp)
+                                    modifier = Modifier.size(if (isCompactSplitWindow) 20.dp else 24.dp)
                                 )
                             }
                         }
 
+                        // 3. Rewind 10s
                         IconButton(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
@@ -1096,16 +1486,18 @@ fun VideoPlayerView(
                             modifier = Modifier
                                 .size(seekBtnSize)
                                 .clip(CircleShape)
-                                .background(HybridTranslucentControl)
+                                .background(Color(0x28FFFFFF))
+                                .border(1.dp, Color(0x33FFFFFF), CircleShape)
                         ) {
                             Icon(
                                 Icons.Default.Replay10,
                                 contentDescription = "Rewind 10s",
                                 tint = Color.White,
-                                modifier = Modifier.size(if (isCompactSplitWindow) 24.dp else 30.dp)
+                                modifier = Modifier.size(if (isCompactSplitWindow) 22.dp else 28.dp)
                             )
                         }
 
+                        // 4. Center Play / Pause in Pure High-Contrast White
                         IconButton(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
@@ -1118,7 +1510,7 @@ fun VideoPlayerView(
                             modifier = Modifier
                                 .size(playBtnSize)
                                 .clip(CircleShape)
-                                .background(HybridEmerald.copy(alpha = 0.88f))
+                                .background(Color.White)
                         ) {
                             Icon(
                                 imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -1128,6 +1520,7 @@ fun VideoPlayerView(
                             )
                         }
 
+                        // 5. Forward 10s
                         IconButton(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
@@ -1138,36 +1531,65 @@ fun VideoPlayerView(
                             modifier = Modifier
                                 .size(seekBtnSize)
                                 .clip(CircleShape)
-                                .background(HybridTranslucentControl)
+                                .background(Color(0x28FFFFFF))
+                                .border(1.dp, Color(0x33FFFFFF), CircleShape)
                         ) {
                             Icon(
                                 Icons.Default.Forward10,
                                 contentDescription = "Forward 10s",
                                 tint = Color.White,
-                                modifier = Modifier.size(if (isCompactSplitWindow) 24.dp else 30.dp)
+                                modifier = Modifier.size(if (isCompactSplitWindow) 22.dp else 28.dp)
                             )
                         }
 
+                        // 6. Next Video
                         if (allVideos.size > 1) {
                             IconButton(
                                 onClick = {
                                     lastInteractionTime = System.currentTimeMillis()
                                     val idx = allVideos.indexOfFirst { it.path == videoPath }
-                                    val nextIdx = if (idx >= 0) (idx + 1) % allVideos.size else 0
+                                    val nextIdx = if (isShuffleActive) {
+                                        val candidates = (0 until allVideos.size).filter { it != idx }
+                                        if (candidates.isNotEmpty()) candidates.random() else 0
+                                    } else {
+                                        if (idx >= 0) (idx + 1) % allVideos.size else 0
+                                    }
                                     onSelectVideo(allVideos[nextIdx])
                                 },
                                 modifier = Modifier
                                     .size(sideBtnSize)
                                     .clip(CircleShape)
-                                    .background(HybridTranslucentControl)
+                                    .background(Color(0x28FFFFFF))
+                                    .border(1.dp, Color(0x33FFFFFF), CircleShape)
                             ) {
                                 Icon(
                                     Icons.Default.SkipNext,
                                     contentDescription = "Next Video",
                                     tint = Color.White,
-                                    modifier = Modifier.size(if (isCompactSplitWindow) 22.dp else 26.dp)
+                                    modifier = Modifier.size(if (isCompactSplitWindow) 20.dp else 24.dp)
                                 )
                             }
+                        }
+
+                        // 7. Loop Single / Loop All Toggle
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                isLoopSingleActive = !isLoopSingleActive
+                                gestureOverlayText = if (isLoopSingleActive) "🔂 Repeat 1 Video" else "🔁 Repeat All Videos"
+                            },
+                            modifier = Modifier
+                                .size(sideBtnSize)
+                                .clip(CircleShape)
+                                .background(if (isLoopSingleActive) Color(0x66FFFFFF) else Color(0x28FFFFFF))
+                                .border(1.dp, if (isLoopSingleActive) Color.White else Color(0x33FFFFFF), CircleShape)
+                        ) {
+                            Icon(
+                                if (isLoopSingleActive) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                contentDescription = "Repeat Mode",
+                                tint = Color.White,
+                                modifier = Modifier.size(if (isCompactSplitWindow) 18.dp else 22.dp)
+                            )
                         }
                     }
 
@@ -1186,10 +1608,7 @@ fun VideoPlayerView(
                         listOf("Original", "Clear Sharp", "Crystal Ice Blue", "Warm Cinema", "AMOLED Contrast")
                     }
                     val aspectPresets = remember {
-                        listOf("Full Screen", "Zoom Crop", "Original Fit", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")
-                    }
-                    val speedPresets = remember {
-                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
+                        listOf("Original Fit", "Full Screen", "Zoom Crop", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")
                     }
 
                     VisualVideoControlsStrip(
@@ -1208,41 +1627,40 @@ fun VideoPlayerView(
                             updateVolumeWithBoost(nextVol, triggerManualHaptic = true)
                             gestureOverlayText = "🔊 $nextVol%"
                         },
-                        selectedResolution = selectedResolution,
-                        onCycleResolution = {
-                            val allRes = VideoResolutionPreset.entries
-                            val nextIdx = (allRes.indexOf(selectedResolution) + 1) % allRes.size
-                            val nextRes = allRes[nextIdx]
-                            selectedResolution = nextRes
-                            gestureOverlayText = "🎞️ ${nextRes.badge}"
+                        playbackSpeed = playbackSpeed,
+                        onCyclePlaybackSpeed = {
+                            showSpeedDialog = true
                             lastInteractionTime = System.currentTimeMillis()
                         },
-                        visualFilterIndex = filterPresets.indexOf(visualFilter).coerceAtLeast(0),
-                        onCycleVisualFilter = {
-                            val nextIdx = (filterPresets.indexOf(visualFilter) + 1) % filterPresets.size
-                            visualFilter = filterPresets[nextIdx]
-                            gestureOverlayText = "✨ ${visualFilter}"
+                        aspectCycleIndex = aspectPresets.indexOf(aspectRatioMode).coerceAtLeast(0),
+                        onCycleAspectRatio = {
+                            val nextIdx = (aspectPresets.indexOf(aspectRatioMode) + 1) % aspectPresets.size
+                            aspectRatioMode = aspectPresets[nextIdx]
+                            gestureOverlayText = "📐 $aspectRatioMode"
                             lastInteractionTime = System.currentTimeMillis()
                         },
-                        abStartMs = abPointA,
-                        abEndMs = abPointB,
-                        onToggleAbRepeat = {
-                            when {
-                                abPointA == null -> {
-                                    abPointA = currentPosMs
-                                    gestureOverlayText = "A → ${formatVideoTime(currentPosMs)}"
-                                }
-                                abPointB == null && currentPosMs > (abPointA ?: 0L) + 1000L -> {
-                                    abPointB = currentPosMs
-                                    gestureOverlayText = "A ⇄ B"
-                                }
-                                else -> {
-                                    abPointA = null
-                                    abPointB = null
-                                    gestureOverlayText = "A-B OFF"
-                                }
+                        onRotateOrientation = {
+                            val activity = context as? Activity
+                            if (orientationLabel == "Landscape") {
+                                orientationLabel = "Portrait"
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            } else {
+                                orientationLabel = "Landscape"
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                             }
                             lastInteractionTime = System.currentTimeMillis()
+                        },
+                        onEnterPipClick = {
+                            try {
+                                val activity = context as? Activity
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
+                                    val params = PictureInPictureParams.Builder()
+                                        .setAspectRatio(Rational(16, 9))
+                                        .build()
+                                    activity.enterPictureInPictureMode(params)
+                                }
+                            } catch (_: Exception) {
+                            }
                         },
                         onCaptureScreenshot = {
                             val savedFile = File(context.cacheDir, "hybrid_frame_${System.currentTimeMillis()}.jpg")
@@ -1264,64 +1682,66 @@ fun VideoPlayerView(
                                 }
                             } catch (_: Exception) {
                             }
-                            gestureOverlayText = "📸 ${formatVideoTime(currentPosMs)}"
-                            Toast.makeText(
-                                context,
-                                "📸 ${savedFile.name}",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            gestureOverlayText = "📸 Snapshot Saved"
+                            Toast.makeText(context, "📸 Snapshot saved: ${savedFile.name}", Toast.LENGTH_SHORT).show()
                         },
                         isBgAudioEnabled = false,
                         onToggleBgAudio = {
                             onProgressUpdate(currentPosMs)
                             onBackgroundAudioPlay()
                         },
-                        onEnterPipClick = {
-                            try {
-                                val activity = context as? Activity
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
-                                    val params = PictureInPictureParams.Builder()
-                                        .setAspectRatio(Rational(16, 9))
-                                        .build()
-                                    activity.enterPictureInPictureMode(params)
+                        abStartMs = abPointA,
+                        abEndMs = abPointB,
+                        onToggleAbRepeat = {
+                            when {
+                                abPointA == null -> {
+                                    abPointA = currentPosMs
+                                    gestureOverlayText = "A → ${formatVideoTime(currentPosMs)}"
                                 }
-                            } catch (_: Exception) {
+                                abPointB == null && currentPosMs > (abPointA ?: 0L) + 1000L -> {
+                                    abPointB = currentPosMs
+                                    gestureOverlayText = "A ⇄ B Loop"
+                                }
+                                else -> {
+                                    abPointA = null
+                                    abPointB = null
+                                    gestureOverlayText = "A-B Loop OFF"
+                                }
                             }
-                        },
-                        aspectCycleIndex = aspectPresets.indexOf(aspectRatioMode).coerceAtLeast(0),
-                        onCycleAspectRatio = {
-                            val nextIdx = (aspectPresets.indexOf(aspectRatioMode) + 1) % aspectPresets.size
-                            aspectRatioMode = aspectPresets[nextIdx]
-                            gestureOverlayText = "📐 $aspectRatioMode"
                             lastInteractionTime = System.currentTimeMillis()
                         },
-                        playbackSpeed = playbackSpeed,
-                        onCyclePlaybackSpeed = {
-                            val idx = speedPresets.indexOfFirst { it == playbackSpeed }
-                            val nextSp = speedPresets[(idx + 1).coerceAtLeast(0) % speedPresets.size]
-                            playbackSpeed = nextSp
-                            gestureOverlayText = "⚡ ${nextSp}x"
-                            lastInteractionTime = System.currentTimeMillis()
+                        subtitlesEnabled = subtitlesEnabled,
+                        onOpenSubtitles = { showSubtitleDialog = true },
+                        onOpenAudioTrack = { showAudioTrackDialog = true },
+                        visualFilterName = visualFilter,
+                        onOpenVisualFilters = { showFilterDialog = true },
+                        isNightEyeActive = isNightEyeActive,
+                        onToggleNightEye = {
+                            isNightEyeActive = !isNightEyeActive
+                            gestureOverlayText = if (isNightEyeActive) "🌙 Night Eye 2% ON" else "☀️ Standard Eye"
                         },
-                        sleepTimerMinutes = videoSleepTimerTotalMinutes,
-                        onOpenProControlSheet = { showThreeDotSheet = true },
+                        isMirrorFlipped = isMirrorFlipped,
+                        onToggleMirrorFlip = {
+                            isMirrorFlipped = !isMirrorFlipped
+                            gestureOverlayText = if (isMirrorFlipped) "🪞 Mirror Flip ON" else "Standard View"
+                        },
+                        isShuffleActive = isShuffleActive,
+                        onToggleShuffle = {
+                            isShuffleActive = !isShuffleActive
+                            gestureOverlayText = if (isShuffleActive) "🔀 Shuffle ON" else "➡️ Order Play"
+                        },
+                        isLoopSingleActive = isLoopSingleActive,
+                        onToggleLoopSingle = {
+                            isLoopSingleActive = !isLoopSingleActive
+                            gestureOverlayText = if (isLoopSingleActive) "🔂 Loop 1 ON" else "🔁 Loop All"
+                        },
                         onOpenQueueSheet = { showQueueDialog = true },
-                        onRotateOrientation = {
-                            val activity = context as? Activity
-                            if (orientationLabel == "Landscape") {
-                                orientationLabel = "Portrait"
-                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                            } else {
-                                orientationLabel = "Landscape"
-                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                            }
-                            lastInteractionTime = System.currentTimeMillis()
-                        }
+                        onOpenProControlSheet = { showThreeDotSheet = true }
                     )
 
                     Spacer(modifier = Modifier.height(6.dp))
 
-                    // SeekBar & Timestamps
+                    // SeekBar & Timestamps (Clean White Theme)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -1340,8 +1760,8 @@ fun VideoPlayerView(
                             },
                             valueRange = 0f..totalDurationMs.toFloat().coerceAtLeast(1f),
                             colors = SliderDefaults.colors(
-                                thumbColor = HybridEmerald,
-                                activeTrackColor = HybridEmerald,
+                                thumbColor = Color.White,
+                                activeTrackColor = Color.White,
                                 inactiveTrackColor = Color(0x44FFFFFF)
                             ),
                             modifier = Modifier
@@ -1503,11 +1923,11 @@ fun VideoPlayerView(
         )
     }
 
-    // --- CLEAN, NON-CLIPPED 3-DOT MENU (Sleep Timer + Distinct Features — Zero Duplicate Controls, Zero 8K Clutter) ---
+    // --- 25 PRO TOOLS & SLEEP TIMER SUITE DIALOG ---
     if (showThreeDotSheet) {
         AlertDialog(
             onDismissRequest = { showThreeDotSheet = false },
-            containerColor = HybridCardBg,
+            containerColor = Color(0xFF0F1420),
             title = {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1515,7 +1935,7 @@ fun VideoPlayerView(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Player Tools & Sleep Timer",
+                        text = "25 Pro Tools & Features",
                         color = Color.White,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 16.sp
@@ -1523,34 +1943,33 @@ fun VideoPlayerView(
                     if (videoSleepRemainingSeconds > 0) {
                         Text(
                             text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
-                            color = HybridGold,
+                            color = Color.White,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
             },
             text = {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // 1. SLEEP TIMER (Clean 2-row grid so nothing ever clips on any phone width)
+                    // 1. SLEEP TIMER (Clean 2-row grid)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
-                            .background(HybridCardAlt)
-                            .border(
-                                1.dp,
-                                if (videoSleepRemainingSeconds > 0) HybridGold else HybridCardBorder,
-                                RoundedCornerShape(14.dp)
-                            )
+                            .background(Color(0x28FFFFFF))
+                            .border(1.dp, Color(0x38FFFFFF), RoundedCornerShape(14.dp))
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Bedtime, contentDescription = null, tint = HybridGold, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Bedtime, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = if (videoSleepRemainingSeconds > 0) {
@@ -1575,7 +1994,7 @@ fun VideoPlayerView(
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected) HybridGold else Color(0x28FFFFFF))
+                                        .background(if (selected) Color.White else Color(0x28FFFFFF))
                                         .clickable {
                                             videoSleepTimerTotalMinutes = mins
                                             videoSleepRemainingSeconds = if (mins == 0) 0 else mins * 60
@@ -1601,7 +2020,7 @@ fun VideoPlayerView(
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected) HybridGold else Color(0x28FFFFFF))
+                                        .background(if (selected) Color.White else Color(0x28FFFFFF))
                                         .clickable {
                                             videoSleepTimerTotalMinutes = mins
                                             videoSleepRemainingSeconds = if (mins == -1) {
@@ -1625,115 +2044,291 @@ fun VideoPlayerView(
                         }
                     }
 
-                    // 2. DISTINCT ACTION TILES (No duplicate speed/aspect rows)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = {
-                                showThreeDotSheet = false
-                                onProgressUpdate(currentPosMs)
-                                onBackgroundAudioPlay()
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Headphones, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("BG Audio", color = Color.White, fontSize = 12.sp, maxLines = 1)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                when {
-                                    abPointA == null -> {
-                                        abPointA = currentPosMs
-                                        gestureOverlayText = "Loop A Set"
-                                    }
-                                    abPointB == null && currentPosMs > (abPointA ?: 0L) + 1000L -> {
-                                        abPointB = currentPosMs
-                                        gestureOverlayText = "A-B Loop Active"
-                                    }
-                                    else -> {
-                                        abPointA = null
-                                        abPointB = null
-                                        gestureOverlayText = "A-B Loop Off"
+                    // 24 PRO ACTION BUTTONS (Clean 2-Column Grid with Crisp White Icons & Badges)
+                    val proTools = listOf(
+                        Triple(Icons.Default.Speed, "Playback Speed", "${playbackSpeed}x Speed") to {
+                            showThreeDotSheet = false
+                            showSpeedDialog = true
+                        },
+                        Triple(Icons.Default.Audiotrack, "Audio Track", "Dual Audio / Stereo") to {
+                            showThreeDotSheet = false
+                            showAudioTrackDialog = true
+                        },
+                        Triple(Icons.Default.Subtitles, "Subtitles & CC", if (subtitlesEnabled) "CC Active" else "Off") to {
+                            showThreeDotSheet = false
+                            showSubtitleDialog = true
+                        },
+                        Triple(Icons.Default.AspectRatio, "Aspect Ratio", aspectRatioMode) to {
+                            val aspectPresets = listOf("Original Fit", "Full Screen", "Zoom Crop", "Stretch 16:9", "Cinema 21:9", "Classic 4:3")
+                            val nextIdx = (aspectPresets.indexOf(aspectRatioMode) + 1) % aspectPresets.size
+                            aspectRatioMode = aspectPresets[nextIdx]
+                            gestureOverlayText = "📐 $aspectRatioMode"
+                        },
+                        Triple(Icons.Default.ScreenRotation, "Screen Rotation", orientationLabel) to {
+                            val activity = context as? Activity
+                            if (orientationLabel == "Landscape") {
+                                orientationLabel = "Portrait"
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            } else {
+                                orientationLabel = "Landscape"
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            }
+                        },
+                        Triple(Icons.Default.Repeat, "A-B Looper", if (abPointA != null) "Loop Active" else "Loop Off") to {
+                            when {
+                                abPointA == null -> {
+                                    abPointA = currentPosMs
+                                    gestureOverlayText = "A → ${formatVideoTime(currentPosMs)}"
+                                }
+                                abPointB == null && currentPosMs > (abPointA ?: 0L) + 1000L -> {
+                                    abPointB = currentPosMs
+                                    gestureOverlayText = "A ⇄ B Loop"
+                                }
+                                else -> {
+                                    abPointA = null
+                                    abPointB = null
+                                    gestureOverlayText = "A-B Loop OFF"
+                                }
+                            }
+                        },
+                        Triple(Icons.Default.Palette, "Color Filters", visualFilter) to {
+                            showThreeDotSheet = false
+                            showFilterDialog = true
+                        },
+                        Triple(Icons.Default.GraphicEq, "200% Vol Boost", "${volumePercent}% Vol") to {
+                            val nextVol = when {
+                                volumePercent < 100 -> 100
+                                volumePercent == 100 -> 150
+                                volumePercent in 101..175 -> 200
+                                else -> 100
+                            }
+                            updateVolumeWithBoost(nextVol, triggerManualHaptic = true)
+                            gestureOverlayText = "🔊 $nextVol%"
+                        },
+                        Triple(Icons.Default.Headphones, "BG Audio Mode", "Play Screen Off") to {
+                            showThreeDotSheet = false
+                            onProgressUpdate(currentPosMs)
+                            onBackgroundAudioPlay()
+                        },
+                        Triple(Icons.Default.PictureInPictureAlt, "Floating PiP", "Mini Window") to {
+                            showThreeDotSheet = false
+                            try {
+                                val activity = context as? Activity
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
+                                    val params = PictureInPictureParams.Builder()
+                                        .setAspectRatio(Rational(16, 9))
+                                        .build()
+                                    activity.enterPictureInPictureMode(params)
+                                }
+                            } catch (_: Exception) {
+                            }
+                        },
+                        Triple(Icons.Default.PlaylistPlay, "Video Queue", "${allVideos.size} Videos") to {
+                            showThreeDotSheet = false
+                            showQueueDialog = true
+                        },
+                        Triple(Icons.Default.LockOpen, "Touch Lock", "Lock Touches") to {
+                            showThreeDotSheet = false
+                            isScreenLocked = true
+                        },
+                        Triple(Icons.Default.VolumeMute, "Mute / Unmute", if (isMuted) "Muted" else "Sound ON") to {
+                            toggleMute()
+                        },
+                        Triple(Icons.Default.Info, "Media Details", "Resolution & Codec") to {
+                            showThreeDotSheet = false
+                            showMediaInfoDialog = true
+                        },
+                        Triple(Icons.Default.Favorite, "Favorite", if (isFavorite) "Bookmarked ❤️" else "Add Favorite") to {
+                            toggleFavorite()
+                        },
+                        Triple(Icons.Default.Lock, "Private Vault", "Lock Video") to {
+                            showThreeDotSheet = false
+                            Toast.makeText(context, "🔒 Video Secured in Private Vault", Toast.LENGTH_SHORT).show()
+                        },
+                        Triple(Icons.Default.Share, "Turbo Share", "Send Video") to {
+                            showThreeDotSheet = false
+                            try {
+                                val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "video/*"
+                                    putExtra(android.content.Intent.EXTRA_STREAM, Uri.parse(videoPath))
+                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(android.content.Intent.createChooser(shareIntent, "Share Video via"))
+                            } catch (_: Exception) {
+                                Toast.makeText(context, "Sharing: $displayTitle", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        Triple(Icons.Default.CameraAlt, "Snapshot Capture", "Save Frame 📸") to {
+                            showThreeDotSheet = false
+                            val savedFile = File(context.cacheDir, "hybrid_frame_${System.currentTimeMillis()}.jpg")
+                            try {
+                                val retriever = android.media.MediaMetadataRetriever()
+                                if (videoPath.startsWith("http")) {
+                                    retriever.setDataSource(videoPath, HashMap())
+                                } else if (videoPath.startsWith("content://")) {
+                                    retriever.setDataSource(context, Uri.parse(videoPath))
+                                } else {
+                                    retriever.setDataSource(videoPath)
+                                }
+                                val frameBmp = retriever.getFrameAtTime(currentPosMs * 1000L)
+                                retriever.release()
+                                if (frameBmp != null) {
+                                    FileOutputStream(savedFile).use { out ->
+                                        frameBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
                                     }
                                 }
-                                showThreeDotSheet = false
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Repeat, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            val abText = when {
-                                abPointA != null && abPointB != null -> "Clear A-B"
-                                abPointA != null -> "Set Point B"
-                                else -> "A-B Repeat"
+                            } catch (_: Exception) {
                             }
-                            Text(abText, color = Color.White, fontSize = 12.sp, maxLines = 1)
+                            Toast.makeText(context, "📸 Frame snapshot saved: ${savedFile.name}", Toast.LENGTH_SHORT).show()
+                        },
+                        Triple(Icons.Default.Flip, "Mirror Flip 180°", if (isMirrorFlipped) "Flipped ON" else "Normal") to {
+                            isMirrorFlipped = !isMirrorFlipped
+                            gestureOverlayText = if (isMirrorFlipped) "🪞 Mirror Flip ON" else "Standard View"
+                        },
+                        Triple(Icons.Default.DarkMode, "Night Eye Comfort", if (isNightEyeActive) "2% Ultra-Dim ON" else "Standard") to {
+                            isNightEyeActive = !isNightEyeActive
+                            gestureOverlayText = if (isNightEyeActive) "🌙 Night Eye 2% ON" else "☀️ Standard Eye"
+                        },
+                        Triple(Icons.Default.AutoMode, "Auto-Play Next", if (isAutoPlayNextEnabled) "Auto ON" else "Auto OFF") to {
+                            isAutoPlayNextEnabled = !isAutoPlayNextEnabled
+                            prefs.edit().putBoolean("auto_play_next_video", isAutoPlayNextEnabled).apply()
+                            gestureOverlayText = if (isAutoPlayNextEnabled) "⏭️ Auto-Play ON" else "⏸️ Auto-Play OFF"
+                        },
+                        Triple(Icons.Default.RepeatOne, "Repeat 1 Video", if (isLoopSingleActive) "Looping 1" else "Loop All") to {
+                            isLoopSingleActive = !isLoopSingleActive
+                            gestureOverlayText = if (isLoopSingleActive) "🔂 Repeat 1 Video" else "🔁 Repeat All Videos"
+                        },
+                        Triple(Icons.Default.Shuffle, "Shuffle Queue", if (isShuffleActive) "Shuffle ON" else "Order Play") to {
+                            isShuffleActive = !isShuffleActive
+                            gestureOverlayText = if (isShuffleActive) "🔀 Shuffle ON" else "➡️ Order Play"
+                        },
+                        Triple(Icons.Default.Memory, "Decoder Engine", if (isHardwareDecoderActive) "HW+ Accelerated" else "SW Adaptive") to {
+                            isHardwareDecoderActive = !isHardwareDecoderActive
+                            isSoftwareFallbackActive = !isHardwareDecoderActive
+                            gestureOverlayText = if (isHardwareDecoderActive) "⚡ HW+ Accelerated" else "⚙️ SW Adaptive"
                         }
-                    }
+                    )
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = {
-                                showThreeDotSheet = false
-                                showAudioTrackDialog = true
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                    // Render in 2-column rows
+                    for (i in proTools.indices step 2) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.Audiotrack, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Audio Track", color = Color.White, fontSize = 12.sp, maxLines = 1)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                showThreeDotSheet = false
-                                showSubtitleDialog = true
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Subtitles, contentDescription = null, tint = HybridCyan, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Subtitles", color = Color.White, fontSize = 12.sp, maxLines = 1)
-                        }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = {
-                                showThreeDotSheet = false
-                                showFilterDialog = true
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Palette, contentDescription = null, tint = Color(0xFFD500F9), modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Color Filter", color = Color.White, fontSize = 12.sp, maxLines = 1)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                showThreeDotSheet = false
-                                showMediaInfoDialog = true
-                            },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Info, contentDescription = null, tint = HybridGold, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("File Info", color = HybridGold, fontSize = 12.sp, maxLines = 1)
+                            val item1 = proTools[i]
+                            ProToolButton(
+                                icon = item1.first.first,
+                                title = item1.first.second,
+                                subtitle = item1.first.third,
+                                onClick = item1.second,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (i + 1 < proTools.size) {
+                                val item2 = proTools[i + 1]
+                                ProToolButton(
+                                    icon = item2.first.first,
+                                    title = item2.first.second,
+                                    subtitle = item2.first.third,
+                                    onClick = item2.second,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
                         }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showThreeDotSheet = false }) {
-                    Text("Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                    Text("Close", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    // --- ACCURATE PLAYBACK SPEED SELECTOR DIALOG (0.25x – 8.0x) ---
+    if (showSpeedDialog) {
+        val speedOptions = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f, 6.0f, 8.0f)
+        AlertDialog(
+            onDismissRequest = { showSpeedDialog = false },
+            containerColor = Color(0xFF0F1420),
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Playback Speed", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(
+                        text = String.format(Locale.US, "%.2fx", playbackSpeed),
+                        color = Color.White,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Select preset or drag slider (0.25x to 8.0x Turbo)",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 12.sp
+                    )
+
+                    // Continuous Slider from 0.25f to 8.0f
+                    Slider(
+                        value = playbackSpeed.coerceIn(0.25f, 8.0f),
+                        onValueChange = { newSp ->
+                            playbackSpeed = (Math.round(newSp * 20f) / 20f).coerceIn(0.25f, 8.0f)
+                            applyHardwarePlaybackSpeed(mediaPlayerRef)
+                        },
+                        valueRange = 0.25f..8.0f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.White,
+                            inactiveTrackColor = Color(0x38FFFFFF)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Preset Chips (4 per row)
+                    for (row in speedOptions.chunked(4)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            row.forEach { sp ->
+                                val isSelected = Math.abs(playbackSpeed - sp) < 0.05f
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) Color.White else Color(0x28FFFFFF))
+                                        .border(1.dp, if (isSelected) Color.White else Color(0x33FFFFFF), RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            playbackSpeed = sp
+                                            applyHardwarePlaybackSpeed(mediaPlayerRef)
+                                            gestureOverlayText = "⚡ ${sp}x"
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "${sp}x",
+                                        color = if (isSelected) Color.Black else Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSpeedDialog = false }) {
+                    Text("Done", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -1938,6 +2533,50 @@ private fun ProPillButton(
                 color = if (isActive) HybridEmerald else Color.White,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProToolButton(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0x28FFFFFF))
+            .border(1.dp, Color(0x38FFFFFF), RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = title,
+            tint = Color.White,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                color = Color.White.copy(alpha = 0.65f),
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

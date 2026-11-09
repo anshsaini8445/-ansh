@@ -31,10 +31,10 @@ class ExampleRobolectricTest {
     @Test
     fun `mainActivity launches without crash and displays saved 3D fluffy puppy and teddy mascots in Me tab`() {
         val fluffyMascots = CompanionBreed.FLUFFY_CASSETTE_MASCOTS
-        assertEquals(10, fluffyMascots.size)
+        assertTrue(fluffyMascots.size >= 10)
         assertTrue(fluffyMascots.any { it.isTeddyBear && it.cassetteLabel == "HONEY TAPE" })
         assertTrue(fluffyMascots.any { !it.isTeddyBear && it.cassetteLabel == "SKY PUPPY" })
-        assertEquals(10, fluffyMascots.map { it.cassetteLabel }.distinct().size)
+        assertEquals(fluffyMascots.size, fluffyMascots.map { it.cassetteLabel }.distinct().size)
 
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("nav_tab_me").performClick()

@@ -73,6 +73,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         try {
             enableEdgeToEdge()
+            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = false
+                isAppearanceLightNavigationBars = false
+            }
         } catch (_: Throwable) {
         }
         try {
@@ -83,6 +87,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val activeTheme by viewModel.activeTheme.collectAsState()
+            val scenicBackdropPreset by viewModel.scenicBackdropPreset.collectAsState()
             val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
             val companionEnabled by viewModel.companionEnabled.collectAsState()
             val companionBreed by viewModel.companionBreed.collectAsState()
@@ -124,6 +129,24 @@ class MainActivity : ComponentActivity() {
                     viewModel.setForegroundVideoActive(videoActive)
                     shouldAutoEnterPipOnLeave = videoActive
                     updateSystemPipParams(videoActive)
+                    if (videoActive) {
+                        // Automatically pause background audio when any foreground/mini video starts playing
+                        viewModel.pauseMusicForVideoPlayback()
+                    }
+                    try {
+                        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                            isAppearanceLightStatusBars = false
+                            isAppearanceLightNavigationBars = false
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+
+                // If user starts a song in the Audio section while Floating Mini Video is open, auto-close Mini Video
+                LaunchedEffect(isMusicPlaying) {
+                    if (isMusicPlaying && isFloatingMiniVideoActive) {
+                        isFloatingMiniVideoActive = false
+                    }
                 }
 
                 val watchedVideoIds = remember(history) {
@@ -151,13 +174,20 @@ class MainActivity : ComponentActivity() {
                     val isPipMicroWindow = maxHeight < 215.dp || maxWidth < 230.dp
                     val isCompactSplitScreen = !isPipMicroWindow && maxHeight < 430.dp
 
-                    // Optional Custom Phone Gallery Wallpaper Overlay
+                    // 1. Default Scenic Picture Theme Backdrop (eliminates plain black background behind songs & videos)
+                    GlobalScenicThemeBackdrop(
+                        presetName = scenicBackdropPreset,
+                        accentColor = accentColor,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // 2. Permanent Custom Phone Gallery Wallpaper Overlay across all screens (Video, Audio, Search, Me)
                     if (customWallpaperUri != null) {
                         AsyncImage(
                             model = customWallpaperUri,
                             contentDescription = "Custom Wallpaper",
                             contentScale = ContentScale.Crop,
-                            alpha = 0.22f,
+                            alpha = 0.56f,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -166,7 +196,7 @@ class MainActivity : ComponentActivity() {
                         when (screen) {
                             ActiveScreen.MainTabs -> {
                                 Scaffold(
-                                    containerColor = if (customWallpaperUri != null) Color.Transparent else MaterialTheme.colorScheme.background,
+                                    containerColor = Color.Transparent,
                                     contentWindowInsets = WindowInsets.systemBars,
                                     bottomBar = {
                                         if (!isPipMicroWindow) {
@@ -270,11 +300,15 @@ class MainActivity : ComponentActivity() {
                                                 VideoSectionScreen(
                                                     viewModel = viewModel,
                                                     onPlayVideo = { video ->
+                                                        viewModel.pauseMusicForVideoPlayback()
                                                         isFloatingMiniVideoActive = false
                                                         activeVideoItem = video
                                                         activeVideoProgress = 0L
                                                         coroutineScope.launch {
-                                                            activeVideoProgress = viewModel.getVideoProgress(video.id)
+                                                            val savedPos = viewModel.getVideoProgress(video.id)
+                                                            activeVideoProgress = savedPos
+                                                            // Immediately record in History so this video is FIRST (index 0)
+                                                            viewModel.saveVideoProgress(video.id, savedPos.coerceAtLeast(1000L))
                                                             navigationStack.add(ActiveScreen.VideoPlayer)
                                                         }
                                                     },
@@ -317,15 +351,19 @@ class MainActivity : ComponentActivity() {
                                                 SmartSearchScreen(
                                                     viewModel = viewModel,
                                                     onPlayVideo = { video ->
+                                                        viewModel.pauseMusicForVideoPlayback()
                                                         isFloatingMiniVideoActive = false
                                                         activeVideoItem = video
                                                         activeVideoProgress = 0L
                                                         coroutineScope.launch {
-                                                            activeVideoProgress = viewModel.getVideoProgress(video.id)
+                                                            val savedPos = viewModel.getVideoProgress(video.id)
+                                                            activeVideoProgress = savedPos
+                                                            viewModel.saveVideoProgress(video.id, savedPos.coerceAtLeast(1000L))
                                                             navigationStack.add(ActiveScreen.VideoPlayer)
                                                         }
                                                     },
                                                     onPlayMusic = { track ->
+                                                        isFloatingMiniVideoActive = false
                                                         viewModel.playMusic(track)
                                                         navigationStack.add(ActiveScreen.MusicPlayer)
                                                     }
@@ -354,6 +392,7 @@ class MainActivity : ComponentActivity() {
                                                         navigationStack.add(ActiveScreen.PdfReader)
                                                     },
                                                     onPlayStreamVideo = { streamItem ->
+                                                        viewModel.pauseMusicForVideoPlayback()
                                                         isFloatingMiniVideoActive = false
                                                         activeVideoItem = streamItem
                                                         activeVideoProgress = 0L
@@ -723,12 +762,23 @@ private fun BoxScope.HybridFloatingMiniVideoWindow(
                         try {
                             setVideoPath(video.path)
                             setOnPreparedListener { mp ->
+                                try {
+                                    mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                                    val vw = mp.videoWidth.coerceAtLeast(1)
+                                    val vh = mp.videoHeight.coerceAtLeast(1)
+                                    if (vw > 960 || vh > 960) {
+                                        val ratio = minOf(960f / vw, 960f / vh)
+                                        holder.setFixedSize(((vw * ratio).toInt() / 2) * 2, ((vh * ratio).toInt() / 2) * 2)
+                                    }
+                                } catch (_: Exception) {
+                                }
                                 if (initialPositionMs > 0L) {
                                     mp.seekTo(initialPositionMs.toInt())
                                 }
                                 mp.start()
                                 isMiniPlaying = true
                             }
+                            setOnErrorListener { _, _, _ -> true }
                         } catch (_: Exception) {
                         }
                     }

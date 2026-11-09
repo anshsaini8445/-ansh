@@ -39,11 +39,13 @@ import com.example.helpers.SecurityDefenseEngine
 import com.example.helpers.SyncedLyricLine
 import com.example.helpers.SyncedLyricsEngine
 import com.example.ui.persona.DemographicMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.File
 import kotlin.math.sqrt
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -197,13 +199,54 @@ class PlayerViewModel(application: Application) :
     private val _abPointBMs = MutableStateFlow<Long?>(null)
     val abPointBMs: StateFlow<Long?> = _abPointBMs.asStateFlow()
 
-    // --- Sleep Timer ---
+    // --- Sleep Timer (with Live Millisecond / Tenth-Second Countdown) ---
     private val _sleepTimerMinutes = MutableStateFlow(0)
     val sleepTimerMinutes: StateFlow<Int> = _sleepTimerMinutes.asStateFlow()
 
-    // --- True Non-Repeating Fisher-Yates Shuffle & Repeat Mode ---
+    private val _sleepTimerRemainingMs = MutableStateFlow(0L)
+    val sleepTimerRemainingMs: StateFlow<Long> = _sleepTimerRemainingMs.asStateFlow()
+
+    // --- 5-Second DJ Crossfade / Slow Fade-Out & Fade-In Engine ---
+    private val _djCrossfadeEnabled = MutableStateFlow(
+        prefs.getBoolean("music_dj_crossfade_5s", true)
+    )
+    val djCrossfadeEnabled: StateFlow<Boolean> = _djCrossfadeEnabled.asStateFlow()
+
+    private val _isDjCrossfadingNow = MutableStateFlow(false)
+    val isDjCrossfadingNow: StateFlow<Boolean> = _isDjCrossfadingNow.asStateFlow()
+
+    fun toggleDjCrossfade() {
+        val next = !_djCrossfadeEnabled.value
+        _djCrossfadeEnabled.value = next
+        prefs.edit().putBoolean("music_dj_crossfade_5s", next).apply()
+        if (!next) {
+            _isDjCrossfadingNow.value = false
+            applyChannelVolumeMultiplier(1.0f)
+        }
+    }
+
+    // --- Stereo Channel Balance ("Center Stereo", "Left Focus", "Right Focus", "3D Club Wide") ---
+    private val _audioBalanceMode = MutableStateFlow(
+        prefs.getString("music_audio_balance_mode", "Center Stereo") ?: "Center Stereo"
+    )
+    val audioBalanceMode: StateFlow<String> = _audioBalanceMode.asStateFlow()
+
+    fun cycleAudioBalanceMode() {
+        val modes = listOf("Center Stereo", "3D Club Wide", "Left Vocal Focus", "Right Instrument Focus")
+        val idx = modes.indexOf(_audioBalanceMode.value)
+        val next = modes[(idx + 1) % modes.size]
+        setAudioBalanceMode(next)
+    }
+
+    fun setAudioBalanceMode(mode: String) {
+        _audioBalanceMode.value = mode
+        prefs.edit().putString("music_audio_balance_mode", mode).apply()
+        applyChannelVolumeMultiplier(1.0f)
+    }
+
+    // --- True Non-Repeating Fisher-Yates Shuffle & Repeat Mode (Default: FALSE = Straight Line-by-Line Order) ---
     private val _isShuffleMode = MutableStateFlow(
-        prefs.getBoolean("music_shuffle_mode", false)
+        prefs.getBoolean("music_shuffle_mode_v3", false)
     )
     val isShuffleMode: StateFlow<Boolean> = _isShuffleMode.asStateFlow()
 
@@ -241,11 +284,21 @@ class PlayerViewModel(application: Application) :
     private val _bassBoostEnabled = MutableStateFlow(false)
     val bassBoostEnabled: StateFlow<Boolean> = _bassBoostEnabled.asStateFlow()
 
-    // --- Theme & 15+ 3D Animated Music Player Themes ---
+    // --- Theme, Scenic Picture Backdrop & 15+ 3D Animated Music Player Themes ---
     private val _activeTheme = MutableStateFlow(
         prefs.getString("saved_app_theme", "Hybrid Emerald") ?: "Hybrid Emerald"
     )
     val activeTheme: StateFlow<String> = _activeTheme.asStateFlow()
+
+    private val _scenicBackdropPreset = MutableStateFlow(
+        prefs.getString("saved_scenic_backdrop_preset", "Cyber Aurora Sky") ?: "Cyber Aurora Sky"
+    )
+    val scenicBackdropPreset: StateFlow<String> = _scenicBackdropPreset.asStateFlow()
+
+    fun selectScenicBackdropPreset(presetName: String) {
+        _scenicBackdropPreset.value = presetName
+        prefs.edit().putString("saved_scenic_backdrop_preset", presetName).apply()
+    }
 
     private val _active3DMusicTheme = MutableStateFlow(
         prefs.getString("saved_3d_music_theme", Music3DThemeEngine.THEMES_3D.first().name)
@@ -253,14 +306,20 @@ class PlayerViewModel(application: Application) :
     )
     val active3DMusicTheme: StateFlow<String> = _active3DMusicTheme.asStateFlow()
 
-    private val _customWallpaperUri = MutableStateFlow<String?>(null)
+    private val _customWallpaperUri = MutableStateFlow<String?>(
+        prefs.getString("saved_custom_wallpaper_path", null)?.takeIf { path ->
+            if (path.startsWith("/")) File(path).exists() else true
+        }
+    )
     val customWallpaperUri: StateFlow<String?> = _customWallpaperUri.asStateFlow()
 
     private val _selectedLanguage = MutableStateFlow(
-        prefs.getString(
-            "saved_app_language",
-            if (java.util.Locale.getDefault().language == "hi") "Hindi (हिन्दी)" else "English (Default)"
-        ) ?: "English (Default)"
+        (prefs.getString(
+            "saved_app_language_v3",
+            "🌐 System Default (Auto)"
+        ) ?: "🌐 System Default (Auto)").also { savedLang ->
+            com.example.ui.i18n.WorldLanguageEngine.activeLanguageState = savedLang
+        }
     )
     val selectedLanguage: StateFlow<String> = _selectedLanguage.asStateFlow()
 
@@ -743,9 +802,15 @@ class PlayerViewModel(application: Application) :
                 }
                 prepareAsync()
                 setOnPreparedListener { mp ->
+                    if (_djCrossfadeEnabled.value) {
+                        applyChannelVolumeMultiplier(0.24f)
+                    } else {
+                        applyChannelVolumeMultiplier(1.0f)
+                    }
                     mp.start()
                     _nowPlaying.value = item
                     _isPlaying.value = true
+                    _isDjCrossfadingNow.value = false
                     MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
                     AudioService.startServiceSafely(getApplication())
                     applySpeedAndPitch()
@@ -756,7 +821,7 @@ class PlayerViewModel(application: Application) :
 
                     viewModelScope.launch {
                         val progress = repository.getProgress(item.id)
-                        if (progress > 0 && progress < item.duration - 2000) {
+                        if (progress > 0 && progress < item.duration - 6000) {
                             mp.seekTo(progress.toInt())
                             _playbackPosition.value = progress
                             syncMediaNotification()
@@ -765,6 +830,7 @@ class PlayerViewModel(application: Application) :
                 }
                 setOnCompletionListener {
                     _isPlaying.value = false
+                    _isDjCrossfadingNow.value = false
                     _playbackPosition.value = 0L
                     progressJob?.cancel()
                     playNext(fromAutoCompletion = true)
@@ -775,6 +841,30 @@ class PlayerViewModel(application: Application) :
                 MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
                 syncMediaNotification()
             }
+        }
+    }
+
+    private fun applyChannelVolumeMultiplier(fadeMultiplier: Float) {
+        val clamped = fadeMultiplier.coerceIn(0.08f, 1.0f)
+        val (leftBase, rightBase) = when (_audioBalanceMode.value) {
+            "Left Vocal Focus" -> 1.0f to 0.45f
+            "Right Instrument Focus" -> 0.45f to 1.0f
+            "3D Club Wide" -> 1.0f to 0.92f
+            else -> 1.0f to 1.0f
+        }
+        try {
+            mediaPlayer?.setVolume(leftBase * clamped, rightBase * clamped)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun moveTrackInMusicQueue(fromIndex: Int, toIndex: Int) {
+        val currentList = _musicItems.value.toMutableList()
+        if (fromIndex in currentList.indices && toIndex in currentList.indices && fromIndex != toIndex) {
+            val moved = currentList.removeAt(fromIndex)
+            currentList.add(toIndex, moved)
+            _musicItems.value = currentList
+            _allMediaItems.value = (_videoItems.value + currentList).distinctBy { it.id }
         }
     }
 
@@ -797,7 +887,7 @@ class PlayerViewModel(application: Application) :
         val list = getActiveAudioPool()
         if (list.isNotEmpty()) {
             _isShuffleMode.value = true
-            prefs.edit().putBoolean("music_shuffle_mode", true).apply()
+            prefs.edit().putBoolean("music_shuffle_mode_v3", true).apply()
             refillShuffleDeck(list, _nowPlaying.value?.id)
             val nextId = unplayedShuffleIds.removeFirstOrNull()
             val target = list.firstOrNull { it.id == nextId } ?: list.random()
@@ -808,7 +898,7 @@ class PlayerViewModel(application: Application) :
     fun toggleShuffleMode() {
         val next = !_isShuffleMode.value
         _isShuffleMode.value = next
-        prefs.edit().putBoolean("music_shuffle_mode", next).apply()
+        prefs.edit().putBoolean("music_shuffle_mode_v3", next).apply()
         if (next) {
             refillShuffleDeck(getActiveAudioPool(), _nowPlaying.value?.id)
         } else {
@@ -881,13 +971,14 @@ class PlayerViewModel(application: Application) :
         applySpeedAndPitch()
     }
 
-    private fun applySpeedAndPitch() {
+    private fun applySpeedAndPitch(tempSpeedMultiplier: Float = 1.0f) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             mediaPlayer?.let { mp ->
                 if (mp.isPlaying) {
                     try {
+                        val effectiveSpeed = (_playbackSpeed.value * tempSpeedMultiplier).coerceIn(0.25f, 4.0f)
                         val params = PlaybackParams().apply {
-                            this.speed = _playbackSpeed.value
+                            this.speed = effectiveSpeed
                             this.pitch = _playbackPitch.value
                         }
                         mp.playbackParams = params
@@ -901,6 +992,8 @@ class PlayerViewModel(application: Application) :
     fun toggle200Boost() {
         set200Boost(!_is200BoostEnabled.value)
     }
+
+    fun toggle200VolumeBoost() = toggle200Boost()
 
     fun set200Boost(enabled: Boolean) {
         _is200BoostEnabled.value = enabled
@@ -939,13 +1032,25 @@ class PlayerViewModel(application: Application) :
     fun setSleepTimer(minutes: Int) {
         sleepTimerJob?.cancel()
         _sleepTimerMinutes.value = minutes
-        if (minutes > 0) {
-            sleepTimerJob = viewModelScope.launch {
-                delay(minutes * 60_000L)
-                if (_isPlaying.value) {
-                    togglePlayPause()
-                }
-                _sleepTimerMinutes.value = 0
+        if (minutes <= 0) {
+            _sleepTimerRemainingMs.value = 0L
+            return
+        }
+        val totalDurationMs = minutes * 60_000L
+        val targetEndEpochMs = System.currentTimeMillis() + totalDurationMs
+        _sleepTimerRemainingMs.value = totalDurationMs
+        sleepTimerJob = viewModelScope.launch {
+            while (true) {
+                val remMs = (targetEndEpochMs - System.currentTimeMillis()).coerceAtLeast(0L)
+                _sleepTimerRemainingMs.value = remMs
+                _sleepTimerMinutes.value = ((remMs + 59_999L) / 60_000L).toInt()
+                if (remMs <= 0L) break
+                delay(100L)
+            }
+            _sleepTimerRemainingMs.value = 0L
+            _sleepTimerMinutes.value = 0
+            if (_isPlaying.value) {
+                togglePlayPause()
             }
         }
     }
@@ -1001,8 +1106,6 @@ class PlayerViewModel(application: Application) :
         val currentList = getActiveAudioPool()
         if (currentList.isEmpty()) return
 
-        // If playback is > 4 seconds in, restart current song first on Prev tap? No, user expects immediate previous track,
-        // and in shuffle mode step back through actual played history!
         while (playedHistoryIds.isNotEmpty()) {
             val prevId = playedHistoryIds.removeLast()
             val prevItem = currentList.firstOrNull { it.id == prevId }
@@ -1024,7 +1127,39 @@ class PlayerViewModel(application: Application) :
         progressJob = viewModelScope.launch {
             while (mediaPlayer?.isPlaying == true) {
                 val currentPos = mediaPlayer?.currentPosition?.toLong() ?: 0L
+                val totalDur = _nowPlaying.value?.duration?.takeIf { it > 0L }
+                    ?: (mediaPlayer?.duration?.toLong()?.coerceAtLeast(0L) ?: 0L)
                 _playbackPosition.value = currentPos
+
+                // 5-Second DJ Crossfade / Slow Fade-Out & Fade-In Engine
+                if (_djCrossfadeEnabled.value && totalDur > 12_000L) {
+                    val remainingMs = (totalDur - currentPos).coerceAtLeast(0L)
+                    when {
+                        remainingMs in 1L..5000L -> {
+                            _isDjCrossfadingNow.value = true
+                            val fadeFraction = (remainingMs.toFloat() / 5000f).coerceIn(0.18f, 1.0f)
+                            applyChannelVolumeMultiplier(fadeFraction)
+                            val slowDownFactor = 0.88f + (0.12f * fadeFraction)
+                            applySpeedAndPitch(tempSpeedMultiplier = slowDownFactor)
+                        }
+                        currentPos in 0L..2200L -> {
+                            _isDjCrossfadingNow.value = true
+                            val fadeInFraction = (0.24f + (currentPos.toFloat() / 2200f) * 0.76f).coerceIn(0.24f, 1.0f)
+                            applyChannelVolumeMultiplier(fadeInFraction)
+                            applySpeedAndPitch(tempSpeedMultiplier = 1.0f)
+                        }
+                        else -> {
+                            if (_isDjCrossfadingNow.value) {
+                                _isDjCrossfadingNow.value = false
+                                applyChannelVolumeMultiplier(1.0f)
+                                applySpeedAndPitch(tempSpeedMultiplier = 1.0f)
+                            }
+                        }
+                    }
+                } else if (_isDjCrossfadingNow.value) {
+                    _isDjCrossfadingNow.value = false
+                    applyChannelVolumeMultiplier(1.0f)
+                }
 
                 // Check A-B Repeat loop
                 val pointA = _abPointAMs.value
@@ -1041,12 +1176,6 @@ class PlayerViewModel(application: Application) :
                     repository.saveProgress(it.id, currentPos)
                 }
 
-                val sec = currentPos / 1000L
-                if (sec != lastNotificationSec) {
-                    lastNotificationSec = sec
-                    syncMediaNotification()
-                }
-
                 if (_visualizer3DEnabled.value) {
                     _visualizerFrequencies.value = List(16) { index ->
                         val multiplier = when (_equalizerPreset.value) {
@@ -1061,7 +1190,7 @@ class PlayerViewModel(application: Application) :
                     }
                 }
 
-                delay(250)
+                delay(200)
             }
             _visualizerFrequencies.value = List(16) { 0.1f }
         }
@@ -1372,12 +1501,83 @@ class PlayerViewModel(application: Application) :
     }
 
     fun setCustomWallpaper(uriString: String?) {
-        _customWallpaperUri.value = uriString
+        if (uriString.isNullOrBlank()) {
+            val previous = _customWallpaperUri.value
+            if (previous != null && previous.startsWith("/")) {
+                try {
+                    File(previous).delete()
+                } catch (_: Exception) {
+                }
+            }
+            _customWallpaperUri.value = null
+            prefs.edit().remove("saved_custom_wallpaper_path").apply()
+            return
+        }
+        if (uriString.startsWith("content://")) {
+            saveCustomGalleryWallpaperFromUri(Uri.parse(uriString))
+        } else {
+            _customWallpaperUri.value = uriString
+            prefs.edit().putString("saved_custom_wallpaper_path", uriString).apply()
+        }
+    }
+
+    fun saveCustomGalleryWallpaperFromUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val app = getApplication<Application>()
+                // Clean up previous internal wallpaper files
+                app.filesDir.listFiles()?.forEach { f ->
+                    if (f.name.startsWith("custom_wallpaper_permanent_")) {
+                        try { f.delete() } catch (_: Exception) {}
+                    }
+                }
+                val destFile = File(app.filesDir, "custom_wallpaper_permanent_${System.currentTimeMillis()}.jpg")
+                app.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (destFile.exists() && destFile.length() > 0L) {
+                    val savedPath = destFile.absolutePath
+                    prefs.edit().putString("saved_custom_wallpaper_path", savedPath).apply()
+                    _customWallpaperUri.value = savedPath
+                } else {
+                    val fallbackStr = uri.toString()
+                    prefs.edit().putString("saved_custom_wallpaper_path", fallbackStr).apply()
+                    _customWallpaperUri.value = fallbackStr
+                }
+            } catch (_: Exception) {
+                val fallbackStr = uri.toString()
+                prefs.edit().putString("saved_custom_wallpaper_path", fallbackStr).apply()
+                _customWallpaperUri.value = fallbackStr
+            }
+        }
+    }
+
+    /**
+     * Pauses background audio playback automatically when a video/movie/status starts playing,
+     * while allowing music to keep playing when merely browsing the Video tab.
+     */
+    fun pauseMusicForVideoPlayback() {
+        try {
+            if (_isPlaying.value || mediaPlayer?.isPlaying == true) {
+                mediaPlayer?.pause()
+                _isPlaying.value = false
+                progressJob?.cancel()
+                syncMediaNotification()
+            }
+        } catch (_: Exception) {
+            _isPlaying.value = false
+        }
     }
 
     fun selectLanguage(lang: String) {
         _selectedLanguage.value = lang
-        prefs.edit().putString("saved_app_language", lang).apply()
+        com.example.ui.i18n.WorldLanguageEngine.activeLanguageState = lang
+        prefs.edit()
+            .putString("saved_app_language_v3", lang)
+            .putString("saved_app_language", lang)
+            .apply()
     }
 
     fun toggleOneHandMode() {
@@ -1434,14 +1634,19 @@ class PlayerViewModel(application: Application) :
     }
 
     fun saveVideoProgress(mediaId: String, positionMs: Long) {
-        if (positionMs > 0L) {
+        val safePos = positionMs.coerceAtLeast(0L)
+        if (safePos > 0L) {
             prefs.edit()
                 .putString("last_watched_video_id", mediaId)
-                .putLong("video_pos_$mediaId", positionMs)
+                .putLong("video_pos_$mediaId", safePos)
+                .apply()
+        } else {
+            prefs.edit()
+                .putString("last_watched_video_id", mediaId)
                 .apply()
         }
         viewModelScope.launch {
-            repository.saveProgress(mediaId, positionMs)
+            repository.saveProgress(mediaId, safePos)
         }
     }
 
@@ -1449,6 +1654,12 @@ class PlayerViewModel(application: Application) :
         val dbPos = repository.getProgress(mediaId)
         val fastPrefPos = prefs.getLong("video_pos_$mediaId", 0L)
         return maxOf(dbPos, fastPrefPos)
+    }
+
+    fun deleteHistoryItem(mediaId: String) {
+        viewModelScope.launch {
+            repository.deleteHistoryItem(mediaId)
+        }
     }
 
     fun clearHistory() {

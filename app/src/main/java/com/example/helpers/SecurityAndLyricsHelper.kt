@@ -289,6 +289,148 @@ object Music3DThemeEngine {
     }
 }
 
+data class ScenicBackdropSpec(
+    val name: String,
+    val titleHi: String,
+    val topColor: Color,
+    val midColor: Color,
+    val bottomColor: Color,
+    val primaryGlow: Color,
+    val secondaryGlow: Color
+)
+
+object ScenicBackdropPresets {
+    val PRESETS: List<ScenicBackdropSpec> = listOf(
+        ScenicBackdropSpec(
+            "Cyber Aurora Sky", "साइबर ऑरोरा स्काई",
+            Color(0xFF071E26), Color(0xFF0A1428), Color(0xFF060B14),
+            Color(0xFF00E676), Color(0xFF00E5FF)
+        ),
+        ScenicBackdropSpec(
+            "Neon Galaxy Nebula", "नियॉन गैलेक्सी नेबुला",
+            Color(0xFF1A0B2E), Color(0xFF0F1026), Color(0xFF070712),
+            Color(0xFFE040FB), Color(0xFF00E5FF)
+        ),
+        ScenicBackdropSpec(
+            "Sunset Horizon Glow", "सनसेट होराइजन ग्लो",
+            Color(0xFF2B0F1C), Color(0xFF1F1124), Color(0xFF0B0710),
+            Color(0xFFFF6D00), Color(0xFFFF2A85)
+        ),
+        ScenicBackdropSpec(
+            "Emerald Matrix Studio", "एमराल्ड मैट्रिक्स स्टूडियो",
+            Color(0xFF052418), Color(0xFF07191E), Color(0xFF040B0E),
+            Color(0xFF00FF66), Color(0xFF1DE9B6)
+        ),
+        ScenicBackdropSpec(
+            "Royal Sapphire Ocean", "रॉयल सफायर ओशन",
+            Color(0xFF061A38), Color(0xFF08142C), Color(0xFF040914),
+            Color(0xFF00B0FF), Color(0xFF7C4DFF)
+        ),
+        ScenicBackdropSpec(
+            "Golden Velvet Lounge", "गोल्डन वेलवेट लाउंज",
+            Color(0xFF281A06), Color(0xFF1A120B), Color(0xFF0A0704),
+            Color(0xFFFFD54F), Color(0xFFFF6E40)
+        )
+    )
+
+    fun getByName(name: String): ScenicBackdropSpec {
+        return PRESETS.find { it.name.equals(name, ignoreCase = true) } ?: PRESETS.first()
+    }
+}
+
+/**
+ * Rich, scenic artistic backdrop rendered globally behind Video, Audio, Search, and Me tabs
+ * whenever the user hasn't picked a custom Gallery photo, or layered subtly with their theme.
+ * Eliminates flat black backgrounds behind songs and videos.
+ */
+@Composable
+fun GlobalScenicThemeBackdrop(
+    presetName: String,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val spec = remember(presetName) { ScenicBackdropPresets.getByName(presetName) }
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+
+        // 1. Multi-stop atmospheric sky gradient
+        drawRect(
+            brush = Brush.verticalGradient(
+                colors = listOf(spec.topColor, spec.midColor, spec.bottomColor)
+            )
+        )
+
+        // 2. Upper-left Aurora / Nebula Halo
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    spec.primaryGlow.copy(alpha = 0.24f),
+                    spec.secondaryGlow.copy(alpha = 0.08f),
+                    Color.Transparent
+                ),
+                center = Offset(w * 0.20f, h * 0.16f),
+                radius = w * 0.75f
+            ),
+            center = Offset(w * 0.20f, h * 0.16f),
+            radius = w * 0.75f
+        )
+
+        // 3. Center-right Prism Glow
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    spec.secondaryGlow.copy(alpha = 0.22f),
+                    accentColor.copy(alpha = 0.09f),
+                    Color.Transparent
+                ),
+                center = Offset(w * 0.85f, h * 0.48f),
+                radius = w * 0.70f
+            ),
+            center = Offset(w * 0.85f, h * 0.48f),
+            radius = w * 0.70f
+        )
+
+        // 4. Lower Scenic Horizon Glow
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    spec.primaryGlow.copy(alpha = 0.18f),
+                    Color.Transparent
+                ),
+                center = Offset(w * 0.45f, h * 0.86f),
+                radius = w * 0.65f
+            ),
+            center = Offset(w * 0.45f, h * 0.86f),
+            radius = w * 0.65f
+        )
+
+        // 5. Crisp Silk Aurora Ribbon Waves
+        for (wave in 0..2) {
+            val path = Path()
+            val baseY = h * (0.24f + wave * 0.25f)
+            path.moveTo(0f, baseY)
+            val steps = 20
+            for (s in 1..steps) {
+                val x = (s.toFloat() / steps) * w
+                val y = baseY + sin(s * 0.55f + wave * 1.4f) * (28.dp.toPx())
+                path.lineTo(x, y)
+            }
+            drawPath(
+                path = path,
+                brush = Brush.horizontalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        if (wave % 2 == 0) spec.primaryGlow.copy(alpha = 0.18f) else spec.secondaryGlow.copy(alpha = 0.16f),
+                        Color.Transparent
+                    )
+                ),
+                style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
 @Composable
 fun Music3DAnimatedBackdrop(
     themeSpec: Music3DThemeSpec,
@@ -301,7 +443,7 @@ fun Music3DAnimatedBackdrop(
         initialValue = 0f,
         targetValue = (2f * PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (isPlaying) 7000 else 18000, easing = LinearEasing)
+            animation = tween(durationMillis = if (isPlaying) 6400 else 20000, easing = LinearEasing)
         ),
         label = "3d_phase"
     )
@@ -309,7 +451,7 @@ fun Music3DAnimatedBackdrop(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (isPlaying) 2400 else 6000, easing = LinearEasing)
+            animation = tween(durationMillis = if (isPlaying) 2200 else 8000, easing = LinearEasing)
         ),
         label = "3d_depth"
     )
@@ -336,68 +478,119 @@ fun Music3DAnimatedBackdrop(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    themeSpec.primaryColor.copy(alpha = 0.24f * bassEnergy + 0.08f),
-                    themeSpec.secondaryColor.copy(alpha = 0.10f),
+                    themeSpec.primaryColor.copy(alpha = 0.28f * bassEnergy + 0.10f),
+                    themeSpec.secondaryColor.copy(alpha = 0.14f),
                     Color.Transparent
                 ),
                 center = Offset(cx, cy),
-                radius = baseRadius * 1.85f
+                radius = baseRadius * 1.95f
             ),
-            radius = baseRadius * 1.85f,
+            radius = baseRadius * 1.95f,
             center = Offset(cx, cy)
         )
 
-        when (themeSpec.id % 5) {
+        // ALL 15 THEMES HAVE 100% DISTINCT 3D VISUAL GEOMETRY & MOTION
+        when (themeSpec.id) {
             1 -> {
-                // 3D Rotating Wireframe Sphere + Gyro Latitude/Longitude Rings
+                // Theme 1: Cyber Sphere 3D — 3D Wireframe Globe + Orbiting Satellites
                 val numLat = 6
                 for (i in 1..numLat) {
                     val angle = (i.toFloat() / (numLat + 1)) * PI.toFloat() - (PI.toFloat() / 2f)
                     val ringR = baseRadius * cos(angle)
                     val yOffset = baseRadius * sin(angle) * cos(phase)
                     drawOval(
-                        color = themeSpec.primaryColor.copy(alpha = 0.30f),
+                        color = themeSpec.primaryColor.copy(alpha = 0.36f),
                         topLeft = Offset(cx - ringR, cy + yOffset - ringR * 0.35f),
                         size = Size(ringR * 2f, ringR * 0.70f),
-                        style = Stroke(width = 1.6.dp.toPx())
+                        style = Stroke(width = 1.8.dp.toPx())
                     )
                 }
                 val numLon = 6
                 for (j in 0 until numLon) {
                     val rot = phase + (j * PI / numLon).toFloat()
-                    val widthScale = cos(rot).coerceIn(-1f, 1f)
-                    val w = (baseRadius * 2f * kotlin.math.abs(widthScale)).coerceAtLeast(8f)
+                    val w = (baseRadius * 2f * kotlin.math.abs(cos(rot))).coerceAtLeast(8f)
                     drawOval(
-                        color = themeSpec.secondaryColor.copy(alpha = 0.28f),
+                        color = themeSpec.secondaryColor.copy(alpha = 0.32f),
                         topLeft = Offset(cx - w / 2f, cy - baseRadius),
                         size = Size(w, baseRadius * 2f),
-                        style = Stroke(width = 1.5.dp.toPx())
+                        style = Stroke(width = 1.6.dp.toPx())
                     )
                 }
             }
 
             2 -> {
-                // 3D Perspective Warp Tunnel Rings
-                val ringCount = 8
+                // Theme 2: Neon Tunnel Warp — Hexagonal & Circular Depth Rings Flying Through Space
+                val ringCount = 9
                 for (i in 0 until ringCount) {
                     val progress = ((i.toFloat() / ringCount) + depthPulse) % 1f
-                    val r = baseRadius * (0.25f + progress * 1.45f)
-                    val alpha = (1f - progress).coerceIn(0.05f, 0.75f)
-                    drawCircle(
-                        color = if (i % 2 == 0) themeSpec.primaryColor.copy(alpha = alpha * 0.55f)
-                        else themeSpec.secondaryColor.copy(alpha = alpha * 0.45f),
-                        radius = r,
-                        center = Offset(
-                            cx + sin(phase + i) * 14.dp.toPx() * (1f - progress),
-                            cy + cos(phase + i) * 10.dp.toPx() * (1f - progress)
-                        ),
+                    val r = baseRadius * (0.20f + progress * 1.65f)
+                    val alpha = (1f - progress).coerceIn(0.08f, 0.85f)
+                    val hexPath = Path()
+                    for (v in 0..6) {
+                        val a = (v * 60f + phase * 30f) * (PI.toFloat() / 180f)
+                        val px = cx + cos(a) * r
+                        val py = cy + sin(a) * r
+                        if (v == 0) hexPath.moveTo(px, py) else hexPath.lineTo(px, py)
+                    }
+                    drawPath(
+                        path = hexPath,
+                        color = if (i % 2 == 0) themeSpec.primaryColor.copy(alpha = alpha * 0.65f)
+                        else themeSpec.secondaryColor.copy(alpha = alpha * 0.55f),
                         style = Stroke(width = (1.5f + progress * 3.5f).dp.toPx())
                     )
                 }
             }
 
             3 -> {
-                // 3D Isometric Rotating Cube & Starfield Vertices
+                // Theme 3: Galaxy Starfield 3D — Spiral Galaxy Arms & Deep Space Star Warp
+                val arms = 3
+                val starsPerArm = 22
+                for (arm in 0 until arms) {
+                    val armOffset = arm * (2f * PI.toFloat() / arms)
+                    for (s in 1..starsPerArm) {
+                        val frac = s.toFloat() / starsPerArm
+                        val spiralAngle = armOffset + frac * 4.5f - phase * 1.3f
+                        val dist = baseRadius * (0.15f + frac * 1.55f)
+                        val sx = cx + cos(spiralAngle) * dist
+                        val sy = cy + sin(spiralAngle) * dist * 0.72f
+                        drawCircle(
+                            color = if (s % 2 == 0) themeSpec.primaryColor.copy(alpha = 0.85f - frac * 0.4f)
+                            else Color.White.copy(alpha = 0.9f - frac * 0.5f),
+                            radius = (2.2f + (1f - frac) * 3.5f * bassEnergy).dp.toPx(),
+                            center = Offset(sx, sy)
+                        )
+                    }
+                }
+            }
+
+            4 -> {
+                // Theme 4: Matrix Digital Pulse — 3D Cascading Cyber Streams & Energy Nodes
+                val columns = 14
+                val colSpacing = size.width / columns
+                for (c in 0 until columns) {
+                    val x = c * colSpacing + colSpacing / 2f
+                    val streamOffset = ((depthPulse + (c * 0.17f)) % 1f) * size.height
+                    drawLine(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, themeSpec.primaryColor.copy(alpha = 0.65f), Color.White),
+                            startY = (streamOffset - 140.dp.toPx()).coerceAtLeast(0f),
+                            endY = streamOffset
+                        ),
+                        start = Offset(x, (streamOffset - 140.dp.toPx()).coerceAtLeast(0f)),
+                        end = Offset(x, streamOffset),
+                        strokeWidth = 2.8.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = 3.5.dp.toPx(),
+                        center = Offset(x, streamOffset)
+                    )
+                }
+            }
+
+            5 -> {
+                // Theme 5: Hologram Prism Cube — Rotating 3D Tesseract Hypercube & Laser Beams
                 val cubeVertices = listOf(
                     Triple(-1f, -1f, -1f), Triple(1f, -1f, -1f),
                     Triple(1f, 1f, -1f), Triple(-1f, 1f, -1f),
@@ -409,75 +602,268 @@ fun Music3DAnimatedBackdrop(
                     4 to 5, 5 to 6, 6 to 7, 7 to 4,
                     0 to 4, 1 to 5, 2 to 6, 3 to 7
                 )
-                val scale = baseRadius * (0.78f + bassEnergy * 0.18f)
-                val projected = cubeVertices.map { (vx, vy, vz) ->
-                    // Rotate Y then X
-                    val x1 = vx * cos(phase) - vz * sin(phase)
-                    val z1 = vx * sin(phase) + vz * cos(phase)
-                    val y2 = vy * cos(phase * 0.7f) - z1 * sin(phase * 0.7f)
-                    val z2 = vy * sin(phase * 0.7f) + z1 * cos(phase * 0.7f)
+                val scaleOuter = baseRadius * (0.85f + bassEnergy * 0.22f)
+                val scaleInner = scaleOuter * 0.52f
+                fun project(v: Triple<Float, Float, Float>, sc: Float, rot: Float): Offset {
+                    val (vx, vy, vz) = v
+                    val x1 = vx * cos(rot) - vz * sin(rot)
+                    val z1 = vx * sin(rot) + vz * cos(rot)
+                    val y2 = vy * cos(rot * 0.7f) - z1 * sin(rot * 0.7f)
+                    val z2 = vy * sin(rot * 0.7f) + z1 * cos(rot * 0.7f)
                     val persp = 3.2f / (3.2f + z2 * 0.6f)
-                    Offset(cx + x1 * scale * persp, cy + y2 * scale * persp)
+                    return Offset(cx + x1 * sc * persp, cy + y2 * sc * persp)
                 }
-                edges.forEachIndexed { idx, (a, b) ->
+                val outerPts = cubeVertices.map { project(it, scaleOuter, phase) }
+                val innerPts = cubeVertices.map { project(it, scaleInner, -phase * 1.2f) }
+                edges.forEach { (a, b) ->
+                    drawLine(themeSpec.primaryColor.copy(alpha = 0.6f), outerPts[a], outerPts[b], 2.2.dp.toPx())
+                    drawLine(themeSpec.secondaryColor.copy(alpha = 0.55f), innerPts[a], innerPts[b], 1.6.dp.toPx())
+                }
+                for (i in 0..7) {
+                    drawLine(Color.White.copy(alpha = 0.35f), outerPts[i], innerPts[i], 1.2.dp.toPx())
+                }
+            }
+
+            6 -> {
+                // Theme 6: Solar Supernova 3D — Golden Sunburst Corona Rays & Planetary Orbits
+                val rays = 24
+                for (r in 0 until rays) {
+                    val a = (r.toFloat() / rays) * 2f * PI.toFloat() - phase * 0.5f
+                    val rayLen = baseRadius * (1.15f + (r % 3) * 0.22f * bassEnergy + sin(phase * 2f + r) * 0.12f)
                     drawLine(
-                        color = if (idx < 8) themeSpec.primaryColor.copy(alpha = 0.48f)
-                        else themeSpec.secondaryColor.copy(alpha = 0.42f),
-                        start = projected[a],
-                        end = projected[b],
-                        strokeWidth = 2.dp.toPx(),
+                        brush = Brush.linearGradient(
+                            colors = listOf(themeSpec.primaryColor.copy(alpha = 0.75f), Color.Transparent),
+                            start = Offset(cx, cy),
+                            end = Offset(cx + cos(a) * rayLen, cy + sin(a) * rayLen)
+                        ),
+                        start = Offset(cx + cos(a) * (baseRadius * 0.7f), cy + sin(a) * (baseRadius * 0.7f)),
+                        end = Offset(cx + cos(a) * rayLen, cy + sin(a) * rayLen),
+                        strokeWidth = 3.5.dp.toPx(),
                         cap = StrokeCap.Round
+                    )
+                }
+                drawOval(
+                    color = themeSpec.secondaryColor.copy(alpha = 0.5f),
+                    topLeft = Offset(cx - baseRadius * 1.45f, cy - baseRadius * 0.45f),
+                    size = Size(baseRadius * 2.9f, baseRadius * 0.9f),
+                    style = Stroke(width = 2.2.dp.toPx())
+                )
+            }
+
+            7 -> {
+                // Theme 7: Aurora Borealis 3D — Northern Lights Flowing Silk Curtains
+                val curtains = 5
+                for (c in 0 until curtains) {
+                    val path = Path()
+                    val yBase = cy - baseRadius * 0.8f + c * (baseRadius * 0.42f)
+                    path.moveTo(0f, yBase)
+                    val segs = 24
+                    for (s in 1..segs) {
+                        val x = (s.toFloat() / segs) * size.width
+                        val waveY = yBase + sin(phase * 1.5f + s * 0.45f + c) * (32.dp.toPx() * (0.6f + bassEnergy))
+                        path.lineTo(x, waveY)
+                    }
+                    drawPath(
+                        path = path,
+                        color = if (c % 2 == 0) themeSpec.primaryColor.copy(alpha = 0.52f)
+                        else themeSpec.secondaryColor.copy(alpha = 0.45f),
+                        style = Stroke(width = (3.5f + c * 0.8f).dp.toPx(), cap = StrokeCap.Round)
                     )
                 }
             }
 
-            4 -> {
-                // 3D Perspective Synthwave Horizon Grid & Twin Sun
-                val horizonY = cy + baseRadius * 0.72f
-                val bottomY = size.height
-                val numVerticals = 12
-                for (i in -numVerticals..numVerticals) {
-                    val topX = cx + i * (size.width * 0.03f)
-                    val botX = cx + i * (size.width * 0.16f)
-                    drawLine(
-                        color = themeSpec.primaryColor.copy(alpha = 0.25f),
-                        start = Offset(topX, horizonY),
-                        end = Offset(botX, bottomY),
-                        strokeWidth = 1.2.dp.toPx()
+            8 -> {
+                // Theme 8: Deep Ocean Vortex — Bioluminescent Whirlpool Spiral & Sonar Rings
+                val turns = 50
+                val spiralPath = Path()
+                for (t in 0..turns) {
+                    val frac = t.toFloat() / turns
+                    val angle = frac * 6f * PI.toFloat() + phase * 2f
+                    val rad = baseRadius * (0.15f + frac * 1.45f)
+                    val px = cx + cos(angle) * rad
+                    val py = cy + sin(angle) * rad
+                    if (t == 0) spiralPath.moveTo(px, py) else spiralPath.lineTo(px, py)
+                }
+                drawPath(
+                    path = spiralPath,
+                    color = themeSpec.primaryColor.copy(alpha = 0.48f),
+                    style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round)
+                )
+            }
+
+            9 -> {
+                // Theme 9: Volcanic Lava Core — Rising Magma Embers & Shockwave Core
+                val emberCount = 28
+                for (e in 0 until emberCount) {
+                    val progress = ((e * 0.13f + depthPulse) % 1f)
+                    val xSpread = sin(e * 2.1f + phase) * (size.width * 0.42f)
+                    val ex = cx + xSpread
+                    val ey = size.height * (1f - progress)
+                    drawCircle(
+                        color = if (e % 2 == 0) themeSpec.primaryColor.copy(alpha = 1f - progress * 0.7f)
+                        else themeSpec.secondaryColor.copy(alpha = 1f - progress * 0.7f),
+                        radius = ((1f - progress) * 6.dp.toPx() + 2.dp.toPx()),
+                        center = Offset(ex, ey)
                     )
                 }
-                val numHoriz = 8
-                for (j in 0 until numHoriz) {
-                    val p = ((j.toFloat() / numHoriz) + depthPulse) % 1f
+                drawCircle(
+                    color = themeSpec.primaryColor.copy(alpha = 0.55f),
+                    radius = baseRadius * (0.9f + depthPulse * 0.5f),
+                    center = Offset(cx, cy),
+                    style = Stroke(width = 3.dp.toPx())
+                )
+            }
+
+            10 -> {
+                // Theme 10: Retro Synthwave 3D — Perspective Outrun Horizon Grid & Segmented Sun
+                val horizonY = cy + baseRadius * 0.65f
+                val bottomY = size.height
+                drawCircle(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(themeSpec.primaryColor.copy(alpha = 0.55f), themeSpec.secondaryColor.copy(alpha = 0.2f)),
+                        startY = cy - baseRadius,
+                        endY = horizonY
+                    ),
+                    radius = baseRadius * 1.05f,
+                    center = Offset(cx, cy)
+                )
+                for (i in -10..10) {
+                    drawLine(
+                        color = themeSpec.primaryColor.copy(alpha = 0.38f),
+                        start = Offset(cx + i * (size.width * 0.03f), horizonY),
+                        end = Offset(cx + i * (size.width * 0.16f), bottomY),
+                        strokeWidth = 1.5.dp.toPx()
+                    )
+                }
+                for (j in 0 until 8) {
+                    val p = ((j.toFloat() / 8f) + depthPulse) % 1f
                     val y = horizonY + (bottomY - horizonY) * (p * p)
                     drawLine(
-                        color = themeSpec.secondaryColor.copy(alpha = (0.12f + p * 0.35f)),
+                        color = themeSpec.secondaryColor.copy(alpha = 0.2f + p * 0.45f),
                         start = Offset(0f, y),
                         end = Offset(size.width, y),
-                        strokeWidth = (1f + p * 2f).dp.toPx()
+                        strokeWidth = (1.2f + p * 2.2f).dp.toPx()
+                    )
+                }
+            }
+
+            11 -> {
+                // Theme 11: Royal Amethyst DNA — Rotating 3D Double-Helix Audio Strand
+                val rungs = 18
+                val topY = cy - baseRadius * 1.35f
+                val botY = cy + baseRadius * 1.35f
+                for (r in 0..rungs) {
+                    val frac = r.toFloat() / rungs
+                    val y = topY + (botY - topY) * frac
+                    val a = phase * 2f + frac * 4f * PI.toFloat()
+                    val x1 = cx + sin(a) * (baseRadius * 0.95f)
+                    val x2 = cx - sin(a) * (baseRadius * 0.95f)
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.28f),
+                        start = Offset(x1, y),
+                        end = Offset(x2, y),
+                        strokeWidth = 1.6.dp.toPx()
+                    )
+                    drawCircle(themeSpec.primaryColor, 4.5.dp.toPx(), Offset(x1, y))
+                    drawCircle(themeSpec.secondaryColor, 4.5.dp.toPx(), Offset(x2, y))
+                }
+            }
+
+            12 -> {
+                // Theme 12: Arctic Crystal Frost — 6-Pointed Crystalline Snowflake Fractal Gyro
+                val branches = 6
+                val outerR = baseRadius * 1.38f
+                for (b in 0 until branches) {
+                    val a = (b * 60f) * (PI.toFloat() / 180f) + phase * 0.6f
+                    val ex = cx + cos(a) * outerR
+                    val ey = cy + sin(a) * outerR
+                    drawLine(themeSpec.primaryColor.copy(alpha = 0.6f), Offset(cx, cy), Offset(ex, ey), 2.6.dp.toPx())
+                    val midX = cx + cos(a) * (outerR * 0.68f)
+                    val midY = cy + sin(a) * (outerR * 0.68f)
+                    for (side in listOf(-1f, 1f)) {
+                        val subA = a + side * (PI.toFloat() / 3f)
+                        drawLine(
+                            themeSpec.secondaryColor.copy(alpha = 0.55f),
+                            Offset(midX, midY),
+                            Offset(midX + cos(subA) * (outerR * 0.32f), midY + sin(subA) * (outerR * 0.32f)),
+                            2.dp.toPx()
+                        )
+                    }
+                }
+            }
+
+            13 -> {
+                // Theme 13: Tokyo Cyber Radial — 3D Equalizer Skyscraper Towers + Dual Neon Halo
+                val towers = 20
+                val towerW = (size.width / towers) * 0.65f
+                val baseLineY = cy + baseRadius * 1.45f
+                for (t in 0 until towers) {
+                    val fVal = frequencies[t % frequencies.size].coerceIn(0.15f, 1.0f)
+                    val hTower = (if (isPlaying) fVal else 0.2f) * (baseRadius * 1.1f)
+                    val tx = t * (size.width / towers) + (size.width / towers - towerW) / 2f
+                    drawRoundRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(themeSpec.primaryColor.copy(alpha = 0.7f), themeSpec.secondaryColor.copy(alpha = 0.15f)),
+                            startY = baseLineY - hTower,
+                            endY = baseLineY
+                        ),
+                        topLeft = Offset(tx, baseLineY - hTower),
+                        size = Size(towerW, hTower),
+                        cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                    )
+                }
+            }
+
+            14 -> {
+                // Theme 14: Crimson Phoenix Gyro — 4-Axis Interlocking Gimbal Fire Rings
+                for (ring in 0..3) {
+                    val tilt = phase * (1f + ring * 0.25f) + ring * (PI.toFloat() / 4f)
+                    val rx = baseRadius * (1.28f - ring * 0.12f)
+                    val ry = baseRadius * (0.30f + 0.65f * kotlin.math.abs(sin(tilt)))
+                    drawOval(
+                        color = if (ring % 2 == 0) themeSpec.primaryColor.copy(alpha = 0.58f)
+                        else themeSpec.secondaryColor.copy(alpha = 0.52f),
+                        topLeft = Offset(cx - rx, cy - ry),
+                        size = Size(rx * 2f, ry * 2f),
+                        style = Stroke(width = 2.6.dp.toPx())
                     )
                 }
             }
 
             else -> {
-                // 3D Double Helix & Gyroscope Rings
-                for (ring in 0..2) {
-                    val tilt = phase + ring * (PI.toFloat() / 3f)
-                    val rx = baseRadius * (1.05f - ring * 0.12f)
-                    val ry = baseRadius * (0.35f + 0.45f * kotlin.math.abs(sin(tilt)))
-                    drawOval(
-                        color = if (ring % 2 == 0) themeSpec.primaryColor.copy(alpha = 0.45f)
-                        else themeSpec.secondaryColor.copy(alpha = 0.40f),
-                        topLeft = Offset(cx - rx, cy - ry),
-                        size = Size(rx * 2f, ry * 2f),
-                        style = Stroke(width = 2.2.dp.toPx())
+                // Theme 15: Quantum Plasma Orb — High-Voltage Tesla Coil Lightning Tendrils
+                val tendrils = 12
+                val shieldR = baseRadius * 1.42f
+                drawCircle(
+                    color = themeSpec.secondaryColor.copy(alpha = 0.38f),
+                    radius = shieldR,
+                    center = Offset(cx, cy),
+                    style = Stroke(width = 2.dp.toPx())
+                )
+                for (t in 0 until tendrils) {
+                    val baseAngle = (t.toFloat() / tendrils) * 2f * PI.toFloat() + phase
+                    val p = Path()
+                    p.moveTo(cx, cy)
+                    val segs = 6
+                    for (s in 1..segs) {
+                        val frac = s.toFloat() / segs
+                        val jitter = sin(phase * 5f + t * 3f + s * 2f) * 0.18f
+                        val a = baseAngle + jitter
+                        val r = shieldR * frac
+                        p.lineTo(cx + cos(a) * r, cy + sin(a) * r)
+                    }
+                    drawPath(
+                        path = p,
+                        color = if (t % 2 == 0) themeSpec.primaryColor.copy(alpha = 0.72f)
+                        else Color.White.copy(alpha = 0.65f),
+                        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
                     )
                 }
             }
         }
 
         // 360-Degree 3D Reactive Equalizer Halo Around Center
-        val barCount = 32
+        val barCount = 36
         val innerR = baseRadius * 0.96f
         for (i in 0 until barCount) {
             val freqVal = if (frequencies.isNotEmpty()) {
@@ -492,8 +878,8 @@ fun Music3DAnimatedBackdrop(
             val ex = cx + cos(angle) * (innerR + barLen)
             val ey = cy + sin(angle) * (innerR + barLen)
             drawLine(
-                color = if (i % 2 == 0) themeSpec.primaryColor.copy(alpha = 0.72f)
-                else themeSpec.secondaryColor.copy(alpha = 0.65f),
+                color = if (i % 2 == 0) themeSpec.primaryColor.copy(alpha = 0.76f)
+                else themeSpec.secondaryColor.copy(alpha = 0.68f),
                 start = Offset(sx, sy),
                 end = Offset(ex, ey),
                 strokeWidth = 3.2.dp.toPx(),

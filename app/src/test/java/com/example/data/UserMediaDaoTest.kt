@@ -18,7 +18,7 @@ import org.robolectric.annotation.Config
 import java.io.IOException
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [33])
 class UserMediaDaoTest {
 
     private lateinit var database: AppDatabase

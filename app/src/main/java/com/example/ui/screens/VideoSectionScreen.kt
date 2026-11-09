@@ -6,6 +6,7 @@ import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -14,7 +15,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -79,11 +83,29 @@ fun VideoSectionScreen(
     val hdrBadges by viewModel.hdrCcBadges.collectAsState()
     val personaMode by viewModel.demographicMode.collectAsState()
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
+    val activeTheme by viewModel.activeTheme.collectAsState()
+    val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
+    val playlists by viewModel.playlists.collectAsState()
 
     val isHindi = remember(selectedLanguage) {
-        selectedLanguage.contains("Hindi", ignoreCase = true) ||
-            selectedLanguage.contains("हिन्दी") ||
-            Locale.getDefault().language == "hi"
+        com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
+    }
+
+    // Live Device Clock & Battery Level for Top Header Bar
+    var headerClockText by remember { mutableStateOf("") }
+    var headerBatteryPct by remember { mutableIntStateOf(100) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                val sdf = java.text.SimpleDateFormat("hh:mm a", Locale.getDefault())
+                headerClockText = sdf.format(java.util.Date())
+                val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                val cap = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+                if (cap in 1..100) headerBatteryPct = cap
+            } catch (_: Exception) {
+            }
+            kotlinx.coroutines.delay(10_000L)
+        }
     }
 
     val subTabKeys = remember { listOf("Video", "Folder", "Status", "Favourite") }
@@ -101,8 +123,22 @@ fun VideoSectionScreen(
     var initialStatusReelIndex by remember { mutableIntStateOf(0) }
 
     var showSortDialog by remember { mutableStateOf(false) }
+    var showThemeStudioDialog by remember { mutableStateOf(false) }
     var isHistoryCollapsed by remember { mutableStateOf(false) }
     var actionTargetVideo by remember { mutableStateOf<MediaItem?>(null) }
+
+    val galleryWallpaperLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.saveCustomGalleryWallpaperFromUri(uri)
+            Toast.makeText(
+                context,
+                if (isHindi) "✨ आपकी फोटो हर स्क्रीन पर स्थायी रूप से सेट हो गई!" else "✨ Your Gallery Photo is set permanently across all screens!",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
 
     val pickVideosLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -139,10 +175,13 @@ fun VideoSectionScreen(
         }
     }
 
-    // Multi-Select Mode State
+    // Multi-Select Mode State & Batch Dialog States
     val selectedIds = remember { mutableStateListOf<String>() }
     val isMultiSelectMode = selectedIds.isNotEmpty()
     var pendingDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var showMultiSelectDetailsDialog by remember { mutableStateOf(false) }
+    var showMultiSelectMoreDialog by remember { mutableStateOf(false) }
+    var showBatchPlaylistPickerDialog by remember { mutableStateOf(false) }
 
     val favoriteVideos = remember(favorites, videos) {
         val favIds = favorites.map { it.id }.toSet()
@@ -182,6 +221,23 @@ fun VideoSectionScreen(
         historyVideos.associate { it.first.id to it.second }
     }
 
+    val historyListState = rememberLazyListState()
+    LaunchedEffect(historyVideos.firstOrNull()?.first?.id) {
+        if (historyVideos.isNotEmpty()) {
+            try {
+                historyListState.scrollToItem(0)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    // Pause background audio automatically when Status Reels playback starts (browsing Video tab keeps audio playing)
+    LaunchedEffect(showStatusReelsOverlay, activeSubTab) {
+        if (showStatusReelsOverlay || activeSubTab == "Status") {
+            viewModel.pauseMusicForVideoPlayback()
+        }
+    }
+
     // Back handler when inside a folder or Status Reels overlay
     if (showStatusReelsOverlay || activeSubTab == "Status") {
         BackHandler {
@@ -189,6 +245,10 @@ fun VideoSectionScreen(
             if (activeSubTab == "Status") {
                 switchSubTab("Folder")
             }
+        }
+    } else if (isMultiSelectMode) {
+        BackHandler {
+            selectedIds.clear()
         }
     } else if (openedFolderName != null || isViewingFavouriteFolder) {
         BackHandler {
@@ -201,9 +261,15 @@ fun VideoSectionScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
+                .background(
+                    if (customWallpaperUri != null) {
+                        Color(0x66050B14)
+                    } else {
+                        Color(0x33050B14)
+                    }
+                )
         ) {
-            // --- 1. PROMINENT 1.5x ENLARGED TOP BAR: App Icon (44.dp) + "Hybrid Player" (27.sp) ---
+            // --- 1. PROMINENT TOP BAR: App Icon + "Hybrid Player" + Clear Device Time & Battery + Theme/Photo Studio ---
             if (isMultiSelectMode) {
                 Row(
                     modifier = Modifier
@@ -249,37 +315,114 @@ fun VideoSectionScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(62.dp)
-                        .padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(64.dp)
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_app_custom_logo),
-                        contentDescription = "Hybrid Player",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(
-                                1.5.dp,
-                                Brush.linearGradient(listOf(Color(0xFFFF2A4B), HybridEmerald)),
-                                RoundedCornerShape(12.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                            contentDescription = "Hybrid Player",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(
+                                    1.5.dp,
+                                    Brush.linearGradient(listOf(Color(0xFFFF2A4B), HybridEmerald)),
+                                    RoundedCornerShape(12.dp)
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
+                                color = Color.White,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.2.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(
-                        text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
-                        color = Color.White,
-                        fontSize = 27.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.3.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                            if (headerClockText.isNotEmpty()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color(0xCC0D1829))
+                                        .border(1.dp, HybridEmerald.copy(alpha = 0.45f), RoundedCornerShape(50))
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "🕒 $headerClockText • 🔋 $headerBatteryPct%",
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Quick Theme & Custom Gallery Photo Picker Button right on Video Screen
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                galleryWallpaperLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (customWallpaperUri != null) HybridEmerald.copy(alpha = 0.24f)
+                                    else HybridCardBg
+                                )
+                                .border(
+                                    1.dp,
+                                    if (customWallpaperUri != null) HybridEmerald else HybridCardBorder,
+                                    CircleShape
+                                )
+                                .testTag("video_header_gallery_wallpaper_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Wallpaper,
+                                contentDescription = if (isHindi) "गैलरी से फोटो लगाएं" else "Set Gallery Photo Wallpaper",
+                                tint = if (customWallpaperUri != null) HybridEmerald else Color.White,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { showThemeStudioDialog = true },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(HybridCardBg)
+                                .border(1.dp, HybridCardBorder, CircleShape)
+                                .testTag("video_header_theme_studio_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Palette,
+                                contentDescription = if (isHindi) "थीम बदलें" else "Change Theme",
+                                tint = HybridCyan,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                    }
                 }
             }
 
-            // --- 2. WATCH HISTORY RIGHT BELOW "HYBRID PLAYER" HEADER (WHEN HISTORY EXISTS) ---
+            // --- 2. WATCH HISTORY RIGHT BELOW "HYBRID PLAYER" HEADER (NEWEST / ABHI KI HISTORY FIRST AT INDEX 0) ---
             if (historyVideos.isNotEmpty() && !isMultiSelectMode && openedFolderName == null && !isViewingFavouriteFolder) {
                 Column(
                     modifier = Modifier
@@ -338,25 +481,47 @@ fun VideoSectionScreen(
                     if (!isHistoryCollapsed) {
                         Spacer(modifier = Modifier.height(4.dp))
                         LazyRow(
+                            state = historyListState,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            items(historyVideos, key = { "top_hist_${it.first.id}" }) { (video, posMs) ->
+                            itemsIndexed(historyVideos, key = { _, pair -> "top_hist_${pair.first.id}" }) { index, (video, posMs) ->
                                 val progressFraction = if (video.duration > 0) {
                                     (posMs.toFloat() / video.duration.toFloat()).coerceIn(0.12f, 1f)
                                 } else 0.35f
 
                                 Box(
                                     modifier = Modifier
-                                        .size(width = 128.dp, height = 68.dp)
+                                        .size(width = 132.dp, height = 70.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(HybridCardBg)
-                                        .border(1.dp, HybridCardBorder, RoundedCornerShape(10.dp))
+                                        .border(
+                                            width = if (index == 0) 1.5.dp else 1.dp,
+                                            color = if (index == 0) HybridEmerald else HybridCardBorder,
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
                                         .clickable { onPlayVideo(video) }
                                 ) {
                                     GuaranteedVideoThumbnail(
                                         video = video,
                                         modifier = Modifier.fillMaxSize()
                                     )
+                                    if (index == 0) {
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.TopStart)
+                                                .padding(4.dp)
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(HybridEmerald)
+                                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                                        ) {
+                                            Text(
+                                                text = if (isHindi) "अभी देखा" else "LATEST",
+                                                color = Color.Black,
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.ExtraBold
+                                            )
+                                        }
+                                    }
                                     Box(
                                         modifier = Modifier
                                             .fillMaxSize()
@@ -632,6 +797,7 @@ fun VideoSectionScreen(
                                         video = video,
                                         isHindi = isHindi,
                                         isSelected = isSelected,
+                                        isMultiSelectMode = isMultiSelectMode,
                                         showBadges = hdrBadges,
                                         progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
                                         onClick = {
@@ -642,7 +808,7 @@ fun VideoSectionScreen(
                                             }
                                         },
                                         onLongClick = {
-                                            if (!isSelected) selectedIds.add(video.id)
+                                            if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
                                         },
                                         onMoreClick = {
                                             actionTargetVideo = video
@@ -662,6 +828,7 @@ fun VideoSectionScreen(
                                         video = video,
                                         isHindi = isHindi,
                                         isSelected = isSelected,
+                                        isMultiSelectMode = isMultiSelectMode,
                                         showBadges = hdrBadges,
                                         progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
                                         personaMode = personaMode,
@@ -673,7 +840,7 @@ fun VideoSectionScreen(
                                             }
                                         },
                                         onLongClick = {
-                                            if (!isSelected) selectedIds.add(video.id)
+                                            if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
                                         },
                                         onMoreClick = {
                                             actionTargetVideo = video
@@ -827,12 +994,19 @@ fun VideoSectionScreen(
                                         video = video,
                                         isHindi = isHindi,
                                         isSelected = video.id in selectedIds,
+                                        isMultiSelectMode = isMultiSelectMode,
                                         showBadges = hdrBadges,
                                         progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
                                         personaMode = personaMode,
-                                        onClick = { onPlayVideo(video) },
+                                        onClick = {
+                                            if (isMultiSelectMode) {
+                                                if (video.id in selectedIds) selectedIds.remove(video.id) else selectedIds.add(video.id)
+                                            } else {
+                                                onPlayVideo(video)
+                                            }
+                                        },
                                         onLongClick = {
-                                            if (video.id !in selectedIds) selectedIds.add(video.id)
+                                            if (video.id in selectedIds) selectedIds.remove(video.id) else selectedIds.add(video.id)
                                         },
                                         onMoreClick = { actionTargetVideo = video }
                                     )
@@ -843,54 +1017,113 @@ fun VideoSectionScreen(
                 }
             }
 
-            // --- BOTTOM MULTI-SELECT ACTION DOCK ---
+            // --- BOTTOM MULTI-SELECT ACTION DOCK (1. Hybrid Share | 2. Delete | 3. Details | 4. 3-Dot More) ---
             if (isMultiSelectMode) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(HybridCardBg)
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                        .border(1.dp, HybridEmerald.copy(alpha = 0.35f), RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = {
-                        selectedIds.clear()
-                        onOpenTurboShare()
-                    }) {
-                        Icon(Icons.Default.Bolt, contentDescription = null, tint = HybridEmerald)
-                        Spacer(modifier = Modifier.width(4.dp))
+                    // 1. HYBRID SHARE
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                val selectedItems = videos.filter { it.id in selectedIds }
+                                if (selectedItems.size == 1) {
+                                    selectedIds.clear()
+                                    onHybridShareItem(selectedItems.first())
+                                } else {
+                                    selectedIds.clear()
+                                    onOpenTurboShare()
+                                }
+                            }
+                            .padding(vertical = 6.dp)
+                            .testTag("multiselect_hybrid_share_btn")
+                    ) {
+                        Icon(Icons.Default.Bolt, contentDescription = "Hybrid Share", tint = HybridEmerald, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (isHindi) "फास्ट शेयर" else "Fast Share",
+                            text = if (isHindi) "हाइब्रिड शेयर" else "Hybrid Share",
                             color = Color.White,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            maxLines = 1
                         )
                     }
 
-                    TextButton(onClick = {
-                        val selectedItems = videos.filter { it.id in selectedIds }
-                        if (selectedItems.isNotEmpty()) {
-                            WifiDirectTransferEngine.shareRealFilesViaSystem(context, selectedItems)
-                        }
-                        selectedIds.clear()
-                    }) {
-                        Icon(Icons.Default.Share, contentDescription = null, tint = HybridCyan)
-                        Spacer(modifier = Modifier.width(4.dp))
+                    // 2. DELETE
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                pendingDeleteItems = videos.filter { it.id in selectedIds }
+                            }
+                            .padding(vertical = 6.dp)
+                            .testTag("multiselect_delete_btn")
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = HybridCoralRed, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (isHindi) "शेयर करें" else "Share",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    TextButton(onClick = {
-                        pendingDeleteItems = videos.filter { it.id in selectedIds }
-                    }) {
-                        Icon(Icons.Default.Delete, contentDescription = null, tint = HybridCoralRed)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (isHindi) "हटाएं" else "Delete",
+                            text = if (isHindi) "हटाएं (Delete)" else "Delete",
                             color = HybridCoralRed,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            maxLines = 1
+                        )
+                    }
+
+                    // 3. DETAILS
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                showMultiSelectDetailsDialog = true
+                            }
+                            .padding(vertical = 6.dp)
+                            .testTag("multiselect_details_btn")
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = "Details", tint = HybridCyan, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (isHindi) "जानकारी (Details)" else "Details",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            maxLines = 1
+                        )
+                    }
+
+                    // 4. 3-DOT (MORE OPTIONS)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                showMultiSelectMoreDialog = true
+                            }
+                            .padding(vertical = 6.dp)
+                            .testTag("multiselect_more_3dot_btn")
+                    ) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = Color(0xFFFFD54F), modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (isHindi) "और विकल्प (⋮)" else "More (⋮)",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            maxLines = 1
                         )
                     }
                 }
@@ -1138,14 +1371,422 @@ fun VideoSectionScreen(
             }
         )
     }
+
+    // --- THEME & GALLERY PHOTO WALLPAPER STUDIO DIALOG ---
+    if (showThemeStudioDialog) {
+        ThemeStudio60Dialog(
+            activeTheme = activeTheme,
+            onSelectTheme = { themeName ->
+                viewModel.selectTheme(themeName)
+            },
+            onPickGalleryWallpaper = {
+                galleryWallpaperLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
+            onClearGalleryWallpaper = {
+                viewModel.setCustomWallpaper(null)
+                viewModel.selectTheme("Hybrid Emerald")
+                Toast.makeText(
+                    context,
+                    if (isHindi) "डिफ़ॉल्ट थीम (Hybrid Emerald) लागू की गई" else "Default Theme (Hybrid Emerald) Restored",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            hasCustomWallpaper = customWallpaperUri != null,
+            onDismiss = { showThemeStudioDialog = false }
+        )
+    }
+
+    // --- MULTI-SELECT DETAILS DIALOG (Option 3 in Bottom Action Bar) ---
+    if (showMultiSelectDetailsDialog) {
+        val selectedItems = remember(selectedIds.toList(), videos) {
+            videos.filter { it.id in selectedIds }
+        }
+        val totalBytes = selectedItems.sumOf { it.size }
+        val totalDurationMs = selectedItems.sumOf { it.duration }
+        val totalSizeMb = String.format(Locale.US, "%.2f MB", totalBytes / (1024.0 * 1024.0))
+        val totalMins = (totalDurationMs / 1000L) / 60L
+        val totalSecs = (totalDurationMs / 1000L) % 60L
+
+        AlertDialog(
+            onDismissRequest = { showMultiSelectDetailsDialog = false },
+            containerColor = Color(0xFF101826),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Info, contentDescription = null, tint = HybridCyan)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = if (selectedItems.size == 1) {
+                            if (isHindi) "वीडियो की पूरी जानकारी" else "Video Details"
+                        } else {
+                            if (isHindi) "${selectedItems.size} चयनित वीडियो की जानकारी" else "${selectedItems.size} Selected Videos Details"
+                        },
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 17.sp
+                    )
+                }
+            },
+            text = {
+                if (selectedItems.size == 1) {
+                    val v = selectedItems.first()
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("${if (isHindi) "नाम" else "Title"}: ${v.cleanTitle}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("${if (isHindi) "साइज़" else "Size"}: ${v.formattedSize} (${v.size} bytes)", color = HybridEmerald, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text("${if (isHindi) "लंबाई" else "Duration"}: ${v.formattedDuration}", color = Color.White, fontSize = 13.sp)
+                        Text("${if (isHindi) "क्वालिटी / फॉर्मेट" else "Resolution & Format"}: ${v.resolution} • ${v.format}", color = HybridCyan, fontSize = 13.sp)
+                        Text("${if (isHindi) "फ़ोल्डर" else "Folder"}: ${v.folderName}", color = HybridTextSecondary, fontSize = 13.sp)
+                        Text("${if (isHindi) "लोकेशन (Path)" else "File Path"}:\n${v.path}", color = HybridTextSecondary, fontSize = 11.sp)
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "${if (isHindi) "कुल वीडियो" else "Total Selected"}: ${selectedItems.size} Videos",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "${if (isHindi) "कुल साइज़" else "Total Size"}: $totalSizeMb",
+                            color = HybridEmerald,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "${if (isHindi) "कुल समय" else "Total Duration"}: ${totalMins}m ${totalSecs}s",
+                            color = HybridCyan,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = "${if (isHindi) "फॉर्मेट" else "Formats"}: ${selectedItems.map { it.format }.distinct().joinToString(", ")}",
+                            color = HybridTextSecondary,
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            text = "${if (isHindi) "फ़ोल्डर" else "Folders"}: ${selectedItems.map { it.folderName }.distinct().joinToString(", ")}",
+                            color = HybridTextSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMultiSelectDetailsDialog = false }) {
+                    Text(if (isHindi) "ठीक है" else "OK", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    // --- MULTI-SELECT 3-DOT MORE OPTIONS DIALOG (Option 4 in Bottom Action Bar) ---
+    if (showMultiSelectMoreDialog) {
+        val selectedItems = remember(selectedIds.toList(), videos) {
+            videos.filter { it.id in selectedIds }
+        }
+        AlertDialog(
+            onDismissRequest = { showMultiSelectMoreDialog = false },
+            containerColor = Color(0xFF101826),
+            title = {
+                Column {
+                    Text(
+                        text = if (isHindi) "${selectedItems.size} वीडियो के विकल्प (More Actions)" else "${selectedItems.size} Selected • More Options",
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 17.sp
+                    )
+                    Text(
+                        text = if (isHindi) "चयनित वीडियो पर एक साथ एक्शन लें" else "Batch actions for selected videos",
+                        color = HybridEmerald,
+                        fontSize = 12.sp
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 1. Add to / Toggle Favourite
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                selectedItems.forEach { vid -> viewModel.toggleFavorite(vid) }
+                                showMultiSelectMoreDialog = false
+                                selectedIds.clear()
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "❤️ पसंदीदा (Favourite) अपडेट किया गया" else "❤️ Updated Favourites for ${selectedItems.size} video(s)",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Favorite, contentDescription = null, tint = Color(0xFFFF1744))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "पसंदीदा में जोड़ें (Add to Favourite)" else "Add to / Toggle Favourite",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // 2. Play in Background Audio
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                val firstVid = selectedItems.firstOrNull()
+                                showMultiSelectMoreDialog = false
+                                selectedIds.clear()
+                                if (firstVid != null) {
+                                    viewModel.playMusic(firstVid)
+                                    Toast.makeText(
+                                        context,
+                                        if (isHindi) "🎧 बैकग्राउंड ऑडियो चालू: ${firstVid.cleanTitle}" else "🎧 Playing in Background Audio: ${firstVid.cleanTitle}",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Headphones, contentDescription = null, tint = HybridCyan)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "बैकग्राउंड ऑडियो में सुनें (BG Audio)" else "Play in Background Audio",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // 3. Lock in Private Folder (Safe Vault)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                selectedItems.forEach { vid -> viewModel.toggleVaultLock(vid) }
+                                showMultiSelectMoreDialog = false
+                                selectedIds.clear()
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "🔒 ${selectedItems.size} वीडियो प्राइवेट फ़ोल्डर में सुरक्षित किए गए" else "🔒 Locked ${selectedItems.size} video(s) in Private Vault",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFFB388FF))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "प्राइवेट फ़ोल्डर में लॉक करें (Private Vault)" else "Lock in Private Folder (Vault)",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // 4. Add to Playlist
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                showMultiSelectMoreDialog = false
+                                showBatchPlaylistPickerDialog = true
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = HybridEmerald)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "प्लेलिस्ट में जोड़ें (Add to Playlist)" else "Add to Playlist",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // 5. System Share (WhatsApp / Bluetooth / Quick Share)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                showMultiSelectMoreDialog = false
+                                if (selectedItems.isNotEmpty()) {
+                                    WifiDirectTransferEngine.shareRealFilesViaSystem(context, selectedItems)
+                                }
+                                selectedIds.clear()
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, tint = Color(0xFF40C4FF))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "अन्य ऐप्स पर शेयर करें (System Share)" else "Share via Apps (WhatsApp / Quick Share)",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    // 6. Rename File (when 1 video selected) or Open Full Single Sheet
+                    if (selectedItems.size == 1) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF192436))
+                                .clickable {
+                                    val single = selectedItems.first()
+                                    showMultiSelectMoreDialog = false
+                                    selectedIds.clear()
+                                    actionTargetVideo = single
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.DriveFileRenameOutline, contentDescription = null, tint = Color(0xFFFFD54F))
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = if (isHindi) "फ़ाइल का नाम बदलें (Rename File)" else "Rename File & Full Options",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+
+                    // 7. Move to Recycle Bin
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF192436))
+                            .clickable {
+                                viewModel.moveBatchToRecycleBin(selectedItems)
+                                showMultiSelectMoreDialog = false
+                                selectedIds.clear()
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "♻️ रीसायकल बिन में भेजा गया" else "♻️ Moved ${selectedItems.size} video(s) to Recycle Bin",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.RestoreFromTrash, contentDescription = null, tint = HybridCoralRed)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (isHindi) "रीसायकल बिन में डालें (Recycle Bin)" else "Move to Recycle Bin",
+                            color = HybridCoralRed,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMultiSelectMoreDialog = false }) {
+                    Text(if (isHindi) "बंद करें" else "Close", color = HybridEmerald, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    // --- BATCH ADD TO PLAYLIST DIALOG ---
+    if (showBatchPlaylistPickerDialog) {
+        val selectedItems = remember(selectedIds.toList(), videos) {
+            videos.filter { it.id in selectedIds }
+        }
+        var newPlaylistName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showBatchPlaylistPickerDialog = false },
+            containerColor = Color(0xFF101826),
+            title = {
+                Text(
+                    text = if (isHindi) "प्लेलिस्ट में जोड़ें (${selectedItems.size})" else "Add ${selectedItems.size} Video(s) to Playlist",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = newPlaylistName,
+                        onValueChange = { newPlaylistName = it },
+                        placeholder = {
+                            Text(if (isHindi) "नई प्लेलिस्ट का नाम..." else "New Playlist Name...", color = Color.Gray)
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (newPlaylistName.isNotBlank()) {
+                        Button(
+                            onClick = {
+                                viewModel.addPlaylist(newPlaylistName.trim())
+                                newPlaylistName = ""
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (isHindi) "+ नई प्लेलिस्ट बनाएं" else "+ Create Playlist", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    playlists.forEach { pl ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF192436))
+                                .clickable {
+                                    selectedItems.forEach { vid -> viewModel.addToPlaylist(pl.id, vid.id) }
+                                    showBatchPlaylistPickerDialog = false
+                                    selectedIds.clear()
+                                    Toast.makeText(
+                                        context,
+                                        if (isHindi) "'${pl.name}' में जोड़ा गया" else "Added to '${pl.name}'",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.PlaylistPlay, contentDescription = null, tint = HybridEmerald)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(pl.name, color = Color.White, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBatchPlaylistPickerDialog = false }) {
+                    Text(if (isHindi) "बंद करें" else "Close", color = HybridEmerald)
+                }
+            }
+        )
+    }
 }
 
 /**
- * Full-Screen Vertical Swipe Status / Reels Player (`<= 100s` videos).
- * Right-side vertical controls in exact requested order:
- * 1. Top: Like / Heart button (immediately saves to Favourite)
- * 2. Middle: Share button
- * 3. Bottom: 3-Dot button with 4 options
+ * Full-Screen Vertical Swipe Status / Reels Player (`<= 100s` videos) + Status Grid Wall Switcher.
+ * Supports 8K / 4K / 2K / 1080p `.webm`, `.mkv`, and `.mp4` videos on all phones (including budget devices like Samsung M13)
+ * via downscaled hardware surface buffers + automatic software frame fallback.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1161,8 +1802,12 @@ private fun StatusReelsVerticalPagerView(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var showReelThreeDotSheetFor by remember { mutableStateOf<MediaItem?>(null) }
     var showReelDetailsDialogFor by remember { mutableStateOf<MediaItem?>(null) }
+    var isStatusGridWallMode by remember { mutableStateOf(false) }
+    var isMuted by remember { mutableStateOf(false) }
+    var statusPlaybackSpeed by remember { mutableFloatStateOf(1.0f) }
 
     if (reelVideos.isEmpty()) {
         Box(
@@ -1204,277 +1849,692 @@ private fun StatusReelsVerticalPagerView(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        VerticalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            val video = reelVideos[page]
-            val isCurrentPage = pagerState.currentPage == page
-            val isLiked = favorites.any { it.id == video.id }
-            var isPausedByTap by remember(video.id, isCurrentPage) { mutableStateOf(false) }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-                    .clickable { isPausedByTap = !isPausedByTap }
+        if (isStatusGridWallMode) {
+            // --- STATUS GRID WALL VIEW ---
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                contentPadding = PaddingValues(top = 64.dp, start = 12.dp, end = 12.dp, bottom = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxSize()
             ) {
-                if (isCurrentPage) {
-                    AndroidView(
-                        factory = { ctx ->
-                            VideoView(ctx).apply {
-                                val uri = if (
-                                    video.path.startsWith("content://") ||
-                                    video.path.startsWith("http://") ||
-                                    video.path.startsWith("https://") ||
-                                    video.path.startsWith("android.resource://")
-                                ) {
-                                    Uri.parse(video.path)
-                                } else {
-                                    val file = File(video.path)
-                                    if (file.exists()) Uri.fromFile(file) else Uri.parse(video.path)
-                                }
-                                setVideoURI(uri)
-                                setOnPreparedListener { mp ->
-                                    mp.isLooping = true
-                                    if (!isPausedByTap) start()
-                                }
-                                setOnErrorListener { _, _, _ -> true }
-                            }
-                        },
-                        update = { view ->
-                            try {
-                                if (isPausedByTap && view.isPlaying) {
-                                    view.pause()
-                                } else if (!isPausedByTap && !view.isPlaying) {
-                                    view.start()
-                                }
-                            } catch (_: Exception) {
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .align(Alignment.Center)
-                    )
-                } else {
-                    GuaranteedVideoThumbnail(
-                        video = video,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                // Bottom gradient scrim for readable title
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                        .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, Color(0xDD000000))
-                            )
-                        )
-                )
-
-                // Center Play Icon when paused by tap
-                if (isPausedByTap) {
+                itemsIndexed(reelVideos, key = { _, it -> "status_grid_${it.id}" }) { idx, video ->
+                    val isLiked = favorites.any { it.id == video.id }
                     Box(
                         modifier = Modifier
-                            .size(68.dp)
-                            .align(Alignment.Center)
-                            .clip(CircleShape)
-                            .background(Color(0x88000000)),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .height(210.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(HybridCardBg)
+                            .border(1.dp, Color(0xFFFF2A6D).copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                            .clickable {
+                                isStatusGridWallMode = false
+                                coroutineScope.launch {
+                                    pagerState.scrollToPage(idx)
+                                }
+                            }
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(42.dp)
-                        )
-                    }
-                }
-
-                // --- RIGHT SIDE REELS CONTROLS (Top: Like ❤️ -> Middle: Share 📤 -> Bottom: 3-Dot ⋮) ---
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 14.dp, bottom = 36.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
-                    // 1. TOP BUTTON: LIKE / HEART (Saves immediately to Favourite)
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable { onToggleLike(video) }
-                    ) {
+                        GuaranteedVideoThumbnail(video = video, modifier = Modifier.fillMaxSize())
                         Box(
                             modifier = Modifier
-                                .size(50.dp)
-                                .clip(CircleShape)
+                                .fillMaxSize()
                                 .background(
-                                    if (isLiked) Color(0xFFFF1744).copy(alpha = 0.28f)
-                                    else Color(0x88000000)
+                                    Brush.verticalGradient(
+                                        listOf(Color.Transparent, Color(0xCC000000))
+                                    )
                                 )
-                                .border(
-                                    1.2.dp,
-                                    if (isLiked) Color(0xFFFF1744) else Color.White.copy(alpha = 0.35f),
-                                    CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                contentDescription = if (isHindi) "पसंदीदा" else "Like",
-                                tint = if (isLiked) Color(0xFFFF1744) else Color.White,
-                                modifier = Modifier.size(28.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (isLiked) {
-                                if (isHindi) "सेव्ड" else "Saved"
-                            } else {
-                                if (isHindi) "लाइक" else "Like"
-                            },
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
                         )
-                    }
-
-                    // 2. MIDDLE BUTTON: SHARE
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable { onShareVideo(video) }
-                    ) {
                         Box(
                             modifier = Modifier
-                                .size(50.dp)
-                                .clip(CircleShape)
-                                .background(Color(0x88000000))
-                                .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Share,
-                                contentDescription = if (isHindi) "शेयर करें" else "Share",
-                                tint = Color.White,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (isHindi) "शेयर" else "Share",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    // 3. BOTTOM BUTTON: 3-DOT (4 Clean Options)
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable { showReelThreeDotSheetFor = video }
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(50.dp)
-                                .clip(CircleShape)
-                                .background(Color(0x88000000))
-                                .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = if (isHindi) "विकल्प" else "More Options",
-                                tint = Color.White,
-                                modifier = Modifier.size(25.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (isHindi) "विकल्प" else "More",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                // Bottom-Left Video Title & Duration Info
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 16.dp, end = 84.dp, bottom = 28.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(8.dp)
                                 .clip(RoundedCornerShape(6.dp))
-                                .background(Color(0xFFFF2A6D))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                                .background(Color(0xCC000000))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = if (isHindi) "स्टेटस • ${video.formattedDuration}" else "Status • ${video.formattedDuration}",
-                                color = Color.White,
+                                text = "▶ ${video.formattedDuration}",
+                                color = HybridEmerald,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         }
-                        Text(
-                            text = "${page + 1} / ${reelVideos.size}",
-                            color = Color.White.copy(alpha = 0.8f),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
+                        IconButton(
+                            onClick = { onToggleLike(video) },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = null,
+                                tint = if (isLiked) Color(0xFFFF1744) else Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = video.cleanTitle,
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = video.formattedSize,
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            // --- FULL-SCREEN VERTICAL REELS PAGER WITH UNIVERSAL 8K/4K/2K HARDWARE + SOFTWARE ENGINE ---
+            VerticalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val video = reelVideos[page]
+                val isCurrentPage = pagerState.currentPage == page
+                val isLiked = favorites.any { it.id == video.id }
+                var isPausedByTap by remember(video.id, isCurrentPage) { mutableStateOf(false) }
+                var reelCurrentPosMs by remember(video.id, isCurrentPage) { mutableLongStateOf(0L) }
+                var reelTotalDurMs by remember(video.id, isCurrentPage) { mutableLongStateOf(video.duration.coerceAtLeast(1000L)) }
+                var isSoftwareReelFallback by remember(video.id, isCurrentPage) { mutableStateOf(false) }
+                var softwareReelBitmap by remember(video.id, isCurrentPage) { mutableStateOf<Bitmap?>(null) }
+                var activeReelMediaPlayer by remember(video.id, isCurrentPage) { mutableStateOf<android.media.MediaPlayer?>(null) }
+
+                // Apply Mute & Speed changes live to active hardware MediaPlayer
+                LaunchedEffect(isMuted, statusPlaybackSpeed, activeReelMediaPlayer) {
+                    activeReelMediaPlayer?.let { mp ->
+                        try {
+                            val vol = if (isMuted) 0f else 1f
+                            mp.setVolume(vol, vol)
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && mp.isPlaying) {
+                                mp.playbackParams = mp.playbackParams.setSpeed(statusPlaybackSpeed)
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+
+                // Live progress tracker for Status Reel seekbar
+                LaunchedEffect(isCurrentPage, isPausedByTap, isSoftwareReelFallback, activeReelMediaPlayer) {
+                    if (isCurrentPage && !isSoftwareReelFallback) {
+                        while (true) {
+                            try {
+                                val mp = activeReelMediaPlayer
+                                if (mp != null && !isPausedByTap) {
+                                    val pos = mp.currentPosition.toLong()
+                                    val dur = mp.duration.toLong().coerceAtLeast(1000L)
+                                    reelCurrentPosMs = pos.coerceIn(0L, dur)
+                                    reelTotalDurMs = dur
+                                }
+                            } catch (_: Exception) {
+                            }
+                            kotlinx.coroutines.delay(250L)
+                        }
+                    }
+                }
+
+                // Universal Software Frame-Stream Fallback for 8K/4K/2K Status Reels on budget phones (e.g. Samsung M13)
+                LaunchedEffect(isCurrentPage, isSoftwareReelFallback, video.path) {
+                    if (isCurrentPage && isSoftwareReelFallback) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            val retriever = android.media.MediaMetadataRetriever()
+                            try {
+                                if (video.path.startsWith("content://")) {
+                                    retriever.setDataSource(context, Uri.parse(video.path))
+                                } else {
+                                    retriever.setDataSource(video.path)
+                                }
+                                val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                    ?.toLongOrNull()?.coerceAtLeast(1000L) ?: video.duration.coerceAtLeast(5000L)
+                                reelTotalDurMs = dur
+                                val vw = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 720
+                                val vh = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1280
+                                val scaleRatio = minOf(720f / vw.coerceAtLeast(1), 720f / vh.coerceAtLeast(1), 1f)
+                                val targetW = (vw * scaleRatio).toInt().coerceAtLeast(240)
+                                val targetH = (vh * scaleRatio).toInt().coerceAtLeast(240)
+
+                                var lastMs = System.currentTimeMillis()
+                                while (isCurrentPage && isSoftwareReelFallback) {
+                                    if (!isPausedByTap) {
+                                        val now = System.currentTimeMillis()
+                                        val delta = ((now - lastMs) * statusPlaybackSpeed).toLong().coerceIn(30L, 250L)
+                                        lastMs = now
+                                        val nextPos = (reelCurrentPosMs + delta) % reelTotalDurMs
+                                        reelCurrentPosMs = nextPos
+                                        val frame = try {
+                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                                                retriever.getScaledFrameAtTime(
+                                                    nextPos * 1000L,
+                                                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                                    targetW,
+                                                    targetH
+                                                ) ?: retriever.getFrameAtTime(nextPos * 1000L)
+                                            } else {
+                                                retriever.getFrameAtTime(nextPos * 1000L)
+                                            }
+                                        } catch (_: Exception) {
+                                            null
+                                        }
+                                        if (frame != null) {
+                                            softwareReelBitmap = frame
+                                        }
+                                        kotlinx.coroutines.delay(70L)
+                                    } else {
+                                        lastMs = System.currentTimeMillis()
+                                        kotlinx.coroutines.delay(150L)
+                                    }
+                                }
+                            } catch (_: Exception) {
+                            } finally {
+                                try {
+                                    retriever.release()
+                                } catch (_: Exception) {
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .clickable { isPausedByTap = !isPausedByTap }
+                ) {
+                    if (isCurrentPage) {
+                        AndroidView(
+                            factory = { ctx ->
+                                VideoView(ctx).apply {
+                                    fun capReelSurfaceBuffer(vw: Int, vh: Int) {
+                                        try {
+                                            val maxDim = 1280f
+                                            if (vw > 1280 || vh > 1280) {
+                                                val ratio = minOf(maxDim / vw.coerceAtLeast(1), maxDim / vh.coerceAtLeast(1))
+                                                val safeW = ((vw * ratio).toInt() / 2) * 2
+                                                val safeH = ((vh * ratio).toInt() / 2) * 2
+                                                if (safeW >= 240 && safeH >= 240) {
+                                                    holder.setFixedSize(safeW, safeH)
+                                                }
+                                            }
+                                        } catch (_: Exception) {
+                                        }
+                                    }
+
+                                    fun configureReelMp(mp: android.media.MediaPlayer) {
+                                        isSoftwareReelFallback = false
+                                        activeReelMediaPlayer = mp
+                                        try {
+                                            mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                                        } catch (_: Exception) {
+                                        }
+                                        capReelSurfaceBuffer(mp.videoWidth, mp.videoHeight)
+                                        mp.isLooping = true
+                                        val vol = if (isMuted) 0f else 1f
+                                        mp.setVolume(vol, vol)
+                                        reelTotalDurMs = mp.duration.toLong().coerceAtLeast(1000L)
+                                        if (!isPausedByTap) {
+                                            mp.start()
+                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && statusPlaybackSpeed != 1.0f) {
+                                                try {
+                                                    mp.playbackParams = mp.playbackParams.setSpeed(statusPlaybackSpeed)
+                                                } catch (_: Exception) {
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    fun startReelFdFallback(): Boolean {
+                                        return try {
+                                            val rawMp = android.media.MediaPlayer()
+                                            val pfd = if (video.path.startsWith("content://")) {
+                                                ctx.contentResolver.openFileDescriptor(Uri.parse(video.path), "r")
+                                            } else {
+                                                val f = File(video.path)
+                                                if (f.exists()) {
+                                                    android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                                                } else null
+                                            }
+                                            if (pfd != null) {
+                                                rawMp.setDataSource(pfd.fileDescriptor)
+                                                pfd.close()
+                                                capReelSurfaceBuffer(1280, 720)
+                                                rawMp.setDisplay(holder)
+                                                rawMp.setOnPreparedListener { mp -> configureReelMp(mp) }
+                                                rawMp.setOnErrorListener { _, _, _ ->
+                                                    isSoftwareReelFallback = true
+                                                    true
+                                                }
+                                                rawMp.prepareAsync()
+                                                true
+                                            } else {
+                                                isSoftwareReelFallback = true
+                                                false
+                                            }
+                                        } catch (_: Exception) {
+                                            isSoftwareReelFallback = true
+                                            false
+                                        }
+                                    }
+
+                                    try {
+                                        if (
+                                            video.path.startsWith("content://") ||
+                                            video.path.startsWith("http://") ||
+                                            video.path.startsWith("https://") ||
+                                            video.path.startsWith("android.resource://")
+                                        ) {
+                                            setVideoURI(Uri.parse(video.path))
+                                        } else {
+                                            val file = File(video.path)
+                                            if (file.exists()) setVideoPath(file.absolutePath) else setVideoURI(Uri.parse(video.path))
+                                        }
+                                        setOnPreparedListener { mp -> configureReelMp(mp) }
+                                        setOnErrorListener { _, _, _ ->
+                                            if (!startReelFdFallback()) {
+                                                isSoftwareReelFallback = true
+                                            }
+                                            true
+                                        }
+                                    } catch (_: Exception) {
+                                        if (!startReelFdFallback()) {
+                                            isSoftwareReelFallback = true
+                                        }
+                                    }
+                                }
+                            },
+                            update = { view ->
+                                if (!isSoftwareReelFallback) {
+                                    try {
+                                        if (isPausedByTap && view.isPlaying) {
+                                            view.pause()
+                                        } else if (!isPausedByTap && !view.isPlaying) {
+                                            view.start()
+                                        }
+                                    } catch (_: Exception) {
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .align(Alignment.Center)
+                        )
+
+                        if (isSoftwareReelFallback) {
+                            if (softwareReelBitmap != null) {
+                                Image(
+                                    bitmap = softwareReelBitmap!!.asImageBitmap(),
+                                    contentDescription = video.cleanTitle,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                GuaranteedVideoThumbnail(
+                                    video = video,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    } else {
+                        GuaranteedVideoThumbnail(
+                            video = video,
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = video.cleanTitle,
-                        color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+
+                    // Bottom gradient scrim for readable title
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp)
+                            .align(Alignment.BottomCenter)
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.Transparent, Color(0xE6000000))
+                                )
+                            )
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "${video.folderName} • ${video.formattedSize}",
-                        color = Color.White.copy(alpha = 0.75f),
-                        fontSize = 12.sp
-                    )
+
+                    // Center Play Icon when paused by tap
+                    if (isPausedByTap) {
+                        Box(
+                            modifier = Modifier
+                                .size(68.dp)
+                                .align(Alignment.Center)
+                                .clip(CircleShape)
+                                .background(Color(0x88000000))
+                                .border(1.5.dp, HybridEmerald, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = HybridEmerald,
+                                modifier = Modifier.size(42.dp)
+                            )
+                        }
+                    }
+
+                    // --- RIGHT SIDE REELS CONTROLS (Like ❤️, Mute 🔊, Speed ⚡, Share 📤, Full Player 🎬, 3-Dot ⋮) ---
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 14.dp, bottom = 42.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // 1. LIKE / HEART
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable { onToggleLike(video) }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isLiked) Color(0xFFFF1744).copy(alpha = 0.28f)
+                                        else Color(0x88000000)
+                                    )
+                                    .border(
+                                        1.2.dp,
+                                        if (isLiked) Color(0xFFFF1744) else Color.White.copy(alpha = 0.35f),
+                                        CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = if (isHindi) "पसंदीदा" else "Like",
+                                    tint = if (isLiked) Color(0xFFFF1744) else Color.White,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (isLiked) (if (isHindi) "सेव्ड" else "Saved") else (if (isHindi) "लाइक" else "Like"),
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // 2. MUTE / UNMUTE
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable { isMuted = !isMuted }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x88000000))
+                                    .border(1.dp, if (isMuted) HybridCoralRed else Color.White.copy(alpha = 0.35f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                    contentDescription = "Mute",
+                                    tint = if (isMuted) HybridCoralRed else Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (isMuted) (if (isHindi) "म्यूट" else "Muted") else (if (isHindi) "आवाज़" else "Sound"),
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // 3. SPEED PILL (1x -> 1.5x -> 2x)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable {
+                                statusPlaybackSpeed = when (statusPlaybackSpeed) {
+                                    1.0f -> 1.5f
+                                    1.5f -> 2.0f
+                                    else -> 1.0f
+                                }
+                            }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x88000000))
+                                    .border(1.dp, HybridEmerald.copy(alpha = 0.6f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "${statusPlaybackSpeed}x",
+                                    color = HybridEmerald,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (isHindi) "स्पीड" else "Speed",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // 4. SHARE
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable { onShareVideo(video) }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x88000000))
+                                    .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = if (isHindi) "शेयर करें" else "Share",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (isHindi) "शेयर" else "Share",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // 5. 3-DOT MORE
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable { showReelThreeDotSheetFor = video }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x88000000))
+                                    .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = if (isHindi) "विकल्प" else "More Options",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(23.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (isHindi) "विकल्प" else "More",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // Bottom-Left Video Title, Auto-HD Badge & Duration Info
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 16.dp, end = 84.dp, bottom = 24.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFFFF2A6D))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (isHindi) "स्टेटस • ${video.formattedDuration}" else "Status • ${video.formattedDuration}",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(HybridEmerald.copy(alpha = 0.22f))
+                                    .border(1.dp, HybridEmerald.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (isSoftwareReelFallback) "Smart HD Fit" else "${video.resolution} Auto-Fit",
+                                    color = HybridEmerald,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                            Text(
+                                text = "${page + 1} / ${reelVideos.size}",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = video.cleanTitle,
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "${video.folderName} • ${video.formattedSize}",
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    // Bottom Live Progress Bar
+                    val progressRatio = (reelCurrentPosMs.toFloat() / reelTotalDurMs.coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .align(Alignment.BottomCenter)
+                            .background(Color.White.copy(alpha = 0.2f))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(progressRatio)
+                                .fillMaxHeight()
+                                .background(
+                                    Brush.horizontalGradient(listOf(Color(0xFFFF2A6D), HybridEmerald))
+                                )
+                        )
+                    }
                 }
             }
         }
 
-        // Top-Left Back Header over Reels
+        // Top Bar over Status Reels / Grid: Back Button + Mode Switcher (Reels Swipe vs Grid Wall)
         Row(
             modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(top = 12.dp, start = 12.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color(0x88000000))
-                .clickable { onClose() }
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .padding(top = 12.dp, start = 12.dp, end = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = if (isHindi) "वापस" else "Back",
-                tint = Color.White,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = if (isHindi) "स्टेटस (Status)" else "Status",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp
-            )
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xAA000000))
+                    .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(20.dp))
+                    .clickable { onClose() }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = if (isHindi) "वापस" else "Back",
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (isHindi) "स्टेटस (${reelVideos.size})" else "Status (${reelVideos.size})",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+            }
+
+            // Switcher between Vertical Reels Swipe and Status Grid Wall
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xAA000000))
+                    .border(1.dp, HybridEmerald.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                    .clickable { isStatusGridWallMode = !isStatusGridWallMode }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (isStatusGridWallMode) Icons.Default.SlowMotionVideo else Icons.Default.GridView,
+                    contentDescription = null,
+                    tint = HybridEmerald,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (isStatusGridWallMode) {
+                        if (isHindi) "रील्स स्वाइप" else "Reels View"
+                    } else {
+                        if (isHindi) "ग्रिड व्यू" else "Grid Wall"
+                    },
+                    color = HybridEmerald,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp
+                )
+            }
         }
     }
 
@@ -1809,6 +2869,7 @@ private fun VideoDetailedRowItem(
     video: MediaItem,
     isHindi: Boolean,
     isSelected: Boolean,
+    isMultiSelectMode: Boolean = false,
     showBadges: Boolean,
     progressFraction: Float,
     personaMode: DemographicMode = DemographicMode.YOUTH_PRO,
@@ -1827,9 +2888,9 @@ private fun VideoDetailedRowItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(cornerRad))
-            .background(if (isSelected) HybridEmerald.copy(alpha = 0.16f) else HybridCardBg)
+            .background(if (isSelected) HybridEmerald.copy(alpha = 0.20f) else HybridCardBg)
             .border(
-                width = if (video.isPartialDownload) 1.4.dp else 1.dp,
+                width = if (isSelected) 1.8.dp else if (video.isPartialDownload) 1.4.dp else 1.dp,
                 color = when {
                     isSelected -> HybridEmerald
                     video.isPartialDownload -> Color(0xFFFF9100)
@@ -1837,14 +2898,27 @@ private fun VideoDetailedRowItem(
                 },
                 shape = RoundedCornerShape(cornerRad)
             )
+            // 2-Second Hold selects the video and enters Multi-Select Mode; 4-Second Hold opens 3-Dot Menu
             .timedMediaTouchHold(
                 onClick = onClick,
-                onHold2sPlay = onClick,
-                onHold4sMenu = onLongClick
+                onHold2sPlay = onLongClick,
+                onHold4sMenu = onMoreClick
             )
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (isMultiSelectMode || isSelected) {
+            Icon(
+                imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                contentDescription = if (isSelected) "Selected" else "Unselected",
+                tint = if (isSelected) HybridEmerald else HybridTextSecondary,
+                modifier = Modifier
+                    .size(22.dp)
+                    .clickable { onLongClick() }
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+
         // Thumbnail with Pending / Resolution Badge (NO "8K" text!) and Duration Pill
         Box(
             modifier = Modifier
@@ -1992,6 +3066,7 @@ private fun VideoGridCard(
     video: MediaItem,
     isHindi: Boolean,
     isSelected: Boolean,
+    isMultiSelectMode: Boolean = false,
     showBadges: Boolean,
     progressFraction: Float,
     onClick: () -> Unit,
@@ -2008,9 +3083,9 @@ private fun VideoGridCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(if (isSelected) HybridEmerald.copy(alpha = 0.16f) else HybridCardBg)
+            .background(if (isSelected) HybridEmerald.copy(alpha = 0.20f) else HybridCardBg)
             .border(
-                1.dp,
+                if (isSelected) 1.8.dp else 1.dp,
                 when {
                     isSelected -> HybridEmerald
                     video.isPartialDownload -> Color(0xFFFF9100)
@@ -2018,10 +3093,11 @@ private fun VideoGridCard(
                 },
                 RoundedCornerShape(14.dp)
             )
+            // 2-Second Hold selects the video and enters Multi-Select Mode; 4-Second Hold opens 3-Dot Menu
             .timedMediaTouchHold(
                 onClick = onClick,
-                onHold2sPlay = onClick,
-                onHold4sMenu = onLongClick
+                onHold2sPlay = onLongClick,
+                onHold4sMenu = onMoreClick
             )
             .padding(8.dp)
     ) {
@@ -2032,6 +3108,26 @@ private fun VideoGridCard(
                 .clip(RoundedCornerShape(10.dp))
         ) {
             GuaranteedVideoThumbnail(video = video, modifier = Modifier.fillMaxSize())
+
+            if (isMultiSelectMode || isSelected) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xAA000000))
+                        .clickable { onLongClick() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                        contentDescription = if (isSelected) "Selected" else "Unselected",
+                        tint = if (isSelected) HybridEmerald else Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
 
             if (video.isPartialDownload) {
                 Box(

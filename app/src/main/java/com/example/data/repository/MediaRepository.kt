@@ -141,13 +141,12 @@ class MediaRepository(
     // --- History & Resume Playback ---
     fun getHistoryFlow(allMediaList: List<MediaItem>): Flow<List<Pair<MediaItem, Long>>> {
         return mediaDao.getHistory().map { historyEntities ->
-            val historyMap = historyEntities.associateBy { it.mediaId }
-            allMediaList
-                .filter { it.id in historyMap.keys }
-                .map { item ->
-                    val lastPos = historyMap[item.id]?.lastPositionMs ?: 0L
-                    item to lastPos
-                }
+            val mediaById = allMediaList.associateBy { it.id }
+            // Preserve exact lastPlayedAt DESC order from SQLite so newest watched video is always FIRST (index 0)
+            historyEntities.mapNotNull { entity ->
+                val item = mediaById[entity.mediaId] ?: return@mapNotNull null
+                item to entity.lastPositionMs
+            }
         }
     }
 
