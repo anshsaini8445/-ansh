@@ -25,38 +25,52 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Collections
 import kotlin.math.cos
 import kotlin.math.sin
 
 private object AlbumArtBitmapCache {
-    private val cache = object : LruCache<String, Bitmap>(80) {}
-    fun get(key: String): Bitmap? = cache.get(key)
-    fun put(key: String, bitmap: Bitmap) {
+    private val cache = object : LruCache<String, ImageBitmap>(100) {}
+    private val noArtPaths = Collections.synchronizedSet(HashSet<String>())
+    val extractionSemaphore = Semaphore(2)
+
+    fun get(key: String): ImageBitmap? = cache.get(key)
+    fun isKnownEmpty(key: String): Boolean = noArtPaths.contains(key)
+    fun markEmpty(key: String) {
+        if (noArtPaths.size > 400) noArtPaths.clear()
+        noArtPaths.add(key)
+    }
+    fun put(key: String, bitmap: ImageBitmap) {
         cache.put(key, bitmap)
     }
 }
 
 /**
- * Extracts and caches real embedded album art (for MP3/M4A/FLAC) or a real video frame (for MP4/MKV)
- * with a vibrant vinyl disc fallback when a file has no embedded cover image.
+ * Ultra-Light, Throttle-Guarded Album Art & Video Thumbnail Extractor:
+ * - Caches ImageBitmap directly so scrolling never re-allocates ImageBitmap wrappers.
+ * - Uses a 2-permit Semaphore + 30ms scroll-settle debounce so fast scrolling never hangs the phone.
  */
 @Composable
 fun GuaranteedAlbumArt(
@@ -67,42 +81,60 @@ fun GuaranteedAlbumArt(
     cornerRadius: Dp = 12.dp,
     accentColor: Color = Color(0xFF00E676)
 ) {
-    var bitmap by remember(mediaPath) { mutableStateOf(AlbumArtBitmapCache.get(mediaPath)) }
+    var imageBitmap by remember(mediaPath) { mutableStateOf(AlbumArtBitmapCache.get(mediaPath)) }
 
     LaunchedEffect(mediaPath, isVideo) {
-        if (bitmap == null && mediaPath.isNotBlank()) {
+        if (imageBitmap == null && mediaPath.isNotBlank() && !AlbumArtBitmapCache.isKnownEmpty(mediaPath)) {
+            delay(30L) // Fast-scroll debounce: cancels immediately if item scrolls off-screen
             val loaded = withContext(Dispatchers.IO) {
-                val cached = AlbumArtBitmapCache.get(mediaPath)
-                if (cached != null) return@withContext cached
-                val file = File(mediaPath)
-                if (!file.exists()) return@withContext null
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(mediaPath)
-                    val embedded = retriever.embeddedPicture
-                    val rawBmp = if (embedded != null && embedded.isNotEmpty()) {
-                        BitmapFactory.decodeByteArray(embedded, 0, embedded.size)
-                    } else if (isVideo) {
-                        retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    } else {
-                        null
+                AlbumArtBitmapCache.get(mediaPath)?.let { return@withContext it }
+                if (AlbumArtBitmapCache.isKnownEmpty(mediaPath)) return@withContext null
+
+                AlbumArtBitmapCache.extractionSemaphore.withPermit {
+                    AlbumArtBitmapCache.get(mediaPath)?.let { return@withPermit it }
+                    val file = File(mediaPath)
+                    if (!file.exists()) {
+                        AlbumArtBitmapCache.markEmpty(mediaPath)
+                        return@withPermit null
                     }
-                    if (rawBmp != null) {
-                        val scaled = Bitmap.createScaledBitmap(rawBmp, 160, 160, true)
-                        AlbumArtBitmapCache.put(mediaPath, scaled)
-                        scaled
-                    } else null
-                } catch (_: Exception) {
-                    null
-                } finally {
+                    val retriever = MediaMetadataRetriever()
                     try {
-                        retriever.release()
+                        retriever.setDataSource(mediaPath)
+                        val embedded = retriever.embeddedPicture
+                        val rawBmp = if (embedded != null && embedded.isNotEmpty()) {
+                            val opts = BitmapFactory.Options().apply {
+                                inSampleSize = 2
+                                inPreferredConfig = Bitmap.Config.RGB_565
+                            }
+                            BitmapFactory.decodeByteArray(embedded, 0, embedded.size, opts)
+                        } else if (isVideo) {
+                            retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        } else {
+                            null
+                        }
+                        if (rawBmp != null) {
+                            val scaled = Bitmap.createScaledBitmap(rawBmp, 136, 136, true)
+                            if (scaled !== rawBmp) rawBmp.recycle()
+                            val imgBmp = scaled.asImageBitmap()
+                            AlbumArtBitmapCache.put(mediaPath, imgBmp)
+                            imgBmp
+                        } else {
+                            AlbumArtBitmapCache.markEmpty(mediaPath)
+                            null
+                        }
                     } catch (_: Exception) {
+                        AlbumArtBitmapCache.markEmpty(mediaPath)
+                        null
+                    } finally {
+                        try {
+                            retriever.release()
+                        } catch (_: Exception) {
+                        }
                     }
                 }
             }
             if (loaded != null) {
-                bitmap = loaded
+                imageBitmap = loaded
             }
         }
     }
@@ -115,18 +147,18 @@ fun GuaranteedAlbumArt(
                 Brush.linearGradient(
                     listOf(
                         Color(0xFF0D1B1E),
-                        accentColor.copy(alpha = 0.25f),
+                        accentColor.copy(alpha = 0.24f),
                         Color(0xFF09101D)
                     )
                 )
             )
-            .border(1.dp, accentColor.copy(alpha = 0.45f), shape),
+            .border(1.dp, accentColor.copy(alpha = 0.42f), shape),
         contentAlignment = Alignment.Center
     ) {
-        val bmp = bitmap
+        val bmp = imageBitmap
         if (bmp != null) {
             Image(
-                bitmap = bmp.asImageBitmap(),
+                bitmap = bmp,
                 contentDescription = title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -137,7 +169,7 @@ fun GuaranteedAlbumArt(
                     .fillMaxSize(0.68f)
                     .clip(CircleShape)
                     .background(Color(0xFF0B111A))
-                    .border(1.5.dp, accentColor.copy(alpha = 0.75f), CircleShape),
+                    .border(1.5.dp, accentColor.copy(alpha = 0.72f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -152,7 +184,8 @@ fun GuaranteedAlbumArt(
 }
 
 /**
- * Ultra-Smooth Colorful Liquid Glass Container.
+ * Ultra-Smooth Hardware-Accelerated Liquid Glass Container.
+ * Uses GPU graphicsLayer scaling (zero relayout overhead) and lightweight 2-pass glass rendering.
  */
 @Composable
 fun LiquidGlassBox(
@@ -170,17 +203,17 @@ fun LiquidGlassBox(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.94f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
+        targetValue = if (isPressed) 0.96f else 1f,
+        animationSpec = tween(durationMillis = 90, easing = FastOutSlowInEasing),
         label = "liquid_glass_scale"
     )
 
     val shape = RoundedCornerShape(cornerRadius)
     val baseModifier = modifier
-        .scale(scale)
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        }
         .clip(shape)
         .then(
             if (onClick != null) {
@@ -201,61 +234,33 @@ fun LiquidGlassBox(
             val w = size.width
             val h = size.height
             val baseAlpha = glassAlpha.coerceIn(0.08f, 0.85f)
+            val cr = CornerRadius(rPx, rPx)
 
             drawRoundRect(
                 brush = Brush.linearGradient(
                     colors = if (isActive) {
                         listOf(
-                            primaryTint.copy(alpha = (baseAlpha + 0.16f).coerceAtMost(0.65f)),
+                            primaryTint.copy(alpha = (baseAlpha + 0.15f).coerceAtMost(0.62f)),
                             Color(0xD910192B),
-                            secondaryTint.copy(alpha = (baseAlpha + 0.08f).coerceAtMost(0.55f))
+                            secondaryTint.copy(alpha = (baseAlpha + 0.08f).coerceAtMost(0.52f))
                         )
                     } else {
                         listOf(
                             primaryTint.copy(alpha = baseAlpha),
                             Color(0xD90E1524),
-                            secondaryTint.copy(alpha = (baseAlpha * 0.65f).coerceAtLeast(0.08f))
+                            secondaryTint.copy(alpha = (baseAlpha * 0.62f).coerceAtLeast(0.08f))
                         )
                     },
                     start = Offset.Zero,
                     end = Offset(w, h)
                 ),
-                cornerRadius = CornerRadius(rPx, rPx)
+                cornerRadius = cr
             )
 
             drawRoundRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (isActive) 0.28f else 0.16f),
-                        Color.Transparent
-                    ),
-                    startY = 0f,
-                    endY = h * 0.52f
-                ),
-                size = Size(w, h * 0.52f),
-                cornerRadius = CornerRadius(rPx, rPx)
-            )
-
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = if (isActive) {
-                        listOf(
-                            Color.White.copy(alpha = 0.85f),
-                            primaryTint.copy(alpha = 0.95f),
-                            secondaryTint.copy(alpha = 0.85f)
-                        )
-                    } else {
-                        listOf(
-                            Color.White.copy(alpha = 0.42f),
-                            primaryTint.copy(alpha = 0.38f),
-                            secondaryTint.copy(alpha = 0.24f)
-                        )
-                    },
-                    start = Offset.Zero,
-                    end = Offset(w, h)
-                ),
-                cornerRadius = CornerRadius(rPx, rPx),
-                style = Stroke(width = if (isActive) 1.6.dp.toPx() else 1.1.dp.toPx())
+                color = if (isActive) primaryTint.copy(alpha = 0.82f) else primaryTint.copy(alpha = 0.36f),
+                cornerRadius = cr,
+                style = Stroke(width = if (isActive) 1.5.dp.toPx() else 1.dp.toPx())
             )
         }
         content()
@@ -263,7 +268,7 @@ fun LiquidGlassBox(
 }
 
 /**
- * Circular 3D Liquid Glass Icon Orb with Specular Droplet Highlight & Colorful Prism Glow.
+ * Circular 3D Liquid Glass Icon Orb with GPU-accelerated press scaling.
  */
 @Composable
 fun LiquidGlassIconOrb(
@@ -283,11 +288,8 @@ fun LiquidGlassIconOrb(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.90f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
+        targetValue = if (isPressed) 0.92f else 1f,
+        animationSpec = tween(durationMillis = 85, easing = FastOutSlowInEasing),
         label = "orb_scale"
     )
 
@@ -295,7 +297,10 @@ fun LiquidGlassIconOrb(
         modifier = modifier
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .size(size)
-            .scale(scale)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(CircleShape)
             .clickable(
                 interactionSource = interactionSource,
@@ -312,45 +317,27 @@ fun LiquidGlassIconOrb(
                 brush = Brush.radialGradient(
                     colors = if (isActive) {
                         listOf(
-                            glowColor.copy(alpha = 0.48f),
-                            secondaryColor.copy(alpha = 0.26f),
+                            glowColor.copy(alpha = 0.45f),
+                            secondaryColor.copy(alpha = 0.24f),
                             Color(0xE60D1524)
                         )
                     } else {
                         listOf(
-                            glowColor.copy(alpha = 0.22f),
+                            glowColor.copy(alpha = 0.20f),
                             Color(0xCC162238),
                             Color(0xE60B111E)
                         )
                     },
-                    center = Offset(center.x - r * 0.25f, center.y - r * 0.25f),
-                    radius = r * 1.25f
+                    center = Offset(center.x - r * 0.22f, center.y - r * 0.22f),
+                    radius = r * 1.2f
                 ),
                 radius = r
             )
 
-            drawOval(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.42f),
-                        Color.Transparent
-                    )
-                ),
-                topLeft = Offset(center.x - r * 0.62f, center.y - r * 0.84f),
-                size = Size(r * 1.24f, r * 0.72f)
-            )
-
             drawCircle(
-                brush = Brush.sweepGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.75f),
-                        glowColor.copy(alpha = if (isActive) 0.95f else 0.55f),
-                        secondaryColor.copy(alpha = if (isActive) 0.90f else 0.45f),
-                        Color.White.copy(alpha = 0.75f)
-                    )
-                ),
+                color = if (isActive) glowColor.copy(alpha = 0.88f) else glowColor.copy(alpha = 0.48f),
                 radius = r - 1.dp.toPx(),
-                style = Stroke(width = if (isActive) 1.7.dp.toPx() else 1.2.dp.toPx())
+                style = Stroke(width = if (isActive) 1.5.dp.toPx() else 1.1.dp.toPx())
             )
         }
 
@@ -364,26 +351,32 @@ fun LiquidGlassIconOrb(
 }
 
 /**
- * Pure Visual Liquid Glass 5-Band Animated Equalizer Component (NO "Equalizer" text label!).
+ * Pure Visual Liquid Glass 5-Band Animated Equalizer Component:
+ * Runs animation ONLY when `isPlaying == true` (0% CPU when paused!).
  */
 @Composable
 fun LiquidGlassEqualizerWidget(
     bands: List<Int> = listOf(60, 75, 55, 80, 65),
-    isPlaying: Boolean = true,
+    isPlaying: Boolean = false,
     onClick: () -> Unit = {},
     modifier: Modifier = Modifier,
     size: Dp = 40.dp,
     isActive: Boolean = true
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "eq_liquid_bars")
-    val phase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 6.28318f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1500, easing = LinearEasing)
-        ),
-        label = "eq_phase"
-    )
+    val phase = if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "eq_liquid_bars")
+        val animated by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 6.28318f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1500, easing = LinearEasing)
+            ),
+            label = "eq_phase"
+        )
+        animated
+    } else {
+        0f
+    }
 
     val barColors = remember {
         listOf(
@@ -430,11 +423,7 @@ fun LiquidGlassEqualizerWidget(
                 )
 
                 drawLine(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(Color.White, color, color.copy(alpha = 0.6f)),
-                        startY = topY,
-                        endY = this.size.height
-                    ),
+                    color = color,
                     start = Offset(x, topY),
                     end = Offset(x, this.size.height),
                     strokeWidth = barWidth,
@@ -443,7 +432,7 @@ fun LiquidGlassEqualizerWidget(
 
                 drawCircle(
                     color = Color.White,
-                    radius = barWidth * 0.58f,
+                    radius = barWidth * 0.55f,
                     center = Offset(x, topY)
                 )
             }
@@ -459,6 +448,7 @@ fun ColorfulEqualizerOrb(
     LiquidGlassEqualizerWidget(
         onClick = onClick,
         size = size,
+        isPlaying = false,
         isActive = true
     )
 }
@@ -497,7 +487,7 @@ fun VisualPrecisionSeekBar(
 }
 
 /**
- * Pure Visual Liquid Glass Hardware Volume Booster Rotary Orb (NO "Volume Boost" text label!).
+ * Pure Visual Liquid Glass Hardware Volume Booster Rotary Orb (Zero-CPU when boost is off).
  */
 @Composable
 fun LiquidGlassVolumeBoosterWidget(
@@ -508,17 +498,6 @@ fun LiquidGlassVolumeBoosterWidget(
     modifier: Modifier = Modifier,
     size: Dp = 42.dp
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "boost_pulse")
-    val sonicWave by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.18f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 750, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "sonic_wave"
-    )
-
     val activeGlow = if (isBoostActive || volumePercent > 100) Color(0xFFFFD700) else Color(0xFF00E5FF)
     val secondaryGlow = if (isBoostActive || volumePercent > 100) Color(0xFFFF2A85) else Color(0xFF00E676)
 
@@ -546,24 +525,16 @@ fun LiquidGlassVolumeBoosterWidget(
                 startAngle = 135f,
                 sweepAngle = 270f,
                 useCenter = false,
-                style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
             )
 
             val sweep = ((volumePercent.coerceIn(0, 200) / 200f) * 270f).coerceAtLeast(35f)
             drawArc(
-                brush = Brush.sweepGradient(
-                    colors = listOf(
-                        Color(0xFF00E676),
-                        Color(0xFF00E5FF),
-                        Color(0xFFFFD700),
-                        Color(0xFFFF2A85),
-                        Color(0xFF00E676)
-                    )
-                ),
+                color = activeGlow,
                 startAngle = 135f,
                 sweepAngle = sweep,
                 useCenter = false,
-                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 2.8.dp.toPx(), cap = StrokeCap.Round)
             )
 
             val conePath = Path().apply {
@@ -580,33 +551,21 @@ fun LiquidGlassVolumeBoosterWidget(
                 color = if (isBoostActive || volumePercent > 100) Color(0xFFFFD700) else Color.White
             )
 
-            val waveScale = if (isBoostActive) sonicWave else 1f
             drawArc(
                 color = activeGlow,
                 startAngle = -45f,
                 sweepAngle = 90f,
                 useCenter = false,
-                topLeft = Offset(cx - r * 0.12f, cy - r * 0.24f * waveScale),
-                size = Size(r * 0.42f * waveScale, r * 0.48f * waveScale),
+                topLeft = Offset(cx - r * 0.12f, cy - r * 0.24f),
+                size = Size(r * 0.42f, r * 0.48f),
                 style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
             )
-            if (isBoostActive || volumePercent > 100) {
-                drawArc(
-                    color = secondaryGlow,
-                    startAngle = -50f,
-                    sweepAngle = 100f,
-                    useCenter = false,
-                    topLeft = Offset(cx - r * 0.04f, cy - r * 0.38f * waveScale),
-                    size = Size(r * 0.56f * waveScale, r * 0.76f * waveScale),
-                    style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                )
-            }
         }
     }
 }
 
 /**
- * Pure Visual Liquid Glass Double-Shake Vibration Component (Vibrating Phone + Neon Shockwaves).
+ * Pure Visual Liquid Glass Double-Shake Vibration Component (Zero-CPU static render).
  */
 @Composable
 fun LiquidGlassShakeOrbWidget(
@@ -616,17 +575,6 @@ fun LiquidGlassShakeOrbWidget(
     modifier: Modifier = Modifier,
     size: Dp = 40.dp
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "shake_orb")
-    val waveOffset by infiniteTransition.animateFloat(
-        initialValue = -1f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 420, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "shake_wiggle"
-    )
-
     val glow = if (enabled) Color(0xFF00E5FF) else Color(0xFF64748B)
     val secondary = if (enabled) Color(0xFF00E676) else Color(0xFF475569)
 
@@ -645,7 +593,7 @@ fun LiquidGlassShakeOrbWidget(
         ) {
             val w = this.size.width
             val h = this.size.height
-            val cx = w / 2f + (if (enabled) waveOffset * 1.5f else 0f)
+            val cx = w / 2f
             val cy = h / 2f
 
             drawRoundRect(
@@ -712,9 +660,7 @@ fun LiquidGlassSpeedDialOrb(
             val r = minOf(w, h) * 0.44f
 
             drawArc(
-                brush = Brush.sweepGradient(
-                    colors = listOf(Color(0xFF00E676), Color(0xFF00E5FF), Color(0xFFFF2A85), Color(0xFFFFD700))
-                ),
+                color = glow,
                 startAngle = 160f,
                 sweepAngle = 220f,
                 useCenter = false,
