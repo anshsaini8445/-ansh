@@ -61,7 +61,8 @@ object DeepMediaScanner {
     @Volatile
     private var ramAudioCache: List<MediaItem> = emptyList()
 
-    private val bitmapCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(140) {}
+    private val bitmapCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(160) {}
+    private val unextractablePaths = java.util.Collections.synchronizedSet(HashSet<String>())
 
     // Limits concurrent heavy frame decodes so scrolling stays 120fps smooth
     private val thumbnailDecodeSemaphore = Semaphore(permits = 2)
@@ -79,14 +80,16 @@ object DeepMediaScanner {
 
     private fun downscaleForSmoothUi(src: Bitmap?, isVideo: Boolean): Bitmap? {
         if (src == null) return null
-        val maxW = if (isVideo) 320 else 240
-        val maxH = if (isVideo) 180 else 240
+        val maxW = if (isVideo) 240 else 180
+        val maxH = if (isVideo) 136 else 180
         if (src.width <= 0 || src.height <= 0 || (src.width <= maxW && src.height <= maxH)) return src
         return try {
             val ratio = minOf(maxW.toFloat() / src.width.toFloat(), maxH.toFloat() / src.height.toFloat())
             val targetW = (src.width * ratio).toInt().coerceAtLeast(1)
             val targetH = (src.height * ratio).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(src, targetW, targetH, true)
+            val scaled = Bitmap.createScaledBitmap(src, targetW, targetH, true)
+            if (scaled !== src) src.recycle()
+            scaled
         } catch (_: Throwable) {
             src
         }
@@ -94,11 +97,12 @@ object DeepMediaScanner {
 
     suspend fun loadOrExtractBitmap(path: String, isVideo: Boolean, context: Context? = appContextRef): Bitmap? =
         withContext(Dispatchers.IO) {
-            if (path.isBlank() || path.startsWith("http")) return@withContext null
+            if (path.isBlank() || path.startsWith("http") || unextractablePaths.contains(path)) return@withContext null
             bitmapCache.get(path)?.let { return@withContext it }
 
             thumbnailDecodeSemaphore.withPermit {
                 bitmapCache.get(path)?.let { return@withPermit it }
+                if (unextractablePaths.contains(path)) return@withPermit null
 
                 val ctx = context ?: appContextRef
                 var extracted: Bitmap? = null
@@ -109,7 +113,7 @@ object DeepMediaScanner {
                         try {
                             extracted = ctx.contentResolver.loadThumbnail(
                                 uri,
-                                if (isVideo) Size(320, 180) else Size(240, 240),
+                                if (isVideo) Size(240, 136) else Size(180, 180),
                                 null
                             )
                         } catch (_: Throwable) {
@@ -120,12 +124,19 @@ object DeepMediaScanner {
                         try {
                             retriever.setDataSource(ctx, uri)
                             if (isVideo) {
-                                extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                                    ?: retriever.getFrameAtTime(0L)
+                                extracted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                    retriever.getScaledFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 240, 136)
+                                } else {
+                                    retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                }
                             } else {
                                 val pic = retriever.embeddedPicture
                                 if (pic != null && pic.isNotEmpty()) {
-                                    extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
+                                    val opts = BitmapFactory.Options().apply {
+                                        inSampleSize = 2
+                                        inPreferredConfig = Bitmap.Config.RGB_565
+                                    }
+                                    extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size, opts)
                                 }
                             }
                         } catch (_: Throwable) {
@@ -154,12 +165,19 @@ object DeepMediaScanner {
                             try {
                                 retriever.setDataSource(file.absolutePath)
                                 if (isVideo) {
-                                    extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                                        ?: retriever.getFrameAtTime(0L)
+                                    extracted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                        retriever.getScaledFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 240, 136)
+                                    } else {
+                                        retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                    }
                                 } else {
                                     val pic = retriever.embeddedPicture
                                     if (pic != null && pic.isNotEmpty()) {
-                                        extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size)
+                                        val opts = BitmapFactory.Options().apply {
+                                            inSampleSize = 2
+                                            inPreferredConfig = Bitmap.Config.RGB_565
+                                        }
+                                        extracted = BitmapFactory.decodeByteArray(pic, 0, pic.size, opts)
                                     }
                                 }
                             } catch (_: Throwable) {
@@ -179,6 +197,9 @@ object DeepMediaScanner {
                         bitmapCache.put(path, scaled)
                     } catch (_: Throwable) {
                     }
+                } else {
+                    if (unextractablePaths.size > 500) unextractablePaths.clear()
+                    unextractablePaths.add(path)
                 }
                 scaled
             }

@@ -493,7 +493,7 @@ class PlayerViewModel(application: Application) :
     private fun registerDoubleShakeSensor() {
         try {
             if (accelerometer != null) {
-                sensorManager?.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
+                sensorManager?.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
             }
         } catch (_: Exception) {
         }
@@ -501,6 +501,7 @@ class PlayerViewModel(application: Application) :
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
+        if (!_doubleShakeEnabled.value && !_vaultUnlocked.value) return
         val x = event.values[0]
         val y = event.values[1]
         val z = event.values[2]
@@ -642,7 +643,18 @@ class PlayerViewModel(application: Application) :
         }
     }
 
+    @Volatile
+    private var isMediaScanInFlight = false
+    @Volatile
+    private var lastMediaScanMs = 0L
+
     fun loadMedia() {
+        val now = System.currentTimeMillis()
+        if (isMediaScanInFlight || (now - lastMediaScanMs < 1800L && _videoItems.value.isNotEmpty())) {
+            return
+        }
+        isMediaScanInFlight = true
+        lastMediaScanMs = now
         viewModelScope.launch {
             try {
                 // Stage 1: Emit fast MediaStore results (<80ms) so videos/songs appear immediately after permission grant
@@ -676,6 +688,9 @@ class PlayerViewModel(application: Application) :
                 }
                 repository.syncMediaLibrary(combined)
             } catch (_: Throwable) {
+            } finally {
+                isMediaScanInFlight = false
+                lastMediaScanMs = System.currentTimeMillis()
             }
         }
     }

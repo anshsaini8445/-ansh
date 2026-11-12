@@ -91,23 +91,6 @@ fun VideoSectionScreen(
         com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
     }
 
-    // Live Device Clock & Battery Level for Top Header Bar
-    var headerClockText by remember { mutableStateOf("") }
-    var headerBatteryPct by remember { mutableIntStateOf(100) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            try {
-                val sdf = java.text.SimpleDateFormat("hh:mm a", Locale.getDefault())
-                headerClockText = sdf.format(java.util.Date())
-                val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
-                val cap = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
-                if (cap in 1..100) headerBatteryPct = cap
-            } catch (_: Exception) {
-            }
-            kotlinx.coroutines.delay(10_000L)
-        }
-    }
-
     val subTabKeys = remember { listOf("Video", "Folder", "Status", "Favourite") }
     val subTabPagerState = rememberPagerState(initialPage = 0, pageCount = { subTabKeys.size })
     val activeSubTab = subTabKeys[subTabPagerState.currentPage]
@@ -315,110 +298,33 @@ fun VideoSectionScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(64.dp)
+                        .height(56.dp)
                         .padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_app_custom_logo),
-                            contentDescription = "Hybrid Player",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .border(
-                                    1.5.dp,
-                                    Brush.linearGradient(listOf(Color(0xFFFF2A4B), HybridEmerald)),
-                                    RoundedCornerShape(12.dp)
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
-                                color = Color.White,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 0.2.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                        contentDescription = "Hybrid Player",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(
+                                1.5.dp,
+                                Brush.linearGradient(listOf(Color(0xFFFF2A4B), HybridEmerald)),
+                                RoundedCornerShape(12.dp)
                             )
-                            if (headerClockText.isNotEmpty()) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .background(Color(0xCC0D1829))
-                                        .border(1.dp, HybridEmerald.copy(alpha = 0.45f), RoundedCornerShape(50))
-                                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = "🕒 $headerClockText • 🔋 $headerBatteryPct%",
-                                        color = Color.White,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Quick Theme & Custom Gallery Photo Picker Button right on Video Screen
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        IconButton(
-                            onClick = {
-                                galleryWallpaperLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (customWallpaperUri != null) HybridEmerald.copy(alpha = 0.24f)
-                                    else HybridCardBg
-                                )
-                                .border(
-                                    1.dp,
-                                    if (customWallpaperUri != null) HybridEmerald else HybridCardBorder,
-                                    CircleShape
-                                )
-                                .testTag("video_header_gallery_wallpaper_btn")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Wallpaper,
-                                contentDescription = if (isHindi) "गैलरी से फोटो लगाएं" else "Set Gallery Photo Wallpaper",
-                                tint = if (customWallpaperUri != null) HybridEmerald else Color.White,
-                                modifier = Modifier.size(19.dp)
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { showThemeStudioDialog = true },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(HybridCardBg)
-                                .border(1.dp, HybridCardBorder, CircleShape)
-                                .testTag("video_header_theme_studio_btn")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Palette,
-                                contentDescription = if (isHindi) "थीम बदलें" else "Change Theme",
-                                tint = HybridCyan,
-                                modifier = Modifier.size(19.dp)
-                            )
-                        }
-                    }
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 0.2.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
@@ -2828,26 +2734,21 @@ fun GuaranteedVideoThumbnail(
 
     LaunchedEffect(video.path) {
         if (localBitmap == null && !video.path.startsWith("http")) {
+            kotlinx.coroutines.delay(35L) // Fast-scroll settle debounce for 120fps scrolling
             localBitmap = DeepMediaScanner.loadOrExtractBitmap(video.path, isVideo = true, context = context)
         }
     }
 
-    Box(modifier = modifier) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFF1A2639), Color(0xFF0F172A), Color(0xFF141E30))
-                )
-            )
-            drawCircle(
-                color = Color(0x182ECC71),
-                radius = size.minDimension * 0.34f
-            )
-        }
+    val rememberedImageBitmap = remember(localBitmap) {
+        localBitmap?.asImageBitmap()
+    }
 
-        if (localBitmap != null) {
+    Box(
+        modifier = modifier.background(Color(0xFF101827))
+    ) {
+        if (rememberedImageBitmap != null) {
             Image(
-                bitmap = localBitmap!!.asImageBitmap(),
+                bitmap = rememberedImageBitmap,
                 contentDescription = video.cleanTitle,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

@@ -41,6 +41,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -311,23 +312,6 @@ fun VideoPlayerView(
         } catch (_: Exception) {
         }
         onDispose { }
-    }
-
-    // Live Clock Time & Battery % for Top Bar when controls are shown
-    var currentClockText by remember { mutableStateOf("") }
-    var currentBatteryPct by remember { mutableStateOf(100) }
-    LaunchedEffect(showControls) {
-        while (true) {
-            try {
-                val sdf = java.text.SimpleDateFormat("hh:mm a", Locale.getDefault())
-                currentClockText = sdf.format(java.util.Date())
-                val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-                val cap = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
-                if (cap in 1..100) currentBatteryPct = cap
-            } catch (_: Exception) {
-            }
-            delay(15_000L)
-        }
     }
 
     // 3-Second Auto-Hide Controls Timer
@@ -1252,53 +1236,38 @@ fun VideoPlayerView(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                if (currentClockText.isNotEmpty()) {
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(50))
-                                            .background(Color(0xD90A1424))
-                                            .border(1.dp, HybridEmerald.copy(alpha = 0.55f), RoundedCornerShape(50))
-                                            .padding(horizontal = 10.dp, vertical = 3.dp)
-                                    ) {
+                            if (isSoftwareFallbackActive || playbackSpeed != 1.0f || videoSleepRemainingSeconds > 0) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (isSoftwareFallbackActive) {
                                         Text(
-                                            text = "🕒 $currentClockText • 🔋 $currentBatteryPct%",
-                                            color = Color.White,
-                                            fontSize = if (isCompactSplitWindow) 10.sp else 12.sp,
+                                            text = "⚡ Smart HD Fit",
+                                            color = HybridCyan,
+                                            fontSize = 11.sp,
                                             fontWeight = FontWeight.ExtraBold,
                                             maxLines = 1
                                         )
                                     }
-                                }
-                                if (isSoftwareFallbackActive) {
-                                    Text(
-                                        text = "⚡ Smart HD Fit",
-                                        color = HybridCyan,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        maxLines = 1
-                                    )
-                                }
-                                if (playbackSpeed != 1.0f) {
-                                    Text(
-                                        text = "⚡ ${playbackSpeed}x",
-                                        color = HybridEmerald,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        maxLines = 1
-                                    )
-                                }
-                                if (videoSleepRemainingSeconds > 0) {
-                                    Text(
-                                        text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
-                                        color = HybridGold,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1
-                                    )
+                                    if (playbackSpeed != 1.0f) {
+                                        Text(
+                                            text = "⚡ ${playbackSpeed}x",
+                                            color = HybridEmerald,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            maxLines = 1
+                                        )
+                                    }
+                                    if (videoSleepRemainingSeconds > 0) {
+                                        Text(
+                                            text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
+                                            color = HybridGold,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1384,74 +1353,16 @@ fun VideoPlayerView(
                         }
                     }
 
-                    // Up Next Video Preview Banner
-                    if (allVideos.size > 1) {
-                        val currentIdx = allVideos.indexOfFirst { it.path == videoPath }
-                        val nextVideoItem = if (currentIdx in 0 until allVideos.lastIndex) allVideos[currentIdx + 1] else allVideos.firstOrNull()
-                        if (nextVideoItem != null) {
-                            Row(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .offset(y = (-70).dp)
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .background(Color(0x33FFFFFF))
-                                    .border(1.dp, Color(0x38FFFFFF), RoundedCornerShape(20.dp))
-                                    .clickable {
-                                        lastInteractionTime = System.currentTimeMillis()
-                                        onSelectVideo(nextVideoItem)
-                                    }
-                                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.SkipNext,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Up Next: ${nextVideoItem.title.take(28)}",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-
-                    // CENTER PLAY / PAUSE, -10s / +10s SEEK, PREV / NEXT, SHUFFLE & REPEAT (Clean White Glass Theme)
-                    val sideBtnSize = if (isCompactSplitWindow) 36.dp else 44.dp
-                    val seekBtnSize = if (isCompactSplitWindow) 42.dp else 52.dp
-                    val playBtnSize = if (isCompactSplitWindow) 54.dp else 68.dp
+                    // CENTER PLAY / PAUSE, -10s / +10s SEEK, PREV / NEXT (Clean Spacious 5-Button Layout)
+                    val sideBtnSize = if (isCompactSplitWindow) 38.dp else 46.dp
+                    val seekBtnSize = if (isCompactSplitWindow) 44.dp else 54.dp
+                    val playBtnSize = if (isCompactSplitWindow) 56.dp else 68.dp
                     Row(
                         modifier = Modifier.align(Alignment.Center),
-                        horizontalArrangement = Arrangement.spacedBy(if (isCompactSplitWindow) 8.dp else 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (isCompactSplitWindow) 12.dp else 18.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // 1. Shuffle Toggle
-                        IconButton(
-                            onClick = {
-                                lastInteractionTime = System.currentTimeMillis()
-                                isShuffleActive = !isShuffleActive
-                                gestureOverlayText = if (isShuffleActive) "🔀 Shuffle ON" else "➡️ Order Play"
-                            },
-                            modifier = Modifier
-                                .size(sideBtnSize)
-                                .clip(CircleShape)
-                                .background(if (isShuffleActive) Color(0x66FFFFFF) else Color(0x28FFFFFF))
-                                .border(1.dp, if (isShuffleActive) Color.White else Color(0x33FFFFFF), CircleShape)
-                        ) {
-                            Icon(
-                                Icons.Default.Shuffle,
-                                contentDescription = "Shuffle",
-                                tint = Color.White,
-                                modifier = Modifier.size(if (isCompactSplitWindow) 18.dp else 22.dp)
-                            )
-                        }
-
-                        // 2. Previous Video
+                        // 1. Previous Video
                         if (allVideos.size > 1) {
                             IconButton(
                                 onClick = {
@@ -1475,7 +1386,7 @@ fun VideoPlayerView(
                             }
                         }
 
-                        // 3. Rewind 10s
+                        // 2. Rewind 10s
                         IconButton(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
@@ -1497,7 +1408,7 @@ fun VideoPlayerView(
                             )
                         }
 
-                        // 4. Center Play / Pause in Pure High-Contrast White
+                        // 3. Center Play / Pause in Pure High-Contrast White
                         IconButton(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
@@ -1520,7 +1431,7 @@ fun VideoPlayerView(
                             )
                         }
 
-                        // 5. Forward 10s
+                        // 4. Forward 10s
                         IconButton(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
@@ -1542,7 +1453,7 @@ fun VideoPlayerView(
                             )
                         }
 
-                        // 6. Next Video
+                        // 5. Next Video
                         if (allVideos.size > 1) {
                             IconButton(
                                 onClick = {
@@ -1569,27 +1480,6 @@ fun VideoPlayerView(
                                     modifier = Modifier.size(if (isCompactSplitWindow) 20.dp else 24.dp)
                                 )
                             }
-                        }
-
-                        // 7. Loop Single / Loop All Toggle
-                        IconButton(
-                            onClick = {
-                                lastInteractionTime = System.currentTimeMillis()
-                                isLoopSingleActive = !isLoopSingleActive
-                                gestureOverlayText = if (isLoopSingleActive) "🔂 Repeat 1 Video" else "🔁 Repeat All Videos"
-                            },
-                            modifier = Modifier
-                                .size(sideBtnSize)
-                                .clip(CircleShape)
-                                .background(if (isLoopSingleActive) Color(0x66FFFFFF) else Color(0x28FFFFFF))
-                                .border(1.dp, if (isLoopSingleActive) Color.White else Color(0x33FFFFFF), CircleShape)
-                        ) {
-                            Icon(
-                                if (isLoopSingleActive) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                                contentDescription = "Repeat Mode",
-                                tint = Color.White,
-                                modifier = Modifier.size(if (isCompactSplitWindow) 18.dp else 22.dp)
-                            )
                         }
                     }
 
@@ -1923,30 +1813,88 @@ fun VideoPlayerView(
         )
     }
 
-    // --- 25 PRO TOOLS & SLEEP TIMER SUITE DIALOG ---
+    // --- 25 PRO TOOLS & SLEEP TIMER SUITE DIALOG (VIBRANT COLORFUL STUDIO EDITION) ---
     if (showThreeDotSheet) {
+        val proCardColors = remember {
+            listOf(
+                Color(0xFF00E5FF), // Playback Speed - Cyan
+                Color(0xFFFF2A85), // Audio Track - Neon Pink
+                Color(0xFFFFD700), // Subtitles & CC - Gold
+                Color(0xFF00E676), // Aspect Ratio - Emerald
+                Color(0xFFB388FF), // Screen Rotation - Purple
+                Color(0xFFFF6D00), // A-B Looper - Orange
+                Color(0xFFFF4081), // Color Filters - Rose
+                Color(0xFFAEEA00), // 200% Vol Boost - Lime
+                Color(0xFF18FFFF), // BG Audio Mode - Electric Aqua
+                Color(0xFF7C4DFF), // Floating PiP - Indigo
+                Color(0xFFFFAB00), // Video Queue - Amber
+                Color(0xFFFF5252), // Touch Lock - Coral Red
+                Color(0xFF64FFDA), // Mute / Unmute - Mint
+                Color(0xFF40C4FF), // Media Details - Sky Blue
+                Color(0xFFFF1744), // Favorite - Ruby Heart
+                Color(0xFFFFD600), // Private Vault - Gold Lock
+                Color(0xFF00E676), // Turbo Share - Share Emerald
+                Color(0xFFE040FB), // Snapshot Capture - Magenta
+                Color(0xFF00B0FF), // Mirror Flip 180 - Ocean Blue
+                Color(0xFF9575CD), // Night Eye Comfort - Lavender
+                Color(0xFF69F0AE), // Auto-Play Next - Spring Green
+                Color(0xFFFF8A65), // Repeat 1 Video - Peach
+                Color(0xFFEA80FC), // Shuffle Queue - Orchid
+                Color(0xFF00E5FF)  // Decoder Engine - Cyber Cyan
+            )
+        }
+
         AlertDialog(
             onDismissRequest = { showThreeDotSheet = false },
-            containerColor = Color(0xFF0F1420),
+            containerColor = Color(0xFF0A101D),
             title = {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "25 Pro Tools & Features",
-                        color = Color.White,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 16.sp
-                    )
-                    if (videoSleepRemainingSeconds > 0) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        listOf(Color(0xFF00E676), Color(0xFF00E5FF))
+                                    )
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = Color.Black,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
+                            text = "25 Pro Tools & Features",
                             color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 16.sp
                         )
+                    }
+                    if (videoSleepRemainingSeconds > 0) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Color(0x33FFD700))
+                                .border(1.dp, Color(0xFFFFD700), RoundedCornerShape(50))
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = "🌙 ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}",
+                                color = Color(0xFFFFD700),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
                     }
                 }
             },
@@ -1958,19 +1906,44 @@ fun VideoPlayerView(
                         .verticalScroll(androidx.compose.foundation.rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // 1. SLEEP TIMER (Clean 2-row grid)
+                    // 1. SLEEP TIMER (Colorful Violet-Cyan Neon Glass Card)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Color(0x28FFFFFF))
-                            .border(1.dp, Color(0x38FFFFFF), RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        Color(0x387C4DFF),
+                                        Color(0xFF121A2E),
+                                        Color(0x2E00E5FF)
+                                    )
+                                )
+                            )
+                            .border(
+                                1.2.dp,
+                                Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))),
+                                RoundedCornerShape(16.dp)
+                            )
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Bedtime, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x33FFD700)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Bedtime,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFD700),
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = if (videoSleepRemainingSeconds > 0) {
                                     "Sleep Timer: ${formatVideoTime(videoSleepRemainingSeconds * 1000L)}"
@@ -1979,7 +1952,7 @@ fun VideoPlayerView(
                                 },
                                 color = Color.White,
                                 fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.ExtraBold
                             )
                         }
 
@@ -1993,8 +1966,19 @@ fun VideoPlayerView(
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected) Color.White else Color(0x28FFFFFF))
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (selected) {
+                                                Brush.horizontalGradient(listOf(Color(0xFF00E676), Color(0xFF00E5FF)))
+                                            } else {
+                                                Brush.horizontalGradient(listOf(Color(0x24FFFFFF), Color(0x18FFFFFF)))
+                                            }
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (selected) Color(0xFF00E676) else Color(0x387C4DFF),
+                                            RoundedCornerShape(10.dp)
+                                        )
                                         .clickable {
                                             videoSleepTimerTotalMinutes = mins
                                             videoSleepRemainingSeconds = if (mins == 0) 0 else mins * 60
@@ -2005,7 +1989,7 @@ fun VideoPlayerView(
                                     Text(
                                         text = label,
                                         color = if (selected) Color.Black else Color.White,
-                                        fontWeight = FontWeight.Bold,
+                                        fontWeight = FontWeight.ExtraBold,
                                         fontSize = 12.sp
                                     )
                                 }
@@ -2019,8 +2003,19 @@ fun VideoPlayerView(
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (selected) Color.White else Color(0x28FFFFFF))
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (selected) {
+                                                Brush.horizontalGradient(listOf(Color(0xFF00E676), Color(0xFF00E5FF)))
+                                            } else {
+                                                Brush.horizontalGradient(listOf(Color(0x24FFFFFF), Color(0x18FFFFFF)))
+                                            }
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (selected) Color(0xFF00E676) else Color(0x3800E5FF),
+                                            RoundedCornerShape(10.dp)
+                                        )
                                         .clickable {
                                             videoSleepTimerTotalMinutes = mins
                                             videoSleepRemainingSeconds = if (mins == -1) {
@@ -2035,7 +2030,7 @@ fun VideoPlayerView(
                                     Text(
                                         text = label,
                                         color = if (selected) Color.Black else Color.White,
-                                        fontWeight = FontWeight.Bold,
+                                        fontWeight = FontWeight.ExtraBold,
                                         fontSize = 12.sp,
                                         maxLines = 1
                                     )
@@ -2044,7 +2039,7 @@ fun VideoPlayerView(
                         }
                     }
 
-                    // 24 PRO ACTION BUTTONS (Clean 2-Column Grid with Crisp White Icons & Badges)
+                    // 24 PRO ACTION BUTTONS (Vibrant Colorful 2-Column Grid)
                     val proTools = listOf(
                         Triple(Icons.Default.Speed, "Playback Speed", "${playbackSpeed}x Speed") to {
                             showThreeDotSheet = false
@@ -2123,7 +2118,7 @@ fun VideoPlayerView(
                             } catch (_: Exception) {
                             }
                         },
-                        Triple(Icons.Default.PlaylistPlay, "Video Queue", "${allVideos.size} Videos") to {
+                        Triple(Icons.AutoMirrored.Filled.PlaylistPlay, "Video Queue", "${allVideos.size} Videos") to {
                             showThreeDotSheet = false
                             showQueueDialog = true
                         },
@@ -2131,7 +2126,7 @@ fun VideoPlayerView(
                             showThreeDotSheet = false
                             isScreenLocked = true
                         },
-                        Triple(Icons.Default.VolumeMute, "Mute / Unmute", if (isMuted) "Muted" else "Sound ON") to {
+                        Triple(Icons.AutoMirrored.Filled.VolumeMute, "Mute / Unmute", if (isMuted) "Muted" else "Sound ON") to {
                             toggleMute()
                         },
                         Triple(Icons.Default.Info, "Media Details", "Resolution & Codec") to {
@@ -2209,26 +2204,30 @@ fun VideoPlayerView(
                         }
                     )
 
-                    // Render in 2-column rows
+                    // Render in 2-column rows with distinct vibrant colors
                     for (i in proTools.indices step 2) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             val item1 = proTools[i]
+                            val color1 = proCardColors[i % proCardColors.size]
                             ProToolButton(
                                 icon = item1.first.first,
                                 title = item1.first.second,
                                 subtitle = item1.first.third,
+                                accentColor = color1,
                                 onClick = item1.second,
                                 modifier = Modifier.weight(1f)
                             )
                             if (i + 1 < proTools.size) {
                                 val item2 = proTools[i + 1]
+                                val color2 = proCardColors[(i + 1) % proCardColors.size]
                                 ProToolButton(
                                     icon = item2.first.first,
                                     title = item2.first.second,
                                     subtitle = item2.first.third,
+                                    accentColor = color2,
                                     onClick = item2.second,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -2241,7 +2240,7 @@ fun VideoPlayerView(
             },
             confirmButton = {
                 TextButton(onClick = { showThreeDotSheet = false }) {
-                    Text("Close", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Close", color = Color(0xFF00E676), fontWeight = FontWeight.ExtraBold)
                 }
             }
         )
@@ -2543,38 +2542,57 @@ private fun ProToolButton(
     icon: ImageVector,
     title: String,
     subtitle: String,
+    accentColor: Color = Color(0xFF00E5FF),
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0x28FFFFFF))
-            .border(1.dp, Color(0x38FFFFFF), RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        accentColor.copy(alpha = 0.22f),
+                        Color(0xFF131B2E),
+                        accentColor.copy(alpha = 0.10f)
+                    )
+                )
+            )
+            .border(1.1.dp, accentColor.copy(alpha = 0.60f), RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = title,
-            tint = Color.White,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(CircleShape)
+                .background(accentColor.copy(alpha = 0.24f))
+                .border(1.dp, accentColor.copy(alpha = 0.70f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                tint = accentColor,
+                modifier = Modifier.size(17.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(9.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
                 color = Color.White,
                 fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.ExtraBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = subtitle,
-                color = Color.White.copy(alpha = 0.65f),
+                color = accentColor,
                 fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )

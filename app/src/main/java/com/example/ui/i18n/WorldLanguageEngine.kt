@@ -146,28 +146,35 @@ object WorldLanguageEngine {
         }
     }
 
+    private val translationCache = android.util.LruCache<String, String>(800)
+
     /**
      * Translates UI text into the active language out of all 25 supported languages.
-     * Preserves language picker labels, media filenames, URLs, and timecodes untouched.
+     * Uses O(1) LruCache memoization so scrolling lists never runs regexes on the UI thread.
      */
     fun translateUiText(rawText: String, selectedDisplay: String = activeLanguageState): String {
-        if (rawText.isBlank() || rawText.length > 260) return rawText
-        // Preserve language picker rows so every language option always shows its own native title
+        if (rawText.isBlank() || rawText.length > 160) return rawText
+        val code = resolveEffectiveLanguageCode(selectedDisplay)
+        if (code == "en") return rawText
+
+        // Preserve language picker rows, URLs, file paths, or pure numbers/timecodes
         if (DISPLAY_NAME_SET.contains(rawText) || REGION_SUBTITLE_SET.contains(rawText.removePrefix("✓ ").trim())) {
             return rawText
         }
-        // Skip URLs, file paths, or pure numbers/timecodes
         if (rawText.startsWith("http://") || rawText.startsWith("https://") || rawText.startsWith("/storage/")) {
             return rawText
         }
 
-        val code = resolveEffectiveLanguageCode(selectedDisplay)
-        if (code == "en") return rawText
+        val cacheKey = "$code|$rawText"
+        translationCache.get(cacheKey)?.let { return it }
 
         val dictionary = LANGUAGE_DICTIONARIES[code] ?: return rawText
 
         // 1. Fast Exact Match
-        dictionary[rawText]?.let { return it }
+        dictionary[rawText]?.let {
+            translationCache.put(cacheKey, it)
+            return it
+        }
 
         // 2. Sorted Phrase & Word Replacement (Longest phrases first)
         var result = rawText
@@ -190,6 +197,7 @@ object WorldLanguageEngine {
                 result = regex.replace(result, replacement)
             }
         }
+        translationCache.put(cacheKey, result)
         return result
     }
 
