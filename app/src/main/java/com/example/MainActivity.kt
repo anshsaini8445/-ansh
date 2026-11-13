@@ -93,7 +93,12 @@ class MainActivity : ComponentActivity() {
             val companionBreed by viewModel.companionBreed.collectAsState()
             val companionSizeDp by viewModel.companionSizeDp.collectAsState()
             val penguinsOnlyMode by viewModel.penguinsOnlyMode.collectAsState()
+            val companionDanceMode by viewModel.companionDanceMode.collectAsState()
+            val companionAuraEffect by viewModel.companionAuraEffect.collectAsState()
+            val companionAutoWalk by viewModel.companionAutoWalk.collectAsState()
+            val companionAnimSpeed by viewModel.companionAnimSpeed.collectAsState()
             val isMusicPlaying by viewModel.isPlaying.collectAsState()
+            val nowPlaying by viewModel.nowPlaying.collectAsState()
             val videos by viewModel.videoItems.collectAsState()
             val music by viewModel.musicItems.collectAsState()
             val allMedia by viewModel.allMediaItems.collectAsState()
@@ -609,16 +614,47 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // --- REALISTIC 3D ARTICULATED PUPPY & PENGUIN COMPANION OVERLAY ---
-                    if (currentScreen == ActiveScreen.MainTabs && !isPipMicroWindow) {
+                    if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer) && !isPipMicroWindow) {
                         RealisticCompanionOverlay(
                             enabled = companionEnabled,
                             breedName = companionBreed,
                             isMusicPlaying = isMusicPlaying,
                             penguinsOnlyMode = penguinsOnlyMode,
                             mascotSizeDp = companionSizeDp.dp,
+                            danceModeId = companionDanceMode,
+                            auraEffectId = companionAuraEffect,
+                            autoWalkEnabled = companionAutoWalk,
+                            animSpeedMultiplier = companionAnimSpeed,
                             onQuickPlayTrigger = {
-                                music.firstOrNull()?.let { viewModel.playMusic(it) }
+                                if (nowPlaying != null) {
+                                    viewModel.togglePlayPause()
+                                } else {
+                                    music.firstOrNull()?.let { viewModel.playMusic(it) }
+                                }
                             },
+                            onNextTrack = {
+                                if (nowPlaying != null) {
+                                    viewModel.playNext()
+                                } else {
+                                    music.firstOrNull()?.let { viewModel.playMusic(it) }
+                                }
+                            },
+                            onPrevTrack = {
+                                if (nowPlaying != null) {
+                                    viewModel.playPrevious()
+                                } else {
+                                    music.firstOrNull()?.let { viewModel.playMusic(it) }
+                                }
+                            },
+                            onShufflePlay = {
+                                viewModel.shufflePlayMusic()
+                            },
+                            onSelectBreed = { viewModel.selectCompanionBreed(it) },
+                            onSelectSizeDp = { viewModel.setCompanionSize(it) },
+                            onSelectDanceMode = { viewModel.selectCompanionDanceMode(it) },
+                            onSelectAuraEffect = { viewModel.selectCompanionAuraEffect(it) },
+                            onToggleAutoWalk = { viewModel.setCompanionAutoWalk(it) },
+                            onChangeAnimSpeed = { viewModel.setCompanionAnimSpeed(it) },
                             onHideForSession = {
                                 viewModel.setCompanionEnabled(false)
                             }

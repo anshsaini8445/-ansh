@@ -347,6 +347,26 @@ class PlayerViewModel(application: Application) :
     )
     val penguinsOnlyMode: StateFlow<Boolean> = _penguinsOnlyMode.asStateFlow()
 
+    private val _companionDanceMode = MutableStateFlow(
+        prefs.getString("saved_companion_dance_mode_v1", "AUTO_MIX") ?: "AUTO_MIX"
+    )
+    val companionDanceMode: StateFlow<String> = _companionDanceMode.asStateFlow()
+
+    private val _companionAuraEffect = MutableStateFlow(
+        prefs.getString("saved_companion_aura_effect_v1", "NEON_DJ") ?: "NEON_DJ"
+    )
+    val companionAuraEffect: StateFlow<String> = _companionAuraEffect.asStateFlow()
+
+    private val _companionAutoWalk = MutableStateFlow(
+        prefs.getBoolean("saved_companion_auto_walk_v1", true)
+    )
+    val companionAutoWalk: StateFlow<Boolean> = _companionAutoWalk.asStateFlow()
+
+    private val _companionAnimSpeed = MutableStateFlow(
+        prefs.getFloat("saved_companion_anim_speed_v1", 1.15f)
+    )
+    val companionAnimSpeed: StateFlow<Float> = _companionAnimSpeed.asStateFlow()
+
     // --- Engine Switches ---
     private val _hybrid8kDecoder = MutableStateFlow(true)
     val hybrid8kDecoder: StateFlow<Boolean> = _hybrid8kDecoder.asStateFlow()
@@ -1605,7 +1625,7 @@ class PlayerViewModel(application: Application) :
     }
 
     fun setCompanionSize(sizeDp: Int) {
-        val clamped = sizeDp.coerceIn(56, 140)
+        val clamped = sizeDp.coerceIn(56, 152)
         _companionSizeDp.value = clamped
         prefs.edit().putInt("saved_companion_size_dp_v2", clamped).apply()
     }
@@ -1622,6 +1642,35 @@ class PlayerViewModel(application: Application) :
             .putString("saved_companion_breed", breedName)
             .putBoolean("saved_companion_enabled_v3", true)
             .apply()
+    }
+
+    fun selectCompanionDanceMode(mode: String) {
+        _companionDanceMode.value = mode
+        _companionEnabled.value = true
+        prefs.edit()
+            .putString("saved_companion_dance_mode_v1", mode)
+            .putBoolean("saved_companion_enabled_v3", true)
+            .apply()
+    }
+
+    fun selectCompanionAuraEffect(effect: String) {
+        _companionAuraEffect.value = effect
+        _companionEnabled.value = true
+        prefs.edit()
+            .putString("saved_companion_aura_effect_v1", effect)
+            .putBoolean("saved_companion_enabled_v3", true)
+            .apply()
+    }
+
+    fun setCompanionAutoWalk(enabled: Boolean) {
+        _companionAutoWalk.value = enabled
+        prefs.edit().putBoolean("saved_companion_auto_walk_v1", enabled).apply()
+    }
+
+    fun setCompanionAnimSpeed(speed: Float) {
+        val clamped = speed.coerceIn(0.6f, 2.2f)
+        _companionAnimSpeed.value = clamped
+        prefs.edit().putFloat("saved_companion_anim_speed_v1", clamped).apply()
     }
 
     fun togglePenguinsOnlyMode() {

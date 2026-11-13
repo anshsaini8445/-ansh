@@ -165,6 +165,10 @@ fun MeToolkitScreen(
     val companionEnabled by viewModel.companionEnabled.collectAsState()
     val selectedCompanionName by viewModel.companionBreed.collectAsState()
     val companionSizeDp by viewModel.companionSizeDp.collectAsState()
+    val companionDanceMode by viewModel.companionDanceMode.collectAsState()
+    val companionAuraEffect by viewModel.companionAuraEffect.collectAsState()
+    val companionAutoWalk by viewModel.companionAutoWalk.collectAsState()
+    val companionAnimSpeed by viewModel.companionAnimSpeed.collectAsState()
 
     val meGalleryWallpaperLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -476,11 +480,13 @@ fun MeToolkitScreen(
                                     }
                                 }
 
-                                // Mascot Resizable Control (Small, Medium, Large, Extra Large)
+                                // Mascot Resizable Control + Auto-Walk + Speed
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp)
                                 ) {
                                     Text(
                                         text = if (isHindi) "आकार:" else "Size:",
@@ -489,10 +495,11 @@ fun MeToolkitScreen(
                                         fontSize = 11.sp
                                     )
                                     listOf(
-                                        64 to (if (isHindi) "छोटा (64dp)" else "S (64dp)"),
-                                        88 to (if (isHindi) "मध्यम (88dp)" else "M (88dp)"),
-                                        110 to (if (isHindi) "बड़ा (110dp)" else "L (110dp)"),
-                                        132 to (if (isHindi) "विशाल (132dp)" else "XL (132dp)")
+                                        64 to (if (isHindi) "छोटा (S)" else "S (64dp)"),
+                                        88 to (if (isHindi) "मध्यम (M)" else "M (88dp)"),
+                                        110 to (if (isHindi) "बड़ा (L)" else "L (110dp)"),
+                                        132 to (if (isHindi) "विशाल (XL)" else "XL (132dp)"),
+                                        148 to "XXL"
                                     ).forEach { (size, label) ->
                                         val isSelectedSize = companionSizeDp == size
                                         Box(
@@ -507,6 +514,115 @@ fun MeToolkitScreen(
                                                 color = if (isSelectedSize) Color.Black else Color.White,
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 10.5.sp
+                                            )
+                                        }
+                                    }
+
+                                    // Auto-Walk Toggle Chip
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(if (companionAutoWalk) Color(0xFF69F0AE) else Color.White.copy(alpha = 0.12f))
+                                            .clickable { viewModel.setCompanionAutoWalk(!companionAutoWalk) }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = if (companionAutoWalk) "🚶 Walk: ON" else "🚶 Walk: OFF",
+                                            color = if (companionAutoWalk) Color.Black else Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.5.sp
+                                        )
+                                    }
+
+                                    // Speed Multiplier Chip
+                                    val speedLabel = when {
+                                        companionAnimSpeed >= 1.75f -> "⚡ 2x Speed"
+                                        companionAnimSpeed >= 1.35f -> "⚡ 1.5x Speed"
+                                        else -> "⚡ 1x Speed"
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(Color(0xFFE040FB).copy(alpha = 0.25f))
+                                            .border(1.dp, Color(0xFFE040FB), RoundedCornerShape(12.dp))
+                                            .clickable {
+                                                val nextSpeed = when {
+                                                    companionAnimSpeed < 1.3f -> 1.5f
+                                                    companionAnimSpeed < 1.75f -> 2.0f
+                                                    else -> 1.0f
+                                                }
+                                                viewModel.setCompanionAnimSpeed(nextSpeed)
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = speedLabel,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 10.5.sp
+                                        )
+                                    }
+                                }
+
+                                // 8 Live Mascot Gudda Dance Animations Row
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    com.example.helpers.MascotDanceMode.entries.forEach { mode ->
+                                        val isSelectedMode = companionDanceMode.equals(mode.id, ignoreCase = true)
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(if (isSelectedMode) mode.accentColor else mode.accentColor.copy(alpha = 0.14f))
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (isSelectedMode) Color.White else mode.accentColor.copy(alpha = 0.55f),
+                                                    shape = RoundedCornerShape(12.dp)
+                                                )
+                                                .clickable { viewModel.selectCompanionDanceMode(mode.id) }
+                                                .padding(horizontal = 9.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = if (isHindi) mode.labelHi else mode.labelEn,
+                                                color = if (isSelectedMode) Color.Black else Color.White,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // 6 Glowing Aura & Particle Effects Row
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    com.example.helpers.MascotAuraEffect.entries.forEach { effect ->
+                                        val isSelectedAura = companionAuraEffect.equals(effect.id, ignoreCase = true)
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(if (isSelectedAura) effect.primaryColor else effect.primaryColor.copy(alpha = 0.14f))
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (isSelectedAura) Color.White else effect.primaryColor.copy(alpha = 0.55f),
+                                                    shape = RoundedCornerShape(12.dp)
+                                                )
+                                                .clickable { viewModel.selectCompanionAuraEffect(effect.id) }
+                                                .padding(horizontal = 9.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = if (isHindi) effect.labelHi else effect.labelEn,
+                                                color = if (isSelectedAura) Color.Black else Color.White,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 10.sp
                                             )
                                         }
                                     }
@@ -553,7 +669,7 @@ fun MeToolkitScreen(
                                                     FluffyMascot3DStudioPortrait(
                                                         breed = breed,
                                                         showStudioBackdrop = true,
-                                                        animateReels = false,
+                                                        animateReels = isSavedActive,
                                                         modifier = Modifier.fillMaxSize()
                                                     )
                                                 }
@@ -1001,7 +1117,8 @@ fun MeToolkitScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 12.dp),
+                            .horizontalScroll(rememberScrollState())
+                            .padding(bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -1012,10 +1129,11 @@ fun MeToolkitScreen(
                             fontSize = 11.5.sp
                         )
                         listOf(
-                            64 to (if (isHindi) "छोटा (64dp)" else "S (64dp)"),
-                            88 to (if (isHindi) "मध्यम (88dp)" else "M (88dp)"),
-                            110 to (if (isHindi) "बड़ा (110dp)" else "L (110dp)"),
-                            132 to (if (isHindi) "विशाल (132dp)" else "XL (132dp)")
+                            64 to (if (isHindi) "छोटा (S)" else "S (64dp)"),
+                            88 to (if (isHindi) "मध्यम (M)" else "M (88dp)"),
+                            110 to (if (isHindi) "बड़ा (L)" else "L (110dp)"),
+                            132 to (if (isHindi) "विशाल (XL)" else "XL (132dp)"),
+                            148 to "XXL (148dp)"
                         ).forEach { (size, label) ->
                             val isSelectedSize = companionSizeDp == size
                             Box(
@@ -1030,6 +1148,38 @@ fun MeToolkitScreen(
                                     color = if (isSelectedSize) Color.Black else Color.White,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(bottom = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        com.example.helpers.MascotDanceMode.entries.forEach { mode ->
+                            val isSelectedMode = companionDanceMode.equals(mode.id, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isSelectedMode) mode.accentColor else mode.accentColor.copy(alpha = 0.15f))
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isSelectedMode) Color.White else mode.accentColor.copy(alpha = 0.55f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .clickable { viewModel.selectCompanionDanceMode(mode.id) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    text = if (isHindi) mode.labelHi else mode.labelEn,
+                                    color = if (isSelectedMode) Color.Black else Color.White,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 10.5.sp
                                 )
                             }
                         }
