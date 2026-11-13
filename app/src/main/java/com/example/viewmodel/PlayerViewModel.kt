@@ -338,7 +338,7 @@ class PlayerViewModel(application: Application) :
     val companionBreed: StateFlow<String> = _companionBreed.asStateFlow()
 
     private val _companionSizeDp = MutableStateFlow(
-        prefs.getInt("saved_companion_size_dp_v2", 88)
+        prefs.getInt("saved_companion_size_dp_v3", 112)
     )
     val companionSizeDp: StateFlow<Int> = _companionSizeDp.asStateFlow()
 
@@ -784,8 +784,30 @@ class PlayerViewModel(application: Application) :
         }
     }
 
+    /**
+     * Seamless Video -> Background Audio Handoff:
+     * Continues playing the video's audio track in the foreground AudioService from the exact
+     * millisecond `startPositionMs` and `speed` without restarting from 00:00.
+     */
+    fun playVideoInBackground(video: MediaItem, startPositionMs: Long, speed: Float = 1.0f) {
+        val safePos = startPositionMs.coerceAtLeast(0L)
+        saveVideoProgress(video.id, safePos)
+        _playbackSpeed.value = speed.coerceIn(0.25f, 4.0f)
+        playMusic(
+            item = video,
+            recordHistory = true,
+            initialSeekMs = safePos,
+            initialSpeed = speed.coerceIn(0.25f, 4.0f)
+        )
+    }
+
     // --- Music & Background Audio Player Operations ---
-    fun playMusic(item: MediaItem, recordHistory: Boolean = true) {
+    fun playMusic(
+        item: MediaItem,
+        recordHistory: Boolean = true,
+        initialSeekMs: Long = -1L,
+        initialSpeed: Float? = null
+    ) {
         progressJob?.cancel()
         val previousItem = _nowPlaying.value
         if (recordHistory && previousItem != null && previousItem.id != item.id) {
@@ -810,7 +832,13 @@ class PlayerViewModel(application: Application) :
         mediaPlayer?.release()
         _abPointAMs.value = null
         _abPointBMs.value = null
+        if (initialSpeed != null) {
+            _playbackSpeed.value = initialSpeed.coerceIn(0.25f, 4.0f)
+        }
         _nowPlaying.value = item
+        if (initialSeekMs >= 0L) {
+            _playbackPosition.value = initialSeekMs
+        }
         prefs.edit().putString("last_played_music_id", item.id).apply()
         _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), item)
 
@@ -837,10 +865,17 @@ class PlayerViewModel(application: Application) :
                 }
                 prepareAsync()
                 setOnPreparedListener { mp ->
-                    if (_djCrossfadeEnabled.value) {
+                    if (_djCrossfadeEnabled.value && initialSeekMs <= 0L) {
                         applyChannelVolumeMultiplier(0.24f)
                     } else {
                         applyChannelVolumeMultiplier(1.0f)
+                    }
+                    if (initialSeekMs > 0L) {
+                        try {
+                            mp.seekTo(initialSeekMs.toInt())
+                            _playbackPosition.value = initialSeekMs
+                        } catch (_: Exception) {
+                        }
                     }
                     mp.start()
                     _nowPlaying.value = item
@@ -854,12 +889,14 @@ class PlayerViewModel(application: Application) :
                     syncMediaNotification()
                     startProgressTracker()
 
-                    viewModelScope.launch {
-                        val progress = repository.getProgress(item.id)
-                        if (progress > 0 && progress < item.duration - 6000) {
-                            mp.seekTo(progress.toInt())
-                            _playbackPosition.value = progress
-                            syncMediaNotification()
+                    if (initialSeekMs < 0L) {
+                        viewModelScope.launch {
+                            val progress = repository.getProgress(item.id)
+                            if (progress > 0 && progress < item.duration - 6000) {
+                                mp.seekTo(progress.toInt())
+                                _playbackPosition.value = progress
+                                syncMediaNotification()
+                            }
                         }
                     }
                 }
@@ -1625,9 +1662,12 @@ class PlayerViewModel(application: Application) :
     }
 
     fun setCompanionSize(sizeDp: Int) {
-        val clamped = sizeDp.coerceIn(56, 152)
+        val clamped = sizeDp.coerceIn(72, 176)
         _companionSizeDp.value = clamped
-        prefs.edit().putInt("saved_companion_size_dp_v2", clamped).apply()
+        prefs.edit()
+            .putInt("saved_companion_size_dp_v3", clamped)
+            .putInt("saved_companion_size_dp_v2", clamped)
+            .apply()
     }
 
     fun selectCompanionBreed(breedName: String) {

@@ -91,7 +91,7 @@ fun VideoSectionScreen(
         com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
     }
 
-    val subTabKeys = remember { listOf("Video", "Folder", "Status", "Favourite") }
+    val subTabKeys = remember { listOf("Video", "Status", "Folder", "Favourite") }
     val subTabPagerState = rememberPagerState(initialPage = 0, pageCount = { subTabKeys.size })
     val activeSubTab = subTabKeys[subTabPagerState.currentPage]
     fun switchSubTab(target: String) {
@@ -192,7 +192,10 @@ fun VideoSectionScreen(
             else -> compareBy<MediaItem> { it.dateAdded } // "Date"
         }
         val sortedNormal = if (sortNewToOld) base.sortedWith(comparator.reversed()) else base.sortedWith(comparator)
-        val (pendingList, completeList) = sortedNormal.partition { it.isPartialDownload }
+        val nowMs = System.currentTimeMillis()
+        val (pendingList, completeList) = sortedNormal.partition {
+            it.isPartialDownload && (nowMs - it.dateAdded) < 20 * 60 * 1000L
+        }
         (pendingList + completeList).distinctBy { it.id }
     }
 
@@ -226,7 +229,7 @@ fun VideoSectionScreen(
         BackHandler {
             showStatusReelsOverlay = false
             if (activeSubTab == "Status") {
-                switchSubTab("Folder")
+                switchSubTab("Video")
             }
         }
     } else if (isMultiSelectMode) {
@@ -489,8 +492,8 @@ fun VideoSectionScreen(
                 ) {
                     val tabs = listOf(
                         Triple("Video", if (isHindi) "वीडियो" else "Video", Icons.Default.SmartDisplay),
-                        Triple("Folder", if (isHindi) "फ़ोल्डर" else "Folder", Icons.Default.Folder),
                         Triple("Status", if (isHindi) "स्टेटस" else "Status", Icons.Default.SlowMotionVideo),
+                        Triple("Folder", if (isHindi) "फ़ोल्डर" else "Folder", Icons.Default.Folder),
                         Triple("Favourite", if (isHindi) "पसंदीदा" else "Favourite", Icons.Default.Favorite)
                     )
 
@@ -506,7 +509,6 @@ fun VideoSectionScreen(
                                     isViewingFavouriteFolder = false
                                     if (tabKey == "Status") {
                                         initialStatusReelIndex = 0
-                                        showStatusReelsOverlay = true
                                     }
                                 }
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
@@ -850,7 +852,7 @@ fun VideoSectionScreen(
                             },
                             onClose = {
                                 showStatusReelsOverlay = false
-                                switchSubTab("Folder")
+                                switchSubTab("Video")
                             }
                         )
                     }
@@ -2238,7 +2240,69 @@ private fun StatusReelsVerticalPagerView(
                             )
                         }
 
-                        // 4. SHARE
+                        // 4. SAVE STATUS TO GALLERY (1-Tap Status Saver!)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable {
+                                try {
+                                    val moviesDir = android.os.Environment.getExternalStoragePublicDirectory(
+                                        android.os.Environment.DIRECTORY_MOVIES
+                                    )
+                                    val statusSaveDir = File(moviesDir, "HybridStatus")
+                                    if (!statusSaveDir.exists()) statusSaveDir.mkdirs()
+                                    val safeFileName = "${video.cleanTitle.replace(Regex("[^a-zA-Z0-9 _-]"), "").take(30).ifBlank { "Status" }}_${video.id.hashCode()}.mp4"
+                                    val dstFile = File(statusSaveDir, safeFileName)
+                                    if (!dstFile.exists()) {
+                                        if (video.path.startsWith("content://")) {
+                                            context.contentResolver.openInputStream(Uri.parse(video.path))?.use { input ->
+                                                dstFile.outputStream().use { output -> input.copyTo(output) }
+                                            }
+                                        } else {
+                                            val src = File(video.path)
+                                            if (src.exists()) src.copyTo(dstFile, overwrite = true)
+                                        }
+                                        android.media.MediaScannerConnection.scanFile(
+                                            context,
+                                            arrayOf(dstFile.absolutePath),
+                                            arrayOf("video/mp4"),
+                                            null
+                                        )
+                                    }
+                                } catch (_: Exception) {
+                                }
+                                if (!isLiked) onToggleLike(video)
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "💾 स्टेटस गैलरी और पसंदीदा में सेव हो गया!" else "💾 Status Saved to Gallery & Favourite!",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x88000000))
+                                    .border(1.dp, HybridEmerald.copy(alpha = 0.8f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = if (isHindi) "सेव करें" else "Save Status",
+                                    tint = HybridEmerald,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (isHindi) "सेव" else "Save",
+                                color = HybridEmerald,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+
+                        // 5. SHARE
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.clickable { onShareVideo(video) }

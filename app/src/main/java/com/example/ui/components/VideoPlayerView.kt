@@ -76,6 +76,7 @@ fun VideoPlayerView(
     allVideos: List<MediaItem> = emptyList(),
     onSelectVideo: (MediaItem) -> Unit = {},
     onBackgroundAudioPlay: () -> Unit = {},
+    onBackgroundAudioPlayWithPosition: ((Long, Float) -> Unit)? = null,
     onMinimizeToFloatingMiniPlayer: ((Long) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -1310,7 +1311,16 @@ fun VideoPlayerView(
                             onClick = {
                                 val pos = getCurrentVideoPositionMs().takeIf { it > 0L } ?: latestKnownPositionMs
                                 onProgressUpdate(pos)
-                                onBackgroundAudioPlay()
+                                Toast.makeText(
+                                    context,
+                                    "🎧 Background Video Audio Active • Continues with screen off!",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                if (onBackgroundAudioPlayWithPosition != null) {
+                                    onBackgroundAudioPlayWithPosition(pos, playbackSpeed)
+                                } else {
+                                    onBackgroundAudioPlay()
+                                }
                             },
                             modifier = Modifier
                                 .size(topBtnSize)
@@ -1577,8 +1587,18 @@ fun VideoPlayerView(
                         },
                         isBgAudioEnabled = false,
                         onToggleBgAudio = {
-                            onProgressUpdate(currentPosMs)
-                            onBackgroundAudioPlay()
+                            val pos = getCurrentVideoPositionMs().takeIf { it > 0L } ?: currentPosMs
+                            onProgressUpdate(pos)
+                            Toast.makeText(
+                                context,
+                                "🎧 Background Video Audio Active • Continues with screen off!",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            if (onBackgroundAudioPlayWithPosition != null) {
+                                onBackgroundAudioPlayWithPosition(pos, playbackSpeed)
+                            } else {
+                                onBackgroundAudioPlay()
+                            }
                         },
                         abStartMs = abPointA,
                         abEndMs = abPointB,
@@ -2102,8 +2122,18 @@ fun VideoPlayerView(
                         },
                         Triple(Icons.Default.Headphones, "BG Audio Mode", "Play Screen Off") to {
                             showThreeDotSheet = false
-                            onProgressUpdate(currentPosMs)
-                            onBackgroundAudioPlay()
+                            val pos = getCurrentVideoPositionMs().takeIf { it > 0L } ?: currentPosMs
+                            onProgressUpdate(pos)
+                            Toast.makeText(
+                                context,
+                                "🎧 Background Video Audio Active • Continues with screen off!",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            if (onBackgroundAudioPlayWithPosition != null) {
+                                onBackgroundAudioPlayWithPosition(pos, playbackSpeed)
+                            } else {
+                                onBackgroundAudioPlay()
+                            }
                         },
                         Triple(Icons.Default.PictureInPictureAlt, "Floating PiP", "Mini Window") to {
                             showThreeDotSheet = false

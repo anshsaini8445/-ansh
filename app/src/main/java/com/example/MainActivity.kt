@@ -8,14 +8,21 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -442,7 +449,14 @@ class MainActivity : ComponentActivity() {
                                             activeVideoProgress = 0L
                                         },
                                         onBackgroundAudioPlay = {
-                                            viewModel.playMusic(video)
+                                            viewModel.playVideoInBackground(video, activeVideoProgress, 1.0f)
+                                            activeVideoItem = null
+                                            isFloatingMiniVideoActive = false
+                                            navigationStack.removeAt(navigationStack.lastIndex)
+                                        },
+                                        onBackgroundAudioPlayWithPosition = { currentPosMs, currentSpeed ->
+                                            activeVideoProgress = currentPosMs
+                                            viewModel.playVideoInBackground(video, currentPosMs, currentSpeed)
                                             activeVideoItem = null
                                             isFloatingMiniVideoActive = false
                                             navigationStack.removeAt(navigationStack.lastIndex)
@@ -520,7 +534,14 @@ class MainActivity : ComponentActivity() {
                             ActiveScreen.Mp3Converter -> {
                                 Mp3ConverterScreen(
                                     videos = videos,
-                                    onBackClick = { navigationStack.removeAt(navigationStack.lastIndex) }
+                                    onBackClick = { navigationStack.removeAt(navigationStack.lastIndex) },
+                                    onPlayExtractedAudio = { extractedTrack ->
+                                        viewModel.playMusic(extractedTrack)
+                                        navigationStack.add(ActiveScreen.MusicPlayer)
+                                    },
+                                    onAudioExtracted = {
+                                        viewModel.loadMedia()
+                                    }
                                 )
                             }
 
@@ -610,6 +631,102 @@ class MainActivity : ComponentActivity() {
                                     activeVideoItem = null
                                 }
                             )
+                        }
+                    }
+
+                    // --- FLOATING BACKGROUND VIDEO AUDIO BAR ("Video Background Play" -> Tap to Return to Video!) ---
+                    val bgVideoPlayingItem = nowPlaying?.takeIf { it.isVideo }
+                    if (bgVideoPlayingItem != null && currentScreen == ActiveScreen.MainTabs && !isFloatingMiniVideoActive && !isPipMicroWindow) {
+                        val bgPositionMs by viewModel.playbackPosition.collectAsState()
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(horizontal = 14.dp, vertical = 92.dp)
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(
+                                    Brush.horizontalGradient(
+                                        listOf(Color(0xF20A1424), Color(0xF20D1F2D))
+                                    )
+                                )
+                                .border(
+                                    1.2.dp,
+                                    Brush.horizontalGradient(listOf(HybridEmerald, HybridCyan)),
+                                    RoundedCornerShape(18.dp)
+                                )
+                                .clickable {
+                                    val resumePos = bgPositionMs.coerceAtLeast(0L)
+                                    viewModel.pauseMusicForVideoPlayback()
+                                    activeVideoItem = bgVideoPlayingItem
+                                    activeVideoProgress = resumePos
+                                    navigationStack.add(ActiveScreen.VideoPlayer)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(HybridEmerald.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Headphones,
+                                    contentDescription = "Background Video Audio",
+                                    tint = HybridEmerald,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = bgVideoPlayingItem.cleanTitle,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "🎧 Background Video Audio • Tap to Return to Video 🎬",
+                                    color = HybridCyan,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 11.sp,
+                                    maxLines = 1
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.togglePlayPause() },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isMusicPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = "Play/Pause",
+                                    tint = HybridEmerald
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.playNext() },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SkipNext,
+                                    contentDescription = "Next",
+                                    tint = Color.White
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.onNotificationStop() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Stop Background Video",
+                                    tint = Color.White.copy(alpha = 0.75f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
 

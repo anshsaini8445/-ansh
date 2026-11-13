@@ -26,9 +26,9 @@ if (isBuildTask && versionPropsFile.canWrite()) {
 }
 
 val resolvedVersionCode = (project.findProperty("autoVersionCode")?.toString()?.toIntOrNull())
-  ?: (1000 + currentPatch)
+  ?: (2000 + currentPatch)
 val resolvedVersionName = (project.findProperty("autoVersionName")?.toString())
-  ?: String.format(Locale.US, "%d.%03d", verMajor, currentPatch)
+  ?: String.format(Locale.US, "%d.%03d", verMajor + 1, currentPatch)
 
 plugins {
   alias(libs.plugins.android.application)

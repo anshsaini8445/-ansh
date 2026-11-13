@@ -388,10 +388,15 @@ object MediaNotificationHelper {
         val repeatLabel = when (repeatMode) {
             2 -> "Repeat 1"
             1 -> "Repeat All"
-            else -> "Order"
+            else -> "Repeat Off"
         }
-        val repeatIconRes = if (repeatMode == 2) R.drawable.ic_notif_repeat_one else R.drawable.ic_notif_repeat
+        val repeatIconRes = when (repeatMode) {
+            2 -> R.drawable.ic_notif_repeat_one
+            1 -> R.drawable.ic_notif_repeat
+            else -> R.drawable.ic_notif_repeat_off
+        }
         val shuffleLabel = if (isShuffle) "Shuffle ON" else "Shuffle OFF"
+        val shuffleIconRes = if (isShuffle) R.drawable.ic_notif_shuffle_on else R.drawable.ic_notif_shuffle
 
         // Update MediaSession metadata & seekbar state
         val metadata = MediaMetadata.Builder()
@@ -423,7 +428,23 @@ object MediaNotificationHelper {
                 if (isPlaying) playbackSpeed else 0f,
                 SystemClock.elapsedRealtime()
             )
-            // Fast 10s Rewind / Forward custom actions for lock screen controls
+            // Custom actions for Android 11–17 system media player controls:
+            // Slot 1 (Far Left) = Shuffle, Slot 2 (Far Right) = Repeat
+            .addCustomAction(
+                PlaybackState.CustomAction.Builder(
+                    ACTION_MEDIA_SHUFFLE,
+                    shuffleLabel,
+                    shuffleIconRes
+                ).build()
+            )
+            .addCustomAction(
+                PlaybackState.CustomAction.Builder(
+                    ACTION_MEDIA_REPEAT,
+                    repeatLabel,
+                    repeatIconRes
+                ).build()
+            )
+            // Secondary custom actions for -10s / +10s seek
             .addCustomAction(
                 PlaybackState.CustomAction.Builder(
                     ACTION_MEDIA_REWIND_10S,
@@ -436,21 +457,6 @@ object MediaNotificationHelper {
                     ACTION_MEDIA_FFWD_10S,
                     "+10s",
                     R.drawable.ic_notif_ffwd
-                ).build()
-            )
-            // Custom actions for Android 13+ system media player controls (Left = Shuffle, Right = Repeat)
-            .addCustomAction(
-                PlaybackState.CustomAction.Builder(
-                    ACTION_MEDIA_SHUFFLE,
-                    shuffleLabel,
-                    R.drawable.ic_notif_shuffle
-                ).build()
-            )
-            .addCustomAction(
-                PlaybackState.CustomAction.Builder(
-                    ACTION_MEDIA_REPEAT,
-                    repeatLabel,
-                    repeatIconRes
                 ).build()
             )
 
@@ -468,11 +474,11 @@ object MediaNotificationHelper {
             )
         }
 
-        val rewindPending = buildActionPendingIntent(context, ACTION_MEDIA_REWIND_10S, 201)
+        val shufflePending = buildActionPendingIntent(context, ACTION_MEDIA_SHUFFLE, 201)
         val prevPending = buildActionPendingIntent(context, ACTION_MEDIA_PREV, 202)
         val playPausePending = buildActionPendingIntent(context, ACTION_MEDIA_PLAY_PAUSE, 203)
         val nextPending = buildActionPendingIntent(context, ACTION_MEDIA_NEXT, 204)
-        val ffwdPending = buildActionPendingIntent(context, ACTION_MEDIA_FFWD_10S, 205)
+        val repeatPending = buildActionPendingIntent(context, ACTION_MEDIA_REPEAT, 205)
         val stopPending = buildActionPendingIntent(context, ACTION_MEDIA_STOP, 206)
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -486,8 +492,8 @@ object MediaNotificationHelper {
             .setSmallIcon(R.drawable.ic_notif_play)
             .setLargeIcon(artwork)
             .setContentTitle(title)
-            .setContentText(subtitle)
-            .setSubText(if (isVideo) "🎬 Video Player • Background Play" else "🎵 Hybrid Audio • Hi-Fi Engine")
+            .setContentText("$subtitle • $shuffleLabel • $repeatLabel")
+            .setSubText(if (isVideo) "🎬 Video Background Audio" else "🎵 Hybrid Audio • Hi-Fi Engine")
             .setColor(0xFF00E676.toInt())
             .setColorized(true)
             .setOngoing(isPlaying)
@@ -497,15 +503,15 @@ object MediaNotificationHelper {
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setCategory(Notification.CATEGORY_TRANSPORT)
             .setDeleteIntent(stopPending)
-            // 0. Rewind 10s (-10s)
+            // 0 (Far Left): Shuffle (🔀)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, R.drawable.ic_notif_rewind),
-                    "-10s",
-                    rewindPending
+                    Icon.createWithResource(context, shuffleIconRes),
+                    shuffleLabel,
+                    shufflePending
                 ).build()
             )
-            // 1. Previous Track (⏮)
+            // 1: Previous Track (⏮)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(context, R.drawable.ic_notif_prev),
@@ -513,7 +519,7 @@ object MediaNotificationHelper {
                     prevPending
                 ).build()
             )
-            // 2. Play / Pause (▶ / ⏸)
+            // 2 (Center): Play / Pause (▶ / ⏸)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(
@@ -524,7 +530,7 @@ object MediaNotificationHelper {
                     playPausePending
                 ).build()
             )
-            // 3. Next Track (⏭)
+            // 3: Next Track (⏭)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(context, R.drawable.ic_notif_next),
@@ -532,18 +538,18 @@ object MediaNotificationHelper {
                     nextPending
                 ).build()
             )
-            // 4. Fast Forward 10s (+10s)
+            // 4 (Far Right): Repeat (🔁 / 🔂)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(context, R.drawable.ic_notif_ffwd),
-                    "+10s",
-                    ffwdPending
+                    Icon.createWithResource(context, repeatIconRes),
+                    repeatLabel,
+                    repeatPending
                 ).build()
             )
             .setStyle(
                 Notification.MediaStyle()
                     .setMediaSession(session.sessionToken)
-                    // Compact view shows Previous (1), Play/Pause (2), Next (3)
+                    // Compact view shows Previous (1), Play/Pause (2), Next (3); expanded & Android 11+ show Shuffle (0) on Left and Repeat (4) on Right
                     .setShowActionsInCompactView(1, 2, 3)
             )
 
