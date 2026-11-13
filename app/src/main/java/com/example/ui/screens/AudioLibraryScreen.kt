@@ -104,22 +104,6 @@ fun AudioLibraryScreen(
         com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
     }
 
-    var headerClockText by remember { mutableStateOf("") }
-    var headerBatteryPct by remember { mutableIntStateOf(100) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            try {
-                val sdf = java.text.SimpleDateFormat("hh:mm a", Locale.getDefault())
-                headerClockText = sdf.format(java.util.Date())
-                val bm = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
-                val cap = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
-                if (cap in 1..100) headerBatteryPct = cap
-            } catch (_: Exception) {
-            }
-            kotlinx.coroutines.delay(10_000L)
-        }
-    }
-
     val galleryWallpaperLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -300,114 +284,38 @@ fun AudioLibraryScreen(
             }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 1. Prominent Top Header Bar — App Icon + "Hybrid Player" + Live Time & Battery + Gallery Photo & Scenic Theme Picker
+            // 1. Clean Top Header Bar — App Icon + "Hybrid Player" (matching Video section)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (isCompactSplit) 48.dp else 64.dp)
+                    .height(if (isCompactSplit) 46.dp else 56.dp)
                     .padding(horizontal = if (isTablet) 22.dp else 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.Start
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_app_custom_logo),
-                        contentDescription = "Hybrid Player",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(if (isCompactSplit) 34.dp else 42.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(
-                                1.5.dp,
-                                Brush.linearGradient(listOf(HybridEmerald, HybridCyan)),
-                                RoundedCornerShape(12.dp)
-                            )
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
-                            color = Color.White,
-                            fontWeight = FontWeight.Black,
-                            fontSize = if (isCompactSplit) 19.sp else 22.sp,
-                            letterSpacing = 0.2.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                Image(
+                    painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                    contentDescription = "Hybrid Player",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(if (isCompactSplit) 34.dp else 42.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(
+                            1.5.dp,
+                            Brush.linearGradient(listOf(HybridEmerald, HybridCyan)),
+                            RoundedCornerShape(12.dp)
                         )
-                        if (headerClockText.isNotEmpty() && !isCompactSplit) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(50))
-                                    .background(Color(0xCC0D1829))
-                                    .border(1.dp, HybridCyan.copy(alpha = 0.45f), RoundedCornerShape(50))
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = "🕒 $headerClockText • 🔋 $headerBatteryPct%",
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Quick Gallery Photo Wallpaper & Scenic Theme Picker right in Audio Section Header!
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            galleryWallpaperLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (customWallpaperUri != null) HybridEmerald.copy(alpha = 0.24f)
-                                else HybridCardBg
-                            )
-                            .border(
-                                1.dp,
-                                if (customWallpaperUri != null) HybridEmerald else HybridCardBorder,
-                                CircleShape
-                            )
-                            .testTag("audio_header_gallery_wallpaper_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Wallpaper,
-                            contentDescription = if (isHindi) "गैलरी से फोटो लगाएं" else "Set Gallery Photo Wallpaper",
-                            tint = if (customWallpaperUri != null) HybridEmerald else Color.White,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { showThemeStudioDialog = true },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(HybridCardBg)
-                            .border(1.dp, HybridCardBorder, CircleShape)
-                            .testTag("audio_header_theme_studio_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Palette,
-                            contentDescription = if (isHindi) "थीम बदलें" else "Change Theme",
-                            tint = HybridCyan,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
-                }
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
+                    color = Color.White,
+                    fontWeight = FontWeight.Black,
+                    fontSize = if (isCompactSplit) 19.sp else 24.sp,
+                    letterSpacing = 0.2.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             // Multi-Select Action Bar (Select All + Permanent Batch Delete for 1 to 1000+ songs)

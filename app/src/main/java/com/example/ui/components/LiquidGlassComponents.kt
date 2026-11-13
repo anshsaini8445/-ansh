@@ -183,9 +183,15 @@ fun GuaranteedAlbumArt(
     }
 }
 
+object SimpleModeUiState {
+    var isEnabled by mutableStateOf(false)
+    var stylePreset by mutableStateOf("PLAYit Classic Dark")
+}
+
 /**
  * Ultra-Smooth Hardware-Accelerated Liquid Glass Container.
  * Uses GPU graphicsLayer scaling (zero relayout overhead) and lightweight 2-pass glass rendering.
+ * When Simple Mode (PLAYit / MX Player Classic Mode) is active, renders a clean, flat, ultra-fast classic card.
  */
 @Composable
 fun LiquidGlassBox(
@@ -200,6 +206,8 @@ fun LiquidGlassBox(
     contentAlignment: Alignment = Alignment.Center,
     content: @Composable BoxScope.() -> Unit
 ) {
+    val simpleMode = SimpleModeUiState.isEnabled
+    val simplePreset = SimpleModeUiState.stylePreset
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -236,32 +244,50 @@ fun LiquidGlassBox(
             val baseAlpha = glassAlpha.coerceIn(0.08f, 0.85f)
             val cr = CornerRadius(rPx, rPx)
 
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = if (isActive) {
-                        listOf(
-                            primaryTint.copy(alpha = (baseAlpha + 0.15f).coerceAtMost(0.62f)),
-                            Color(0xD910192B),
-                            secondaryTint.copy(alpha = (baseAlpha + 0.08f).coerceAtMost(0.52f))
-                        )
-                    } else {
-                        listOf(
-                            primaryTint.copy(alpha = baseAlpha),
-                            Color(0xD90E1524),
-                            secondaryTint.copy(alpha = (baseAlpha * 0.62f).coerceAtLeast(0.08f))
-                        )
-                    },
-                    start = Offset.Zero,
-                    end = Offset(w, h)
-                ),
-                cornerRadius = cr
-            )
+            if (simpleMode) {
+                val cardSurface = when (simplePreset) {
+                    "AMOLED Pure Black" -> if (isActive) Color(0xFF18202C) else Color(0xFF11141A)
+                    "MX Slate Blue" -> if (isActive) Color(0xFF1E293B) else Color(0xFF151E2E)
+                    else -> if (isActive) Color(0xFF1E2430) else Color(0xFF161A22)
+                }
+                val borderCol = if (isActive) Color(0xFF38BDF8) else Color(0xFF28303F)
+                drawRoundRect(
+                    color = cardSurface,
+                    cornerRadius = cr
+                )
+                drawRoundRect(
+                    color = borderCol,
+                    cornerRadius = cr,
+                    style = Stroke(width = if (isActive) 1.4.dp.toPx() else 1.dp.toPx())
+                )
+            } else {
+                drawRoundRect(
+                    brush = Brush.linearGradient(
+                        colors = if (isActive) {
+                            listOf(
+                                primaryTint.copy(alpha = (baseAlpha + 0.15f).coerceAtMost(0.62f)),
+                                Color(0xD910192B),
+                                secondaryTint.copy(alpha = (baseAlpha + 0.08f).coerceAtMost(0.52f))
+                            )
+                        } else {
+                            listOf(
+                                primaryTint.copy(alpha = baseAlpha),
+                                Color(0xD90E1524),
+                                secondaryTint.copy(alpha = (baseAlpha * 0.62f).coerceAtLeast(0.08f))
+                            )
+                        },
+                        start = Offset.Zero,
+                        end = Offset(w, h)
+                    ),
+                    cornerRadius = cr
+                )
 
-            drawRoundRect(
-                color = if (isActive) primaryTint.copy(alpha = 0.82f) else primaryTint.copy(alpha = 0.36f),
-                cornerRadius = cr,
-                style = Stroke(width = if (isActive) 1.5.dp.toPx() else 1.dp.toPx())
-            )
+                drawRoundRect(
+                    color = if (isActive) primaryTint.copy(alpha = 0.82f) else primaryTint.copy(alpha = 0.36f),
+                    cornerRadius = cr,
+                    style = Stroke(width = if (isActive) 1.5.dp.toPx() else 1.dp.toPx())
+                )
+            }
         }
         content()
     }
@@ -285,6 +311,7 @@ fun LiquidGlassIconOrb(
     iconTint: Color = Color.White,
     testTag: String? = null
 ) {
+    val simpleMode = SimpleModeUiState.isEnabled
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -313,32 +340,44 @@ fun LiquidGlassIconOrb(
             val r = this.size.minDimension / 2f
             val center = Offset(this.size.width / 2f, this.size.height / 2f)
 
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = if (isActive) {
-                        listOf(
-                            glowColor.copy(alpha = 0.45f),
-                            secondaryColor.copy(alpha = 0.24f),
-                            Color(0xE60D1524)
-                        )
-                    } else {
-                        listOf(
-                            glowColor.copy(alpha = 0.20f),
-                            Color(0xCC162238),
-                            Color(0xE60B111E)
-                        )
-                    },
-                    center = Offset(center.x - r * 0.22f, center.y - r * 0.22f),
-                    radius = r * 1.2f
-                ),
-                radius = r
-            )
+            if (simpleMode) {
+                drawCircle(
+                    color = if (isActive) Color(0xFF1E293B) else Color(0xFF181D26),
+                    radius = r
+                )
+                drawCircle(
+                    color = if (isActive) Color(0xFF38BDF8) else Color(0xFF2D3646),
+                    radius = r - 1.dp.toPx(),
+                    style = Stroke(width = 1.dp.toPx())
+                )
+            } else {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = if (isActive) {
+                            listOf(
+                                glowColor.copy(alpha = 0.45f),
+                                secondaryColor.copy(alpha = 0.24f),
+                                Color(0xE60D1524)
+                            )
+                        } else {
+                            listOf(
+                                glowColor.copy(alpha = 0.20f),
+                                Color(0xCC162238),
+                                Color(0xE60B111E)
+                            )
+                        },
+                        center = Offset(center.x - r * 0.22f, center.y - r * 0.22f),
+                        radius = r * 1.2f
+                    ),
+                    radius = r
+                )
 
-            drawCircle(
-                color = if (isActive) glowColor.copy(alpha = 0.88f) else glowColor.copy(alpha = 0.48f),
-                radius = r - 1.dp.toPx(),
-                style = Stroke(width = if (isActive) 1.5.dp.toPx() else 1.1.dp.toPx())
-            )
+                drawCircle(
+                    color = if (isActive) glowColor.copy(alpha = 0.88f) else glowColor.copy(alpha = 0.48f),
+                    radius = r - 1.dp.toPx(),
+                    style = Stroke(width = if (isActive) 1.5.dp.toPx() else 1.1.dp.toPx())
+                )
+            }
         }
 
         Icon(

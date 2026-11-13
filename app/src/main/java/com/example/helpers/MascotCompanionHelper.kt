@@ -798,6 +798,7 @@ fun RealisticCompanionOverlay(
     isMusicPlaying: Boolean,
     penguinsOnlyMode: Boolean = false,
     mascotSizeDp: Dp = 88.dp,
+    bottomClearanceDp: Dp = 184.dp,
     danceModeId: String = "AUTO_MIX",
     auraEffectId: String = "NEON_DJ",
     autoWalkEnabled: Boolean = true,
@@ -823,7 +824,7 @@ fun RealisticCompanionOverlay(
     val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
     val mascotSizePx = with(density) { mascotSizeDp.toPx() }
-    val floorY = (screenHeightPx - mascotSizePx - with(density) { 112.dp.toPx() }).coerceAtLeast(80f)
+    val floorY = (screenHeightPx - mascotSizePx - with(density) { bottomClearanceDp.toPx() }).coerceAtLeast(80f)
 
     val breed = remember(breedName, penguinsOnlyMode) {
         val selected = CompanionBreed.entries.find {

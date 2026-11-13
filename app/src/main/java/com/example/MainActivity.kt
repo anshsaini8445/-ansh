@@ -94,6 +94,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val activeTheme by viewModel.activeTheme.collectAsState()
+            val simpleModeEnabled by viewModel.simpleModeEnabled.collectAsState()
+            val simpleModeStyle by viewModel.simpleModeStyle.collectAsState()
+            val selectedLanguage by viewModel.selectedLanguage.collectAsState()
+            val isHindi = remember(selectedLanguage) {
+                com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
+            }
             val scenicBackdropPreset by viewModel.scenicBackdropPreset.collectAsState()
             val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
             val companionEnabled by viewModel.companionEnabled.collectAsState()
@@ -135,6 +141,7 @@ class MainActivity : ComponentActivity() {
                 var activeVideoItem by remember { mutableStateOf<MediaItem?>(null) }
                 var activeVideoProgress by remember { mutableStateOf(0L) }
                 var isFloatingMiniVideoActive by remember { mutableStateOf(false) }
+                var showBgVideoFullScreen by remember { mutableStateOf(false) }
 
                 LaunchedEffect(currentScreen, isFloatingMiniVideoActive, activeVideoItem) {
                     val videoActive = (currentScreen == ActiveScreen.VideoPlayer || isFloatingMiniVideoActive) && activeVideoItem != null
@@ -166,8 +173,10 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // System Back Button Handler
-                BackHandler(enabled = navigationStack.size > 1 || selectedTab != MainBottomTab.VIDEO) {
-                    if (navigationStack.size > 1) {
+                BackHandler(enabled = showBgVideoFullScreen || navigationStack.size > 1 || selectedTab != MainBottomTab.VIDEO) {
+                    if (showBgVideoFullScreen) {
+                        showBgVideoFullScreen = false
+                    } else if (navigationStack.size > 1) {
                         if (navigationStack.last() == ActiveScreen.PrivateFolder) {
                             viewModel.lockVault()
                         }
@@ -186,22 +195,36 @@ class MainActivity : ComponentActivity() {
                     val isPipMicroWindow = maxHeight < 215.dp || maxWidth < 230.dp
                     val isCompactSplitScreen = !isPipMicroWindow && maxHeight < 430.dp
 
-                    // 1. Default Scenic Picture Theme Backdrop (eliminates plain black background behind songs & videos)
-                    GlobalScenicThemeBackdrop(
-                        presetName = scenicBackdropPreset,
-                        accentColor = accentColor,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    // 2. Permanent Custom Phone Gallery Wallpaper Overlay across all screens (Video, Audio, Search, Me)
-                    if (customWallpaperUri != null) {
-                        AsyncImage(
-                            model = customWallpaperUri,
-                            contentDescription = "Custom Wallpaper",
-                            contentScale = ContentScale.Crop,
-                            alpha = 0.56f,
+                    if (simpleModeEnabled) {
+                        // Simple Mode (PLAYit / MX Player Clean Classic UI Backdrop)
+                        val simpleBgColor = when (simpleModeStyle) {
+                            "AMOLED Pure Black" -> Color(0xFF05070A)
+                            "MX Slate Blue" -> Color(0xFF0D131F)
+                            else -> Color(0xFF0E1117)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(simpleBgColor)
+                        )
+                    } else {
+                        // 1. Default Scenic Picture Theme Backdrop (eliminates plain black background behind songs & videos)
+                        GlobalScenicThemeBackdrop(
+                            presetName = scenicBackdropPreset,
+                            accentColor = accentColor,
                             modifier = Modifier.fillMaxSize()
                         )
+
+                        // 2. Permanent Custom Phone Gallery Wallpaper Overlay across all screens (Video, Audio, Search, Me)
+                        if (customWallpaperUri != null) {
+                            AsyncImage(
+                                model = customWallpaperUri,
+                                contentDescription = "Custom Wallpaper",
+                                contentScale = ContentScale.Crop,
+                                alpha = 0.56f,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
 
                     Crossfade(targetState = currentScreen, label = "hybrid_screen_router") { screen ->
@@ -452,6 +475,7 @@ class MainActivity : ComponentActivity() {
                                             viewModel.playVideoInBackground(video, activeVideoProgress, 1.0f)
                                             activeVideoItem = null
                                             isFloatingMiniVideoActive = false
+                                            showBgVideoFullScreen = true
                                             navigationStack.removeAt(navigationStack.lastIndex)
                                         },
                                         onBackgroundAudioPlayWithPosition = { currentPosMs, currentSpeed ->
@@ -459,6 +483,7 @@ class MainActivity : ComponentActivity() {
                                             viewModel.playVideoInBackground(video, currentPosMs, currentSpeed)
                                             activeVideoItem = null
                                             isFloatingMiniVideoActive = false
+                                            showBgVideoFullScreen = true
                                             navigationStack.removeAt(navigationStack.lastIndex)
                                         },
                                         onMinimizeToFloatingMiniPlayer = { currentPosMs ->
@@ -634,110 +659,879 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // --- FLOATING BACKGROUND VIDEO AUDIO BAR ("Video Background Play" -> Tap to Return to Video!) ---
+                    // --- FLOATING BACKGROUND VIDEO AUDIO DOCK + UPWARD QUEUE + 8-FEATURE MENU + FULL AUDIO SCREEN ---
                     val bgVideoPlayingItem = nowPlaying?.takeIf { it.isVideo }
+                    var showBgVideoQueueSheet by remember { mutableStateOf(false) }
+                    var showBgVideoMoreMenu by remember { mutableStateOf(false) }
+                    var isConvertingBgVideoMp3 by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(bgVideoPlayingItem) {
+                        if (bgVideoPlayingItem == null) {
+                            showBgVideoQueueSheet = false
+                            showBgVideoMoreMenu = false
+                            showBgVideoFullScreen = false
+                        }
+                    }
+
                     if (bgVideoPlayingItem != null && currentScreen == ActiveScreen.MainTabs && !isFloatingMiniVideoActive && !isPipMicroWindow) {
                         val bgPositionMs by viewModel.playbackPosition.collectAsState()
-                        Row(
+                        val bgSpeed by viewModel.playbackSpeed.collectAsState()
+                        val bgBoost200 by viewModel.is200BoostEnabled.collectAsState()
+                        val bgShuffle by viewModel.isShuffleMode.collectAsState()
+                        val bgRepeat by viewModel.repeatMode.collectAsState()
+                        val bgSleepMin by viewModel.sleepTimerMinutes.collectAsState()
+
+                        fun returnToVideoPlayerNow() {
+                            val resumePos = bgPositionMs.coerceAtLeast(0L)
+                            showBgVideoFullScreen = false
+                            showBgVideoQueueSheet = false
+                            showBgVideoMoreMenu = false
+                            viewModel.dismissBackgroundVideoAudio()
+                            activeVideoItem = bgVideoPlayingItem
+                            activeVideoProgress = resumePos
+                            navigationStack.add(ActiveScreen.VideoPlayer)
+                        }
+
+                        fun convertPlayingVideoToMp3Now() {
+                            if (isConvertingBgVideoMp3) return
+                            isConvertingBgVideoMp3 = true
+                            android.widget.Toast.makeText(
+                                this@MainActivity,
+                                if (isHindi) "🎵 MP3 में बदला जा रहा है: ${bgVideoPlayingItem.cleanTitle}..." else "🎵 Converting to MP3: ${bgVideoPlayingItem.cleanTitle}...",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            coroutineScope.launch {
+                                val res = Mp3ConverterHelper.extractAudioDetailed(
+                                    context = this@MainActivity,
+                                    video = bgVideoPlayingItem,
+                                    formatPreset = "MP3 320kbps"
+                                )
+                                isConvertingBgVideoMp3 = false
+                                viewModel.loadMedia()
+                                android.widget.Toast.makeText(
+                                    this@MainActivity,
+                                    if (isHindi) "✅ MP3 तैयार हो गया: ${res.fileName} (Music सेक्शन में सेव किया गया)" else "✅ MP3 Ready: ${res.fileName} (Saved to Music Library)",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+
+                        // 1. Rich 2-Row Background Video Audio Dock on Main Screen
+                        Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .padding(horizontal = 14.dp, vertical = 92.dp)
+                                .padding(horizontal = 12.dp, vertical = 90.dp)
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(18.dp))
+                                .clip(RoundedCornerShape(20.dp))
                                 .background(
-                                    Brush.horizontalGradient(
-                                        listOf(Color(0xF20A1424), Color(0xF20D1F2D))
-                                    )
+                                    if (simpleModeEnabled) {
+                                        Brush.horizontalGradient(listOf(Color(0xF5151922), Color(0xF51A202C)))
+                                    } else {
+                                        Brush.horizontalGradient(listOf(Color(0xF50A1424), Color(0xF50D2130)))
+                                    }
                                 )
                                 .border(
-                                    1.2.dp,
-                                    Brush.horizontalGradient(listOf(HybridEmerald, HybridCyan)),
-                                    RoundedCornerShape(18.dp)
+                                    1.3.dp,
+                                    if (simpleModeEnabled) {
+                                        Brush.horizontalGradient(listOf(Color(0xFF38BDF8), Color(0xFF64748B)))
+                                    } else {
+                                        Brush.horizontalGradient(listOf(HybridEmerald, HybridCyan))
+                                    },
+                                    RoundedCornerShape(20.dp)
                                 )
-                                .clickable {
-                                    val resumePos = bgPositionMs.coerceAtLeast(0L)
-                                    viewModel.pauseMusicForVideoPlayback()
-                                    activeVideoItem = bgVideoPlayingItem
-                                    activeVideoProgress = resumePos
-                                    navigationStack.add(ActiveScreen.VideoPlayer)
-                                }
-                                .padding(horizontal = 12.dp, vertical = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(horizontal = 11.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp)
                         ) {
+                            // Top Row: Headphone Icon + Title + Prev / Play-Pause / Next + Close (✕)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(HybridEmerald.copy(alpha = 0.22f))
+                                        .border(1.dp, HybridEmerald.copy(alpha = 0.65f), CircleShape)
+                                        .clickable { showBgVideoFullScreen = true },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Headphones,
+                                        contentDescription = "Open Audio Studio",
+                                        tint = HybridEmerald,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(9.dp))
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { showBgVideoFullScreen = true }
+                                ) {
+                                    Text(
+                                        text = bgVideoPlayingItem.cleanTitle,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = if (isHindi) "🎧 बैकग्राउंड ऑडियो • टैप कर बड़ा प्लेयर खोलें" else "🎧 Background Audio • Tap for Full Screen",
+                                        color = HybridCyan,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 10.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = { viewModel.playPrevious() },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipPrevious,
+                                        contentDescription = "Previous",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { viewModel.togglePlayPause() },
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(HybridEmerald.copy(alpha = 0.22f))
+                                ) {
+                                    Icon(
+                                        imageVector = if (isMusicPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = "Play/Pause",
+                                        tint = HybridEmerald,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { viewModel.playNext() },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipNext,
+                                        contentDescription = "Next",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                // Working Close (✕) Button — stops playback AND clears _nowPlaying so dock closes immediately!
+                                IconButton(
+                                    onClick = {
+                                        showBgVideoQueueSheet = false
+                                        showBgVideoMoreMenu = false
+                                        showBgVideoFullScreen = false
+                                        viewModel.dismissBackgroundVideoAudio()
+                                    },
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0x33FF5252))
+                                        .testTag("bg_video_audio_close_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Close Background Video Audio",
+                                        tint = Color(0xFFFF8A80),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+
+                            // Bottom Row: 4 Shining Action Chips (1. Back to Video, 2. Convert to MP3, 3. Playing Queue, 4. 3-Dot 8 Features)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // 1. Back to Video
+                                Row(
+                                    modifier = Modifier
+                                        .weight(1.1f)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(HybridEmerald.copy(alpha = 0.18f))
+                                        .border(1.dp, HybridEmerald.copy(alpha = 0.65f), RoundedCornerShape(50))
+                                        .clickable { returnToVideoPlayerNow() }
+                                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.OndemandVideo,
+                                        contentDescription = "Back to Video",
+                                        tint = HybridEmerald,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isHindi) "वापस वीडियो" else "Back Video",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 10.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                // 2. Convert to MP3
+                                Row(
+                                    modifier = Modifier
+                                        .weight(1.15f)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(HybridCyan.copy(alpha = 0.18f))
+                                        .border(1.dp, HybridCyan.copy(alpha = 0.65f), RoundedCornerShape(50))
+                                        .clickable { convertPlayingVideoToMp3Now() }
+                                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AudioFile,
+                                        contentDescription = "Convert to MP3",
+                                        tint = HybridCyan,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isConvertingBgVideoMp3) "MP3..." else if (isHindi) "MP3 बनाएं" else "To MP3",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 10.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                // 3. Upward Playing Queue
+                                Row(
+                                    modifier = Modifier
+                                        .weight(0.95f)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color(0x26FFD54F))
+                                        .border(1.dp, Color(0xFFFFD54F).copy(alpha = 0.65f), RoundedCornerShape(50))
+                                        .clickable { showBgVideoQueueSheet = true }
+                                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QueueMusic,
+                                        contentDescription = "Playing Queue",
+                                        tint = Color(0xFFFFD54F),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isHindi) "क्यू (${videos.size})" else "Queue",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 10.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                // 4. 3-Dot (8 Features Menu)
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color(0x26FF4081))
+                                        .border(1.dp, Color(0xFFFF80AB).copy(alpha = 0.65f), RoundedCornerShape(50))
+                                        .clickable { showBgVideoMoreMenu = true }
+                                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MoreVert,
+                                        contentDescription = "8 Features Menu",
+                                        tint = Color(0xFFFF80AB),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "8+",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // 2. Dedicated Full Background Video Audio Studio Screen ("Dusri Screen")
+                        if (showBgVideoFullScreen) {
+                            val totalDur = bgVideoPlayingItem.duration.coerceAtLeast(1L)
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(HybridEmerald.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(Color(0xFA07101C), Color(0xFA0C1B2A), Color(0xFC060B12))
+                                        )
+                                    )
+                                    .clickable(enabled = true) {}
+                                    .systemBarsPadding()
+                                    .padding(horizontal = 18.dp, vertical = 12.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Headphones,
-                                    contentDescription = "Background Video Audio",
-                                    tint = HybridEmerald,
-                                    modifier = Modifier.size(20.dp)
-                                )
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    // Top Header Bar
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        IconButton(
+                                            onClick = { showBgVideoFullScreen = false },
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.White.copy(alpha = 0.1f))
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowDown,
+                                                contentDescription = "Minimize",
+                                                tint = Color.White
+                                            )
+                                        }
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = if (isHindi) "🎧 हेडफोन वीडियो ऑडियो मोड" else "🎧 Headphone Video Audio Mode",
+                                                color = HybridEmerald,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 14.sp
+                                            )
+                                            Text(
+                                                text = "${bgVideoPlayingItem.resolution} • ${bgVideoPlayingItem.format}",
+                                                color = Color.White.copy(alpha = 0.65f),
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            IconButton(
+                                                onClick = { showBgVideoMoreMenu = true },
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0x26FF4081))
+                                                    .border(1.dp, Color(0xFFFF80AB), CircleShape)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.MoreVert,
+                                                    contentDescription = "8 Features",
+                                                    tint = Color(0xFFFF80AB)
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    showBgVideoFullScreen = false
+                                                    viewModel.dismissBackgroundVideoAudio()
+                                                },
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0x33FF5252))
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Close",
+                                                    tint = Color(0xFFFF8A80)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Center Video Artwork + Headphone Badge
+                                    Box(
+                                        modifier = Modifier
+                                            .size(210.dp)
+                                            .clip(RoundedCornerShape(28.dp))
+                                            .border(
+                                                2.dp,
+                                                Brush.linearGradient(listOf(HybridEmerald, HybridCyan)),
+                                                RoundedCornerShape(28.dp)
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        com.example.ui.components.GuaranteedAlbumArt(
+                                            mediaPath = bgVideoPlayingItem.path,
+                                            title = bgVideoPlayingItem.cleanTitle,
+                                            isVideo = true,
+                                            cornerRadius = 28.dp,
+                                            accentColor = HybridEmerald,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .padding(10.dp)
+                                                .size(44.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xD908121E))
+                                                .border(1.5.dp, HybridEmerald, CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Headphones,
+                                                contentDescription = null,
+                                                tint = HybridEmerald,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    }
+
+                                    // Title + Quick Action Buttons (Back to Video + Convert to MP3 + Queue)
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Text(
+                                            text = bgVideoPlayingItem.cleanTitle,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 18.sp,
+                                            maxLines = 2,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Button(
+                                                onClick = { returnToVideoPlayerNow() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
+                                                shape = RoundedCornerShape(14.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.OndemandVideo,
+                                                    contentDescription = null,
+                                                    tint = Color.Black,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = if (isHindi) "वापस वीडियो पर जाएं" else "Back to Video",
+                                                    color = Color.Black,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                            Button(
+                                                onClick = { convertPlayingVideoToMp3Now() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = HybridCyan),
+                                                shape = RoundedCornerShape(14.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.AudioFile,
+                                                    contentDescription = null,
+                                                    tint = Color.Black,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = if (isHindi) "MP3 में बदलें" else "Convert to MP3",
+                                                    color = Color.Black,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Seekbar + Transport Controls + Upward Playing Queue Button
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Slider(
+                                            value = (bgPositionMs.toFloat() / totalDur.toFloat()).coerceIn(0f, 1f),
+                                            onValueChange = { frac ->
+                                                viewModel.seekTo((frac * totalDur).toLong())
+                                            },
+                                            colors = SliderDefaults.colors(
+                                                thumbColor = HybridEmerald,
+                                                activeTrackColor = HybridEmerald,
+                                                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                                            )
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            val curSec = (bgPositionMs / 1000L).coerceAtLeast(0L)
+                                            val totSec = (totalDur / 1000L).coerceAtLeast(0L)
+                                            Text(
+                                                text = String.format("%02d:%02d", curSec / 60, curSec % 60),
+                                                color = HybridEmerald,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
+                                            Text(
+                                                text = String.format("%02d:%02d", totSec / 60, totSec % 60),
+                                                color = Color.White.copy(alpha = 0.7f),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
+                                        }
+
+                                        // Transport Row: Shuffle | Prev | -10s | Play/Pause | +10s | Next | Queue
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceEvenly,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            IconButton(onClick = { viewModel.toggleShuffleMode() }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Shuffle,
+                                                    contentDescription = "Shuffle",
+                                                    tint = if (bgShuffle) HybridEmerald else Color.White.copy(alpha = 0.6f)
+                                                )
+                                            }
+                                            IconButton(onClick = { viewModel.playPrevious() }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.SkipPrevious,
+                                                    contentDescription = "Previous",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(30.dp)
+                                                )
+                                            }
+                                            IconButton(onClick = { viewModel.onNotificationRewind10s() }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Replay10,
+                                                    contentDescription = "-10s",
+                                                    tint = HybridCyan,
+                                                    modifier = Modifier.size(28.dp)
+                                                )
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(64.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        Brush.linearGradient(listOf(HybridEmerald, HybridCyan))
+                                                    )
+                                                    .clickable { viewModel.togglePlayPause() },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isMusicPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                                    contentDescription = "Play/Pause",
+                                                    tint = Color.Black,
+                                                    modifier = Modifier.size(34.dp)
+                                                )
+                                            }
+                                            IconButton(onClick = { viewModel.onNotificationFastForward10s() }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Forward10,
+                                                    contentDescription = "+10s",
+                                                    tint = HybridCyan,
+                                                    modifier = Modifier.size(28.dp)
+                                                )
+                                            }
+                                            IconButton(onClick = { viewModel.playNext() }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.SkipNext,
+                                                    contentDescription = "Next",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(30.dp)
+                                                )
+                                            }
+                                            IconButton(onClick = { showBgVideoQueueSheet = true }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.QueueMusic,
+                                                    contentDescription = "Playing Queue",
+                                                    tint = Color(0xFFFFD54F),
+                                                    modifier = Modifier.size(26.dp)
+                                                )
+                                            }
+                                        }
+
+                                        // Bottom Upward Queue Pull Bar
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(16.dp))
+                                                .background(Color.White.copy(alpha = 0.08f))
+                                                .border(1.dp, Color(0xFFFFD54F).copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                                                .clickable { showBgVideoQueueSheet = true }
+                                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.QueueMusic,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFFFFD54F),
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = if (isHindi) "ऊपर की तरफ प्लेइंग क्यू खोलें (${videos.size} वीडियो)" else "Open Upward Playing Queue (${videos.size} Videos)",
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowUp,
+                                                contentDescription = null,
+                                                tint = Color(0xFFFFD54F)
+                                            )
+                                        }
+                                    }
+                                }
                             }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = bgVideoPlayingItem.cleanTitle,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "🎧 Background Video Audio • Tap to Return to Video 🎬",
-                                    color = HybridCyan,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 11.sp,
-                                    maxLines = 1
-                                )
-                            }
-                            IconButton(
-                                onClick = { viewModel.togglePlayPause() },
-                                modifier = Modifier.size(34.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (isMusicPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = "Play/Pause",
-                                    tint = HybridEmerald
-                                )
-                            }
-                            IconButton(
-                                onClick = { viewModel.playNext() },
-                                modifier = Modifier.size(34.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.SkipNext,
-                                    contentDescription = "Next",
-                                    tint = Color.White
-                                )
-                            }
-                            IconButton(
-                                onClick = { viewModel.onNotificationStop() },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Stop Background Video",
-                                    tint = Color.White.copy(alpha = 0.75f),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                        }
+
+                        // 3. Upward-Sliding Playing Queue Sheet
+                        if (showBgVideoQueueSheet) {
+                            AlertDialog(
+                                onDismissRequest = { showBgVideoQueueSheet = false },
+                                containerColor = Color(0xFF0B1522),
+                                title = {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = if (isHindi) "🎶 वीडियो ऑडियो प्लेइंग क्यू (${videos.size})" else "🎶 Video Audio Playing Queue (${videos.size})",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 16.sp
+                                        )
+                                        IconButton(onClick = { viewModel.toggleShuffleMode() }) {
+                                            Icon(
+                                                imageVector = Icons.Default.Shuffle,
+                                                contentDescription = "Shuffle Queue",
+                                                tint = if (bgShuffle) HybridEmerald else Color.White
+                                            )
+                                        }
+                                    }
+                                },
+                                text = {
+                                    androidx.compose.foundation.lazy.LazyColumn(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 360.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        items(videos.size) { idx ->
+                                            val vid = videos[idx]
+                                            val isCurrent = vid.id == bgVideoPlayingItem.id
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(
+                                                        if (isCurrent) HybridEmerald.copy(alpha = 0.22f)
+                                                        else Color.White.copy(alpha = 0.06f)
+                                                    )
+                                                    .border(
+                                                        1.dp,
+                                                        if (isCurrent) HybridEmerald else Color.White.copy(alpha = 0.12f),
+                                                        RoundedCornerShape(12.dp)
+                                                    )
+                                                    .clickable {
+                                                        viewModel.playVideoInBackground(vid, 0L, bgSpeed)
+                                                        showBgVideoQueueSheet = false
+                                                    }
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                com.example.ui.components.GuaranteedAlbumArt(
+                                                    mediaPath = vid.path,
+                                                    title = vid.cleanTitle,
+                                                    isVideo = true,
+                                                    cornerRadius = 8.dp,
+                                                    accentColor = HybridEmerald,
+                                                    modifier = Modifier.size(42.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = vid.cleanTitle,
+                                                        color = if (isCurrent) HybridEmerald else Color.White,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 13.sp,
+                                                        maxLines = 1,
+                                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = "${vid.resolution} • ${vid.formattedSize}",
+                                                        color = Color.White.copy(alpha = 0.65f),
+                                                        fontSize = 11.sp
+                                                    )
+                                                }
+                                                if (isCurrent) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.GraphicEq,
+                                                        contentDescription = null,
+                                                        tint = HybridEmerald
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                confirmButton = {
+                                    TextButton(onClick = { showBgVideoQueueSheet = false }) {
+                                        Text(
+                                            text = if (isHindi) "बंद करें" else "Close",
+                                            color = HybridEmerald,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            )
+                        }
+
+                        // 4. 3-Dot Menu with 8 Colourful Working Features for Background Video Audio
+                        if (showBgVideoMoreMenu) {
+                            AlertDialog(
+                                onDismissRequest = { showBgVideoMoreMenu = false },
+                                containerColor = Color(0xFF0B1522),
+                                title = {
+                                    Text(
+                                        text = if (isHindi) "⚡ हेडफोन ऑडियो 8 प्रो फीचर्स" else "⚡ Headphone Audio 8 Pro Features",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 16.sp
+                                    )
+                                },
+                                text = {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                                    ) {
+                                        val actions = listOf(
+                                            Triple(
+                                                if (isHindi) "1. 🎬 वापस वीडियो स्क्रीन पर जाएं" else "1. 🎬 Return to Video Player",
+                                                HybridEmerald
+                                            ) {
+                                                showBgVideoMoreMenu = false
+                                                returnToVideoPlayerNow()
+                                            },
+                                            Triple(
+                                                if (isHindi) "2. 🎵 वीडियो को MP3 ऑडियो में बदलें" else "2. 🎵 Convert Video to MP3 Audio",
+                                                HybridCyan
+                                            ) {
+                                                showBgVideoMoreMenu = false
+                                                convertPlayingVideoToMp3Now()
+                                            },
+                                            Triple(
+                                                if (isHindi) "3. ⚡ प्लेबैक स्पीड बदलें (${String.format("%.2fx", bgSpeed)})" else "3. ⚡ Playback Speed (${String.format("%.2fx", bgSpeed)})",
+                                                Color(0xFFFFD54F)
+                                            ) {
+                                                val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f)
+                                                val nextIdx = (speeds.indexOfFirst { kotlin.math.abs(it - bgSpeed) < 0.05f } + 1) % speeds.size
+                                                viewModel.setPlaybackSpeed(speeds[nextIdx])
+                                            },
+                                            Triple(
+                                                if (isHindi) "4. 🔊 200% सुपर बूस्ट (${if (bgBoost200) "चालू" else "बंद"})" else "4. 🔊 200% Super Volume Boost (${if (bgBoost200) "ON" else "OFF"})",
+                                                Color(0xFFFF80AB)
+                                            ) {
+                                                viewModel.toggle200VolumeBoost()
+                                            },
+                                            Triple(
+                                                if (isHindi) "5. 🎚️ 3D इक्वलाइज़र स्टूडियो खोलें" else "5. 🎚️ Open 3D Equalizer Studio",
+                                                Color(0xFFB388FF)
+                                            ) {
+                                                showBgVideoMoreMenu = false
+                                                showBgVideoFullScreen = false
+                                                navigationStack.add(ActiveScreen.Equalizer)
+                                            },
+                                            Triple(
+                                                if (isHindi) "6. ⏱️ स्लीप टाइमर (${if (bgSleepMin > 0) "${bgSleepMin}m चालू" else "बंद"})" else "6. ⏱️ Sleep Timer (${if (bgSleepMin > 0) "${bgSleepMin}m ON" else "OFF"})",
+                                                Color(0xFF40C4FF)
+                                            ) {
+                                                val nextMin = when (bgSleepMin) {
+                                                    0 -> 15
+                                                    15 -> 30
+                                                    30 -> 60
+                                                    else -> 0
+                                                }
+                                                viewModel.setSleepTimer(nextMin)
+                                            },
+                                            Triple(
+                                                if (isHindi) "7. 🔁 रिपीट / शफल मोड (${if (bgRepeat == 2) "Repeat 1" else if (bgRepeat == 1) "Repeat All" else "Order"})" else "7. 🔁 Repeat / Loop Mode (${if (bgRepeat == 2) "Repeat 1" else if (bgRepeat == 1) "Repeat All" else "Order"})",
+                                                Color(0xFF69F0AE)
+                                            ) {
+                                                viewModel.cycleRepeatMode()
+                                            },
+                                            Triple(
+                                                if (isHindi) "8. 🚀 हाइब्रिड शेयर (Wi-Fi Direct)" else "8. 🚀 Hybrid Share File",
+                                                Color(0xFFFFAB40)
+                                            ) {
+                                                showBgVideoMoreMenu = false
+                                                showBgVideoFullScreen = false
+                                                preselectedShareItem = bgVideoPlayingItem
+                                                navigationStack.add(ActiveScreen.TurboShare)
+                                            }
+                                        )
+
+                                        actions.forEach { (label, tint, action) ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(tint.copy(alpha = 0.14f))
+                                                    .border(1.dp, tint.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                                    .clickable { action() }
+                                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                                Icon(
+                                                    imageVector = Icons.Default.ChevronRight,
+                                                    contentDescription = null,
+                                                    tint = tint,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                },
+                                confirmButton = {
+                                    TextButton(onClick = { showBgVideoMoreMenu = false }) {
+                                        Text(
+                                            text = if (isHindi) "बंद करें" else "Close",
+                                            color = HybridEmerald,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            )
                         }
                     }
 
                     // --- REALISTIC 3D ARTICULATED PUPPY & PENGUIN COMPANION OVERLAY ---
-                    if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer) && !isPipMicroWindow) {
+                    // Automatically hidden in Simple Mode and raised above any bottom mini-player so it never blocks buttons!
+                    if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer) && !isPipMicroWindow && !simpleModeEnabled) {
                         RealisticCompanionOverlay(
-                            enabled = companionEnabled,
+                            enabled = companionEnabled && !simpleModeEnabled,
                             breedName = companionBreed,
                             isMusicPlaying = isMusicPlaying,
                             penguinsOnlyMode = penguinsOnlyMode,
                             mascotSizeDp = companionSizeDp.dp,
+                            bottomClearanceDp = if (nowPlaying != null) 204.dp else 118.dp,
                             danceModeId = companionDanceMode,
                             auraEffectId = companionAuraEffect,
                             autoWalkEnabled = companionAutoWalk,

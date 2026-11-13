@@ -284,6 +284,40 @@ class PlayerViewModel(application: Application) :
     private val _bassBoostEnabled = MutableStateFlow(false)
     val bassBoostEnabled: StateFlow<Boolean> = _bassBoostEnabled.asStateFlow()
 
+    // --- Simple Mode (PLAYit / MX Player Clean Classic UI Mode) ---
+    private val _simpleModeEnabled = MutableStateFlow(
+        prefs.getBoolean("saved_simple_mode_enabled_v1", false).also { enabled ->
+            com.example.ui.components.SimpleModeUiState.isEnabled = enabled
+        }
+    )
+    val simpleModeEnabled: StateFlow<Boolean> = _simpleModeEnabled.asStateFlow()
+
+    private val _simpleModeStyle = MutableStateFlow(
+        (prefs.getString("saved_simple_mode_style_v1", "PLAYit Classic Dark") ?: "PLAYit Classic Dark").also { preset ->
+            com.example.ui.components.SimpleModeUiState.stylePreset = preset
+        }
+    )
+    val simpleModeStyle: StateFlow<String> = _simpleModeStyle.asStateFlow()
+
+    fun setSimpleModeEnabled(enabled: Boolean) {
+        _simpleModeEnabled.value = enabled
+        com.example.ui.components.SimpleModeUiState.isEnabled = enabled
+        prefs.edit().putBoolean("saved_simple_mode_enabled_v1", enabled).apply()
+    }
+
+    fun toggleSimpleMode() {
+        setSimpleModeEnabled(!_simpleModeEnabled.value)
+    }
+
+    fun setSimpleModeStyle(stylePreset: String) {
+        _simpleModeStyle.value = stylePreset
+        com.example.ui.components.SimpleModeUiState.stylePreset = stylePreset
+        prefs.edit().putString("saved_simple_mode_style_v1", stylePreset).apply()
+        if (!_simpleModeEnabled.value) {
+            setSimpleModeEnabled(true)
+        }
+    }
+
     // --- Theme, Scenic Picture Backdrop & 15+ 3D Animated Music Player Themes ---
     private val _activeTheme = MutableStateFlow(
         prefs.getString("saved_app_theme", "Hybrid Emerald") ?: "Hybrid Emerald"
@@ -1330,9 +1364,15 @@ class PlayerViewModel(application: Application) :
         }
         mediaPlayer = null
         _isPlaying.value = false
+        _nowPlaying.value = null
+        _playbackPosition.value = 0L
         progressJob?.cancel()
         MediaNotificationHelper.cancelNotification(getApplication())
         AudioService.stopServiceCompletely(getApplication())
+    }
+
+    fun dismissBackgroundVideoAudio() {
+        onNotificationStop()
     }
 
     private fun ClosedFloatingPointRange<Float>.random(): Float {
