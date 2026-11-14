@@ -32,9 +32,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -1955,11 +1957,42 @@ private fun StatusReelsVerticalPagerView(
                     }
                 }
 
+                var showDoubleTapHeartBurst by remember { mutableStateOf(false) }
+                LaunchedEffect(showDoubleTapHeartBurst) {
+                    if (showDoubleTapHeartBurst) {
+                        kotlinx.coroutines.delay(850L)
+                        showDoubleTapHeartBurst = false
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Color.Black)
-                        .clickable { isPausedByTap = !isPausedByTap }
+                        .border(
+                            width = 2.dp,
+                            brush = Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFFFF2A6D).copy(alpha = 0.72f),
+                                    HybridCyan.copy(alpha = 0.55f),
+                                    HybridEmerald.copy(alpha = 0.78f)
+                                )
+                            ),
+                            shape = RoundedCornerShape(0.dp)
+                        )
+                        .pointerInput(video.id, isLiked) {
+                            detectTapGestures(
+                                onTap = {
+                                    isPausedByTap = !isPausedByTap
+                                },
+                                onDoubleTap = {
+                                    showDoubleTapHeartBurst = true
+                                    if (!isLiked) {
+                                        onToggleLike(video)
+                                    }
+                                }
+                            )
+                        }
                 ) {
                     if (isCurrentPage) {
                         AndroidView(
@@ -2130,6 +2163,30 @@ private fun StatusReelsVerticalPagerView(
                                 contentDescription = null,
                                 tint = HybridEmerald,
                                 modifier = Modifier.size(42.dp)
+                            )
+                        }
+                    }
+
+                    // Instagram Reels-Style Double-Tap Glowing Heart Burst Animation!
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showDoubleTapHeartBurst,
+                        enter = androidx.compose.animation.scaleIn(initialScale = 0.4f) + androidx.compose.animation.fadeIn(),
+                        exit = androidx.compose.animation.scaleOut(targetScale = 1.4f) + androidx.compose.animation.fadeOut(),
+                        modifier = Modifier.align(Alignment.Center)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(118.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x44FF1744))
+                                .border(2.5.dp, Color(0xFFFF2A6D), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Favorite,
+                                contentDescription = "Liked",
+                                tint = Color(0xFFFF1744),
+                                modifier = Modifier.size(76.dp)
                             )
                         }
                     }
@@ -2361,13 +2418,71 @@ private fun StatusReelsVerticalPagerView(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                        // 6. FULL PLAYER EXPAND BUTTON
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable { onOpenInFullPlayer(video) }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x88000000))
+                                    .border(1.2.dp, HybridCyan.copy(alpha = 0.8f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Fullscreen,
+                                    contentDescription = if (isHindi) "बड़ा प्लेयर" else "Full Player",
+                                    tint = HybridCyan,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (isHindi) "फुल स्क्रीन" else "Full HD",
+                                color = HybridCyan,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+
+                        // 7. SPINNING REELS VINYL AUDIO DISC
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.sweepGradient(
+                                        listOf(Color(0xFFFF2A6D), HybridEmerald, HybridCyan, Color(0xFFFF2A6D))
+                                    )
+                                )
+                                .border(2.dp, Color.White, CircleShape)
+                                .clickable { showReelThreeDotSheetFor = video },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = "Reel Audio",
+                                    tint = HybridEmerald,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
                     }
 
-                    // Bottom-Left Video Title, Auto-HD Badge & Duration Info
+                    // Bottom-Left Video Title, Auto-HD Badge, Original Audio Pill & Duration Info
                     Column(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .padding(start = 16.dp, end = 84.dp, bottom = 24.dp)
+                            .padding(start = 16.dp, end = 84.dp, bottom = 22.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -2375,12 +2490,16 @@ private fun StatusReelsVerticalPagerView(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0xFFFF2A6D))
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(Color(0xFFFF2A6D), Color(0xFFFF6D00))
+                                        )
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 3.dp)
                             ) {
                                 Text(
-                                    text = if (isHindi) "स्टेटस • ${video.formattedDuration}" else "Status • ${video.formattedDuration}",
+                                    text = if (isHindi) "🔥 रील्स • ${video.formattedDuration}" else "🔥 REELS • ${video.formattedDuration}",
                                     color = Color.White,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.ExtraBold
@@ -2388,57 +2507,79 @@ private fun StatusReelsVerticalPagerView(
                             }
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(HybridEmerald.copy(alpha = 0.22f))
-                                    .border(1.dp, HybridEmerald.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(HybridEmerald.copy(alpha = 0.24f))
+                                    .border(1.dp, HybridEmerald.copy(alpha = 0.75f), RoundedCornerShape(50))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
                                 Text(
-                                    text = if (isSoftwareReelFallback) "Smart HD Fit" else "${video.resolution} Auto-Fit",
+                                    text = if (isSoftwareReelFallback) "⚡ Smart HD" else "✨ ${video.resolution} Glow",
                                     color = HybridEmerald,
-                                    fontSize = 9.sp,
+                                    fontSize = 9.5.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                             }
                             Text(
                                 text = "${page + 1} / ${reelVideos.size}",
-                                color = Color.White.copy(alpha = 0.8f),
+                                color = Color.White.copy(alpha = 0.88f),
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.ExtraBold
                             )
                         }
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(7.dp))
                         Text(
                             text = video.cleanTitle,
                             color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "${video.folderName} • ${video.formattedSize}",
-                            color = Color.White.copy(alpha = 0.75f),
-                            fontSize = 12.sp
-                        )
+                        Spacer(modifier = Modifier.height(5.dp))
+                        // Glowing Original Audio Marquee Pill (Instagram Reels Style)
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Color(0x99000000))
+                                .border(1.dp, Color.White.copy(alpha = 0.24f), RoundedCornerShape(50))
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.GraphicEq,
+                                contentDescription = null,
+                                tint = HybridCyan,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "🎵 Original Audio • ${video.folderName} • ${video.formattedSize}",
+                                color = Color.White.copy(alpha = 0.92f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
 
-                    // Bottom Live Progress Bar
+                    // Bottom Live Glowing Neon Progress Bar
                     val progressRatio = (reelCurrentPosMs.toFloat() / reelTotalDurMs.coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(4.dp)
+                            .height(5.dp)
                             .align(Alignment.BottomCenter)
-                            .background(Color.White.copy(alpha = 0.2f))
+                            .background(Color.White.copy(alpha = 0.22f))
                     ) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth(progressRatio)
                                 .fillMaxHeight()
                                 .background(
-                                    Brush.horizontalGradient(listOf(Color(0xFFFF2A6D), HybridEmerald))
+                                    Brush.horizontalGradient(
+                                        listOf(Color(0xFFFF2A6D), HybridCyan, HybridEmerald)
+                                    )
                                 )
                         )
                     }

@@ -63,7 +63,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 
-private const val CONTROLS_AUTO_HIDE_DELAY_MS = 3000L
+private const val CONTROLS_AUTO_HIDE_DELAY_MS = 10_000L
 
 @Composable
 fun VideoPlayerView(
@@ -294,30 +294,70 @@ fun VideoPlayerView(
         }
     }
 
-    // Auto-hide system status bar during immersive video playback; show on tap or top swipe-down
-    DisposableEffect(showControls) {
-        try {
-            val activity = context as? Activity
-            val window = activity?.window
-            if (window != null) {
+    // Block accidental Back button exit when Screen Lock is enabled
+    androidx.activity.compose.BackHandler(enabled = isScreenLocked) {
+        showControls = true
+        lastInteractionTime = System.currentTimeMillis()
+        Toast.makeText(context, "🔒 Screen Locked — Tap the Lock icon to unlock", Toast.LENGTH_SHORT).show()
+    }
+
+    // Auto-hide BOTH system status bar AND 3-button navigation bar during video playback & Screen Lock
+    DisposableEffect(showControls, isScreenLocked) {
+        fun applyImmersiveSystemBars(hideAllBars: Boolean) {
+            try {
+                val activity = context as? Activity
+                val window = activity?.window ?: return
                 val controller = androidx.core.view.WindowCompat.getInsetsController(window, hostView)
                 controller.isAppearanceLightStatusBars = false
+                controller.isAppearanceLightNavigationBars = false
                 controller.systemBarsBehavior =
                     androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                if (showControls) {
-                    controller.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                if (hideAllBars) {
+                    controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                    @Suppress("DEPRECATION")
+                    window.decorView.systemUiVisibility = (
+                        android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                        )
                 } else {
-                    controller.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                    // Even when controls are visible, keep the bottom 3-button navigation road hidden in lock mode
+                    // and hide navigationBars during video playback so bottom controls are never blocked
+                    controller.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                    controller.hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
                 }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
+
+        applyImmersiveSystemBars(hideAllBars = !showControls || isScreenLocked)
+
         onDispose { }
     }
 
-    // 3-Second Auto-Hide Controls Timer
-    LaunchedEffect(showControls, lastInteractionTime, isPlaying) {
-        if (showControls && isPlaying) {
+    // Restore system status & navigation bars when exiting VideoPlayerView
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                val activity = context as? Activity
+                val window = activity?.window
+                if (window != null) {
+                    val controller = androidx.core.view.WindowCompat.getInsetsController(window, hostView)
+                    controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                    @Suppress("DEPRECATION")
+                    window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    // 10-Second Auto-Hide Controls Timer (stays visible for a full 10 seconds after any interaction)
+    LaunchedEffect(showControls, lastInteractionTime, isPlaying, isScreenLocked) {
+        if (showControls && (isPlaying || isScreenLocked)) {
             delay(CONTROLS_AUTO_HIDE_DELAY_MS)
             if (System.currentTimeMillis() - lastInteractionTime >= CONTROLS_AUTO_HIDE_DELAY_MS) {
                 showControls = false

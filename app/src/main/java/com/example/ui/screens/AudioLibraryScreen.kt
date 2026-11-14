@@ -507,6 +507,53 @@ fun AudioLibraryScreen(
                 )
             }
 
+            // 2B. Live Audio DJ Studio Quick Strip (Shuffle Play, Equalizer, 200% Boost, Full Studio)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = if (isTablet) 20.dp else 12.dp, vertical = 3.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AudioLabeledTabChip(
+                    label = if (isHindi) "🔀 शफल प्ले (${currentDisplayedTracks.size})" else "🔀 Shuffle Play (${currentDisplayedTracks.size})",
+                    selected = isPlaying,
+                    testTag = "audio_quick_shuffle_btn",
+                    onClick = {
+                        viewModel.shufflePlayMusic()
+                        Toast.makeText(
+                            context,
+                            if (isHindi) "🎶 डीजे शफल चालू! गुड्डा डांस मोड एक्टिव!" else "🎶 DJ Shuffle ON! Mascot Dance Active!",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+                AudioLabeledTabChip(
+                    label = if (isHindi) "🎚️ 3D इक्वलाइज़र" else "🎚️ 3D Equalizer",
+                    selected = false,
+                    testTag = "audio_quick_eq_btn",
+                    onClick = onOpenEqualizer
+                )
+                AudioLabeledTabChip(
+                    label = if (isHindi) "🎧 फुल स्टूडियो प्लेयर" else "🎧 Full Studio Player",
+                    selected = false,
+                    testTag = "audio_quick_studio_btn",
+                    onClick = {
+                        if (nowPlaying == null) {
+                            currentDisplayedTracks.firstOrNull()?.let { viewModel.playMusic(it) }
+                        }
+                        onOpenFullMusicPlayer()
+                    }
+                )
+                AudioLabeledTabChip(
+                    label = if (isHindi) "⚡ हाइब्रिड शेयर" else "⚡ Hybrid Share",
+                    selected = false,
+                    testTag = "audio_quick_share_btn",
+                    onClick = onOpenTurboShare
+                )
+            }
+
             // Optional Breadcrumb Back Bar when inside a specific Folder or Playlist
             if (selectedFolderName != null || viewingFavoritesPlaylist || selectedPlaylistId != null) {
                 val activePlaylistObj = playlists.firstOrNull { it.id == selectedPlaylistId }
@@ -686,8 +733,11 @@ fun AudioLibraryScreen(
                                             if (isSelected) selectedTrackIds.remove(track.id)
                                             else selectedTrackIds.add(track.id)
                                         } else {
+                                            val alreadyCurrent = nowPlaying?.id == track.id
                                             viewModel.playMusic(track)
-                                            onOpenFullMusicPlayer()
+                                            if (alreadyCurrent) {
+                                                onOpenFullMusicPlayer()
+                                            }
                                         }
                                     },
                                     onLongClick = {
@@ -741,8 +791,11 @@ fun AudioLibraryScreen(
                                             if (isSelected) selectedTrackIds.remove(track.id)
                                             else selectedTrackIds.add(track.id)
                                         } else {
+                                            val alreadyCurrent = nowPlaying?.id == track.id
                                             viewModel.playMusic(track)
-                                            onOpenFullMusicPlayer()
+                                            if (alreadyCurrent) {
+                                                onOpenFullMusicPlayer()
+                                            }
                                         }
                                     },
                                     onLongClick = {

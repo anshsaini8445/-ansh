@@ -151,129 +151,6 @@ fun MediaSevenActionDialog(
         return
     }
 
-    if (showPermanentDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showPermanentDeleteConfirm = false },
-            containerColor = HybridCardBg,
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.DeleteForever, contentDescription = null, tint = HybridCoralRed)
-                    Text(
-                        text = item.cleanTitle,
-                        color = Color.White,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 15.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Option 1: 100% Permanent Delete from Entire Phone
-                    LiquidGlassBox(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("confirm_permanent_phone_delete_btn"),
-                        cornerRadius = 14.dp,
-                        tintColor = HybridCoralRed,
-                        glassAlpha = 0.34f,
-                        onClick = {
-                            val deletedDirectly = PermanentDeleteHelper.deletePermanently(context, item)
-                            val pendingIntent = if (!deletedDirectly) {
-                                PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, listOf(item))
-                            } else null
-
-                            if (pendingIntent != null) {
-                                try {
-                                    systemDeleteLauncher.launch(
-                                        IntentSenderRequest.Builder(pendingIntent.intentSender).build()
-                                    )
-                                } catch (_: Exception) {
-                                    onPermanentDeleteConfirmed(item)
-                                    onDismiss()
-                                }
-                            } else {
-                                onPermanentDeleteConfirmed(item)
-                                Toast.makeText(
-                                    context,
-                                    if (isHindi) "फ़ोन से हमेशा के लिए हटा दिया गया" else "Permanently Deleted from Phone Storage",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                                onDismiss()
-                            }
-                        }
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.DeleteForever, contentDescription = null, tint = HybridCoralRed, modifier = Modifier.size(22.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = if (isHindi) "फ़ोन से हमेशा के लिए हटाएं" else "Permanent Delete (Entire Phone)",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 13.sp
-                                )
-                                Text(
-                                    text = item.formattedSize,
-                                    color = HybridCoralRed,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    // Option 2: Move to 30-Day Safe Recycle Bin
-                    LiquidGlassBox(
-                        modifier = Modifier.fillMaxWidth(),
-                        cornerRadius = 14.dp,
-                        tintColor = HybridGold,
-                        glassAlpha = 0.22f,
-                        onClick = {
-                            onMoveToRecycleBin(item)
-                            Toast.makeText(
-                                context,
-                                if (isHindi) "रीसायकल बिन में भेजा गया" else "Moved to 30-Day Recycle Bin",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            onDismiss()
-                        }
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.RestoreFromTrash, contentDescription = null, tint = HybridGold, modifier = Modifier.size(22.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = if (isHindi) "रीसायकल बिन (30 दिन सुरक्षित)" else "Recycle Bin (30 Days Safe)",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showPermanentDeleteConfirm = false }) {
-                    Text(if (isHindi) "बंद करें" else "Close", color = HybridTextSecondary)
-                }
-            }
-        )
-        return
-    }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = HybridCardBg,
@@ -407,7 +284,7 @@ fun MediaSevenActionDialog(
                     )
                 }
 
-                // Bottom 4 Compact Folder-Style Rows
+                // Direct 1-Tap Action Rows right inside the 3-dot menu (No nested Delete sub-dialog!)
                 if (item.isVideo && onPlayBackgroundAudio != null) {
                     SevenMenuActionRow(
                         icon = Icons.Default.Edit,
@@ -441,12 +318,53 @@ fun MediaSevenActionDialog(
                 )
 
                 SevenMenuActionRow(
+                    icon = Icons.Default.RestoreFromTrash,
+                    title = if (isHindi) "रीसायकल बिन में डालें (30 दिन सुरक्षित)" else "Move to Recycle Bin (30 Days Safe)",
+                    subtitle = if (isHindi) "1 टैप में सुरक्षित रूप से रीसायकल बिन में भेजें" else "1-tap move to Recycle Bin without permanent loss",
+                    tint = HybridGold,
+                    testTag = "menu_action_recycle_bin",
+                    onClick = {
+                        onMoveToRecycleBin(item)
+                        Toast.makeText(
+                            context,
+                            if (isHindi) "रीसायकल बिन में भेजा गया" else "Moved to 30-Day Recycle Bin",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        onDismiss()
+                    }
+                )
+
+                SevenMenuActionRow(
                     icon = Icons.Default.DeleteForever,
-                    title = if (isHindi) "फ़ोन से हटाएं (Delete)" else "Delete from Phone",
-                    subtitle = if (isHindi) "हमेशा के लिए या रीसायकल बिन" else "Permanent or Recycle Bin",
+                    title = if (isHindi) "फ़ोन से हमेशा के लिए हटाएं (Delete)" else "Permanent Delete from Phone",
+                    subtitle = "${item.formattedSize} • ${if (isHindi) "1 टैप में सीधे फ़ोन से हटाएं" else "1-tap direct delete from storage"}",
                     tint = HybridCoralRed,
                     testTag = "menu_action_permanent_delete",
-                    onClick = { showPermanentDeleteConfirm = true }
+                    onClick = {
+                        val deletedDirectly = PermanentDeleteHelper.deletePermanently(context, item)
+                        val pendingIntent = if (!deletedDirectly) {
+                            PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, listOf(item))
+                        } else null
+
+                        if (pendingIntent != null) {
+                            try {
+                                systemDeleteLauncher.launch(
+                                    IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                                )
+                            } catch (_: Exception) {
+                                onPermanentDeleteConfirmed(item)
+                                onDismiss()
+                            }
+                        } else {
+                            onPermanentDeleteConfirmed(item)
+                            Toast.makeText(
+                                context,
+                                if (isHindi) "फ़ोन से हमेशा के लिए हटा दिया गया" else "Permanently Deleted from Phone Storage",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            onDismiss()
+                        }
+                    }
                 )
             }
         },

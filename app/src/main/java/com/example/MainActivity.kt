@@ -1505,6 +1505,7 @@ class MainActivity : ComponentActivity() {
                             enabled = companionEnabled && !hideMascotInSimple,
                             breedName = companionBreed,
                             isMusicPlaying = isMusicPlaying,
+                            nowPlayingTitle = nowPlaying?.cleanTitle ?: "",
                             penguinsOnlyMode = penguinsOnlyMode,
                             mascotSizeDp = companionSizeDp.dp,
                             bottomClearanceDp = if (nowPlaying != null) 204.dp else 118.dp,
