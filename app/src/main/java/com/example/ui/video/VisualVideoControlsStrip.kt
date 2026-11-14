@@ -46,7 +46,7 @@ enum class VideoResolutionPreset(
 }
 
 /**
- * MX Player-Style Horizontal Smooth Scrollable Pro Control Strip.
+ * Horizontal Smooth Scrollable Pro Control Strip.
  * Featuring 19 working action pills styled with crisp white icons and dark translucent glass.
  */
 @Composable

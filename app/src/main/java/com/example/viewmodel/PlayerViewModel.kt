@@ -284,7 +284,13 @@ class PlayerViewModel(application: Application) :
     private val _bassBoostEnabled = MutableStateFlow(false)
     val bassBoostEnabled: StateFlow<Boolean> = _bassBoostEnabled.asStateFlow()
 
-    // --- Simple Mode (PLAYit / MX Player Clean Classic UI Mode) ---
+    // --- Simple Mode (Clean, Flat, Ultra-Fast Classic UI Mode) ---
+    private fun normalizeSimplePreset(raw: String?): String = when (raw) {
+        "AMOLED Pure Black", "AMOLED Pitch Black" -> "AMOLED Pitch Black"
+        "MX Slate Blue", "Soft Slate" -> "Soft Slate"
+        else -> "Classic Dark"
+    }
+
     private val _simpleModeEnabled = MutableStateFlow(
         prefs.getBoolean("saved_simple_mode_enabled_v1", false).also { enabled ->
             com.example.ui.components.SimpleModeUiState.isEnabled = enabled
@@ -293,11 +299,30 @@ class PlayerViewModel(application: Application) :
     val simpleModeEnabled: StateFlow<Boolean> = _simpleModeEnabled.asStateFlow()
 
     private val _simpleModeStyle = MutableStateFlow(
-        (prefs.getString("saved_simple_mode_style_v1", "PLAYit Classic Dark") ?: "PLAYit Classic Dark").also { preset ->
+        normalizeSimplePreset(prefs.getString("saved_simple_mode_style_v1", "Classic Dark")).also { preset ->
             com.example.ui.components.SimpleModeUiState.stylePreset = preset
         }
     )
     val simpleModeStyle: StateFlow<String> = _simpleModeStyle.asStateFlow()
+
+    private val _simpleHideMascot = MutableStateFlow(
+        prefs.getBoolean("saved_simple_hide_mascot_v1", true)
+    )
+    val simpleHideMascot: StateFlow<Boolean> = _simpleHideMascot.asStateFlow()
+
+    private val _simpleHideHistory = MutableStateFlow(
+        prefs.getBoolean("saved_simple_hide_history_v1", false).also { hide ->
+            com.example.ui.components.SimpleModeUiState.hideHistory = hide
+        }
+    )
+    val simpleHideHistory: StateFlow<Boolean> = _simpleHideHistory.asStateFlow()
+
+    private val _simpleCompactRows = MutableStateFlow(
+        prefs.getBoolean("saved_simple_compact_rows_v1", true).also { compact ->
+            com.example.ui.components.SimpleModeUiState.compactRows = compact
+        }
+    )
+    val simpleCompactRows: StateFlow<Boolean> = _simpleCompactRows.asStateFlow()
 
     fun setSimpleModeEnabled(enabled: Boolean) {
         _simpleModeEnabled.value = enabled
@@ -310,12 +335,30 @@ class PlayerViewModel(application: Application) :
     }
 
     fun setSimpleModeStyle(stylePreset: String) {
-        _simpleModeStyle.value = stylePreset
-        com.example.ui.components.SimpleModeUiState.stylePreset = stylePreset
-        prefs.edit().putString("saved_simple_mode_style_v1", stylePreset).apply()
+        val normalized = normalizeSimplePreset(stylePreset)
+        _simpleModeStyle.value = normalized
+        com.example.ui.components.SimpleModeUiState.stylePreset = normalized
+        prefs.edit().putString("saved_simple_mode_style_v1", normalized).apply()
         if (!_simpleModeEnabled.value) {
             setSimpleModeEnabled(true)
         }
+    }
+
+    fun setSimpleHideMascot(hide: Boolean) {
+        _simpleHideMascot.value = hide
+        prefs.edit().putBoolean("saved_simple_hide_mascot_v1", hide).apply()
+    }
+
+    fun setSimpleHideHistory(hide: Boolean) {
+        _simpleHideHistory.value = hide
+        com.example.ui.components.SimpleModeUiState.hideHistory = hide
+        prefs.edit().putBoolean("saved_simple_hide_history_v1", hide).apply()
+    }
+
+    fun setSimpleCompactRows(compact: Boolean) {
+        _simpleCompactRows.value = compact
+        com.example.ui.components.SimpleModeUiState.compactRows = compact
+        prefs.edit().putBoolean("saved_simple_compact_rows_v1", compact).apply()
     }
 
     // --- Theme, Scenic Picture Backdrop & 15+ 3D Animated Music Player Themes ---
@@ -1025,9 +1068,20 @@ class PlayerViewModel(application: Application) :
         if (mp != null) {
             try {
                 if (mp.isPlaying) {
+                    val pausedPos = mp.currentPosition.toLong().coerceAtLeast(0L)
                     mp.pause()
                     _isPlaying.value = false
+                    _playbackPosition.value = pausedPos
                     progressJob?.cancel()
+                    _nowPlaying.value?.let { currentItem ->
+                        prefs.edit()
+                            .putString("last_played_music_id", currentItem.id)
+                            .putLong("last_played_music_pos_ms", pausedPos)
+                            .apply()
+                        viewModelScope.launch {
+                            repository.saveProgress(currentItem.id, pausedPos)
+                        }
+                    }
                 } else {
                     mp.start()
                     _isPlaying.value = true
@@ -1230,7 +1284,9 @@ class PlayerViewModel(application: Application) :
     }
 
     private fun startProgressTracker() {
+        progressJob?.cancel()
         progressJob = viewModelScope.launch {
+            var lastSavedDbMs = 0L
             while (mediaPlayer?.isPlaying == true) {
                 val currentPos = mediaPlayer?.currentPosition?.toLong() ?: 0L
                 val totalDur = _nowPlaying.value?.duration?.takeIf { it > 0L }
@@ -1274,12 +1330,17 @@ class PlayerViewModel(application: Application) :
                     mediaPlayer?.seekTo(pointA.toInt())
                 }
 
-                _nowPlaying.value?.let {
-                    prefs.edit()
-                        .putString("last_played_music_id", it.id)
-                        .putLong("last_played_music_pos_ms", currentPos)
-                        .apply()
-                    repository.saveProgress(it.id, currentPos)
+                // Throttle disk SharedPreferences & Room DB writes to every 5,000ms (prevents 5x/sec UI Flow recomposition & lag on Samsung M3x)
+                val nowElapsed = android.os.SystemClock.elapsedRealtime()
+                if (nowElapsed - lastSavedDbMs >= 5000L) {
+                    lastSavedDbMs = nowElapsed
+                    _nowPlaying.value?.let {
+                        prefs.edit()
+                            .putString("last_played_music_id", it.id)
+                            .putLong("last_played_music_pos_ms", currentPos)
+                            .apply()
+                        repository.saveProgress(it.id, currentPos)
+                    }
                 }
 
                 if (_visualizer3DEnabled.value) {
@@ -1296,7 +1357,7 @@ class PlayerViewModel(application: Application) :
                     }
                 }
 
-                delay(200)
+                delay(250)
             }
             _visualizerFrequencies.value = List(16) { 0.1f }
         }

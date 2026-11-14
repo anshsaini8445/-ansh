@@ -53,6 +53,7 @@ import com.example.data.scanner.DeepMediaScanner
 import com.example.helpers.PermanentDeleteHelper
 import com.example.helpers.WifiDirectTransferEngine
 import com.example.helpers.timedMediaTouchHold
+import com.example.ui.components.SimpleModeUiState
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.persona.DemographicMode
 import com.example.ui.theme.*
@@ -332,7 +333,8 @@ fun VideoSectionScreen(
             }
 
             // --- 2. WATCH HISTORY RIGHT BELOW "HYBRID PLAYER" HEADER (NEWEST / ABHI KI HISTORY FIRST AT INDEX 0) ---
-            if (historyVideos.isNotEmpty() && !isMultiSelectMode && openedFolderName == null && !isViewingFavouriteFolder) {
+            val hideHistoryInSimple = SimpleModeUiState.isEnabled && SimpleModeUiState.hideHistory
+            if (historyVideos.isNotEmpty() && !isMultiSelectMode && openedFolderName == null && !isViewingFavouriteFolder && !hideHistoryInSimple) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2842,7 +2844,8 @@ private fun VideoDetailedRowItem(
     onLongClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
-    val cornerRad = if (personaMode == DemographicMode.KIDS_MAGIC) 20.dp else 14.dp
+    val simpleFlat = SimpleModeUiState.isEnabled && SimpleModeUiState.compactRows
+    val cornerRad = if (simpleFlat) 12.dp else if (personaMode == DemographicMode.KIDS_MAGIC) 20.dp else 14.dp
     val displayTitle = if (video.isPartialDownload) {
         if (isHindi) "पेंडिंग (Pending) • ${video.cleanTitle}" else "Pending • ${video.cleanTitle}"
     } else {
@@ -2853,12 +2856,19 @@ private fun VideoDetailedRowItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(cornerRad))
-            .background(if (isSelected) HybridEmerald.copy(alpha = 0.20f) else HybridCardBg)
+            .background(
+                when {
+                    isSelected -> (if (simpleFlat) Color(0xFF1E293B) else HybridEmerald.copy(alpha = 0.20f))
+                    simpleFlat -> Color(0xFF151922)
+                    else -> HybridCardBg
+                }
+            )
             .border(
-                width = if (isSelected) 1.8.dp else if (video.isPartialDownload) 1.4.dp else 1.dp,
+                width = if (isSelected) 1.6.dp else if (video.isPartialDownload) 1.4.dp else 1.dp,
                 color = when {
-                    isSelected -> HybridEmerald
+                    isSelected -> if (simpleFlat) Color(0xFF38BDF8) else HybridEmerald
                     video.isPartialDownload -> Color(0xFFFF9100)
+                    simpleFlat -> Color(0xFF28303F)
                     else -> HybridCardBorder
                 },
                 shape = RoundedCornerShape(cornerRad)
@@ -3038,6 +3048,7 @@ private fun VideoGridCard(
     onLongClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
+    val simpleFlat = SimpleModeUiState.isEnabled && SimpleModeUiState.compactRows
     val displayTitle = if (video.isPartialDownload) {
         if (isHindi) "पेंडिंग • ${video.cleanTitle}" else "Pending • ${video.cleanTitle}"
     } else {
@@ -3047,16 +3058,23 @@ private fun VideoGridCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (isSelected) HybridEmerald.copy(alpha = 0.20f) else HybridCardBg)
+            .clip(RoundedCornerShape(if (simpleFlat) 12.dp else 14.dp))
+            .background(
+                when {
+                    isSelected -> (if (simpleFlat) Color(0xFF1E293B) else HybridEmerald.copy(alpha = 0.20f))
+                    simpleFlat -> Color(0xFF151922)
+                    else -> HybridCardBg
+                }
+            )
             .border(
                 if (isSelected) 1.8.dp else 1.dp,
                 when {
-                    isSelected -> HybridEmerald
+                    isSelected -> if (simpleFlat) Color(0xFF38BDF8) else HybridEmerald
                     video.isPartialDownload -> Color(0xFFFF9100)
+                    simpleFlat -> Color(0xFF28303F)
                     else -> HybridCardBorder
                 },
-                RoundedCornerShape(14.dp)
+                RoundedCornerShape(if (simpleFlat) 12.dp else 14.dp)
             )
             // 2-Second Hold selects the video and enters Multi-Select Mode; 4-Second Hold opens 3-Dot Menu
             .timedMediaTouchHold(

@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -161,6 +162,9 @@ fun MeToolkitScreen(
     val currentThemeName by viewModel.activeTheme.collectAsState()
     val simpleModeEnabled by viewModel.simpleModeEnabled.collectAsState()
     val simpleModeStyle by viewModel.simpleModeStyle.collectAsState()
+    val simpleHideMascot by viewModel.simpleHideMascot.collectAsState()
+    val simpleHideHistory by viewModel.simpleHideHistory.collectAsState()
+    val simpleCompactRows by viewModel.simpleCompactRows.collectAsState()
     val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
     val visualizer3DEnabled by viewModel.visualizer3DEnabled.collectAsState()
     val selected3DThemeName by viewModel.active3DMusicTheme.collectAsState()
@@ -286,7 +290,7 @@ fun MeToolkitScreen(
                 Text(
                     text = when (subScreen) {
                         MeSubScreen.MAIN_LIST -> if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player"
-                        MeSubScreen.SIMPLE_MODE_FOLDER -> if (isHindi) "📁 सिंपल मोड फ़ोल्डर (PLAYit / MX लुक)" else "📁 Simple Mode Folder (PLAYit / MX Clean UI)"
+                        MeSubScreen.SIMPLE_MODE_FOLDER -> if (isHindi) "📁 सरल मोड फ़ोल्डर" else "📁 Simple Mode Folder"
                         MeSubScreen.THEMES_GALLERY -> "${if (isHindi) "थीम्स" else "Themes"} (${StudioThemes.size})"
                         MeSubScreen.VISUALIZER_3D_SETTINGS -> if (isHindi) "3D विज़ुअलाइज़र (15 थीम्स)" else "3D Visualizer & 15 Themes"
                         MeSubScreen.COMPANION_GALLERY -> if (isHindi) "रियल 3D टेडी और मैस्कॉट (${CompanionBreed.entries.size})" else "Real 3D Teddy & Mascots (${CompanionBreed.entries.size})"
@@ -317,19 +321,19 @@ fun MeToolkitScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp)
                 ) {
-                    // 1. ENLARGED HERO BRANDING CARD WITH LARGE HYBRID PLAYER VARIETIES SHOWCASE
+                    // 1. SLEEK HERO BRANDING CARD — HYBRID PLAYER ORIGINAL FEATURES
                     item {
                         LiquidGlassBox(
                             modifier = Modifier.fillMaxWidth(),
-                            cornerRadius = 26.dp,
-                            tintColor = HybridEmerald,
-                            glassAlpha = 0.28f
+                            cornerRadius = 24.dp,
+                            tintColor = if (simpleModeEnabled) Color(0xFF38BDF8) else HybridEmerald,
+                            glassAlpha = 0.24f
                         ) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 16.dp),
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                                    .padding(horizontal = 15.dp, vertical = 14.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically
@@ -339,47 +343,36 @@ fun MeToolkitScreen(
                                         contentDescription = "Hybrid Player",
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
-                                            .size(68.dp)
-                                            .clip(RoundedCornerShape(18.dp))
+                                            .size(58.dp)
+                                            .clip(RoundedCornerShape(16.dp))
                                             .border(
-                                                2.dp,
+                                                1.8.dp,
                                                 Brush.linearGradient(listOf(HybridEmerald, HybridCyan)),
-                                                RoundedCornerShape(18.dp)
+                                                RoundedCornerShape(16.dp)
                                             )
                                     )
-                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Spacer(modifier = Modifier.width(12.dp))
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = if (isHindi) "हाइब्रिड प्लेयर प्रो" else "Hybrid Player Pro",
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Black,
-                                            fontSize = 29.sp,
-                                            letterSpacing = 0.3.sp
-                                        )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Text(
-                                            text = if (isHindi) {
-                                                "8K/4K अल्ट्रा मीडिया इंजन • ऑल-इन-वन सुपर वैरायटी"
-                                            } else {
-                                                "8K/4K Ultra Media Engine • All-in-One Varieties"
-                                            },
-                                            color = HybridEmerald,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 13.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
                                         Row(
+                                            modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
+                                            Text(
+                                                text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 23.sp,
+                                                letterSpacing = 0.2.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                             Box(
                                                 modifier = Modifier
                                                     .clip(RoundedCornerShape(50))
                                                     .background(
-                                                        if (simpleModeEnabled) Color(0xFF38BDF8).copy(alpha = 0.22f)
-                                                        else HybridEmerald.copy(alpha = 0.22f)
+                                                        if (simpleModeEnabled) Color(0xFF38BDF8).copy(alpha = 0.20f)
+                                                        else HybridEmerald.copy(alpha = 0.20f)
                                                     )
                                                     .border(
                                                         1.dp,
@@ -387,232 +380,83 @@ fun MeToolkitScreen(
                                                         RoundedCornerShape(50)
                                                     )
                                                     .clickable { subScreen = MeSubScreen.SIMPLE_MODE_FOLDER }
-                                                    .padding(horizontal = 10.dp, vertical = 3.dp)
+                                                    .padding(horizontal = 9.dp, vertical = 3.dp)
                                             ) {
                                                 Text(
                                                     text = if (simpleModeEnabled) {
-                                                        if (isHindi) "✨ सिंपल मोड चालू (PLAYit/MX)" else "✨ Simple Mode ON (PLAYit/MX)"
+                                                        if (isHindi) "सरल मोड ✓" else "Simple ON"
                                                     } else {
-                                                        if (isHindi) "💎 हाइब्रिड प्रो मोड चालू" else "💎 Hybrid Pro Mode Active"
+                                                        if (isHindi) "प्रो इंजन ⚡" else "Pro Engine"
                                                     },
-                                                    color = Color.White,
+                                                    color = if (simpleModeEnabled) Color(0xFF7DD3FC) else HybridEmerald,
                                                     fontWeight = FontWeight.ExtraBold,
-                                                    fontSize = 11.sp
+                                                    fontSize = 10.sp
                                                 )
                                             }
                                         }
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = if (isHindi) {
+                                                "अल्ट्रा HD वीडियो • बैकग्राउंड ऑडियो • प्राइवेट वॉल्ट • रडार शेयर"
+                                            } else {
+                                                "Ultra HD Engine • BG Audio • Private Vault • Radar Share"
+                                            },
+                                            color = if (simpleModeEnabled) Color(0xFF94A3B8) else HybridCyan,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.5.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
 
-                                // Large Enlarged Varieties Showcase Cards (Horizontal Scrollable Big Variety Tiles)
-                                Text(
-                                    text = if (isHindi) "🔥 हाइब्रिड प्लेयर की सभी मुख्य वैरायटी (Varieties):" else "🔥 Hybrid Player Core Varieties (Tap Any):",
-                                    color = Color.White.copy(alpha = 0.9f),
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 13.sp
-                                )
-
+                                // 4 Crisp Clickable App Highlight Chips
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    data class VarietyShowcaseItem(
-                                        val badge: String,
-                                        val title: String,
-                                        val subtitle: String,
-                                        val color: Color,
+                                    data class AppHighlightPill(
+                                        val icon: String,
+                                        val label: String,
+                                        val tint: Color,
                                         val onClick: () -> Unit
                                     )
-
-                                    val varieties = listOf(
-                                        VarietyShowcaseItem(
-                                            badge = "⚡ 8K/4K",
-                                            title = if (isHindi) "8K अल्ट्रा इंजन" else "8K Ultra Engine",
-                                            subtitle = if (isHindi) "0.25x–8x स्मूथ स्पीड" else "0.25x–8x Smooth Play",
-                                            color = HybridEmerald,
-                                            onClick = {}
-                                        ),
-                                        VarietyShowcaseItem(
-                                            badge = "📁 SIMPLE",
-                                            title = if (isHindi) "सिंपल मोड (PLAYit)" else "Simple Mode (MX/PLAYit)",
-                                            subtitle = if (isHindi) "बिना रंग-बिरंगे सादा लुक" else "Clean Classic Dark UI",
-                                            color = Color(0xFF38BDF8),
-                                            onClick = { subScreen = MeSubScreen.SIMPLE_MODE_FOLDER }
-                                        ),
-                                        VarietyShowcaseItem(
-                                            badge = "🎧 BG AUDIO",
-                                            title = if (isHindi) "हेडफोन ऑडियो + MP3" else "Headphone Audio + MP3",
-                                            subtitle = if (isHindi) "बैकग्राउंड प्ले • क्यू • 8 फीचर्स" else "BG Play • Queue • MP3",
-                                            color = HybridCyan,
-                                            onClick = onOpenMp3Converter
-                                        ),
-                                        VarietyShowcaseItem(
-                                            badge = "🔊 200%",
-                                            title = if (isHindi) "200% सुपर बूस्ट" else "200% Super Boost",
-                                            subtitle = if (isHindi) "3D बेस और इक्वलाइज़र" else "3D Bass & Equalizer",
-                                            color = Color(0xFFFFD54F),
-                                            onClick = { subScreen = MeSubScreen.VISUALIZER_3D_SETTINGS }
-                                        ),
-                                        VarietyShowcaseItem(
-                                            badge = "🚀 SHARE",
-                                            title = if (isHindi) "हाइब्रिड शेयर रडार" else "Hybrid Share Radar",
-                                            subtitle = if (isHindi) "लाइव QR स्कैनर • हाई-स्पीड" else "Live QR + Wi-Fi Direct",
-                                            color = Color(0xFFFF80AB),
-                                            onClick = onOpenTurboShare
-                                        ),
-                                        VarietyShowcaseItem(
-                                            badge = "🔒 VAULT",
-                                            title = if (isHindi) "प्राइवेट वॉल्ट" else "Dual-PIN Vault",
-                                            subtitle = if (isHindi) "7-लेयर हिडन फ़ोल्डर" else "7-Layer Hidden Media",
-                                            color = Color(0xFFFFB300),
-                                            onClick = onOpenPrivacyVault
-                                        ),
-                                        VarietyShowcaseItem(
-                                            badge = "🎨 60 THEMES",
-                                            title = if (isHindi) "60 थीम्स + गैलरी फोटो" else "60 Themes + Gallery",
-                                            subtitle = if (isHindi) "अपनी फोटो हर जगह लगाएं" else "Permanent Custom Photo",
-                                            color = Color(0xFFB388FF),
-                                            onClick = { subScreen = MeSubScreen.THEMES_GALLERY }
-                                        ),
-                                        VarietyShowcaseItem(
-                                            badge = "🌍 25 LANG",
-                                            title = if (isHindi) "25 लाइव भाषाएं" else "25 Live Languages",
-                                            subtitle = if (isHindi) "हिंदी, English और 23+" else "Hindi, English & 23+",
-                                            color = Color(0xFF69F0AE),
-                                            onClick = { subScreen = MeSubScreen.LANGUAGE_PICKER }
-                                        )
+                                    val pills = listOf(
+                                        AppHighlightPill("⚡", if (isHindi) "8K/4K इंजन" else "8K/4K Engine", HybridEmerald) {},
+                                        AppHighlightPill("🎧", if (isHindi) "BG ऑडियो + MP3" else "BG Audio + MP3", HybridCyan) { onOpenMp3Converter() },
+                                        AppHighlightPill("🔊", if (isHindi) "200% बूस्ट + EQ" else "200% Boost + EQ", Color(0xFFFFD54F)) { subScreen = MeSubScreen.VISUALIZER_3D_SETTINGS },
+                                        AppHighlightPill("🎨", if (isHindi) "${StudioThemes.size} थीम्स" else "${StudioThemes.size} Themes", Color(0xFFB388FF)) { subScreen = MeSubScreen.THEMES_GALLERY }
                                     )
-
-                                    varieties.forEach { v ->
-                                        Column(
+                                    pills.forEach { p ->
+                                        Row(
                                             modifier = Modifier
-                                                .width(152.dp)
-                                                .clip(RoundedCornerShape(18.dp))
-                                                .background(v.color.copy(alpha = 0.15f))
-                                                .border(1.3.dp, v.color.copy(alpha = 0.65f), RoundedCornerShape(18.dp))
-                                                .clickable { v.onClick() }
-                                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(50))
-                                                    .background(v.color.copy(alpha = 0.25f))
-                                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                                            ) {
-                                                Text(
-                                                    text = v.badge,
-                                                    color = v.color,
-                                                    fontWeight = FontWeight.Black,
-                                                    fontSize = 10.sp
+                                                .clip(RoundedCornerShape(50))
+                                                .background(
+                                                    if (simpleModeEnabled) Color(0xFF1E2430) else p.tint.copy(alpha = 0.14f)
                                                 )
-                                            }
+                                                .border(
+                                                    1.dp,
+                                                    if (simpleModeEnabled) Color(0xFF334155) else p.tint.copy(alpha = 0.55f),
+                                                    RoundedCornerShape(50)
+                                                )
+                                                .clickable { p.onClick() }
+                                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Text(text = p.icon, fontSize = 11.sp)
                                             Text(
-                                                text = v.title,
+                                                text = p.label,
                                                 color = Color.White,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                fontSize = 14.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = v.subtitle,
-                                                color = Color.White.copy(alpha = 0.78f),
-                                                fontWeight = FontWeight.SemiBold,
+                                                fontWeight = FontWeight.Bold,
                                                 fontSize = 11.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                                maxLines = 1
                                             )
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
-
-                    // 1B. DEDICATED SIMPLE MODE FOLDER CARD (PLAYit / MX Player Clean Classic UI)
-                    item {
-                        LiquidGlassBox(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("me_simple_mode_folder_card"),
-                            cornerRadius = 22.dp,
-                            tintColor = Color(0xFF38BDF8),
-                            isActive = simpleModeEnabled,
-                            glassAlpha = 0.26f,
-                            onClick = { subScreen = MeSubScreen.SIMPLE_MODE_FOLDER }
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    modifier = Modifier.weight(1f),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(48.dp)
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .background(Color(0xFF38BDF8).copy(alpha = 0.22f))
-                                            .border(1.5.dp, Color(0xFF38BDF8), RoundedCornerShape(14.dp)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.FolderSpecial,
-                                            contentDescription = "Simple Mode Folder",
-                                            tint = Color(0xFF38BDF8),
-                                            modifier = Modifier.size(26.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = if (isHindi) "📁 सिंपल मोड फ़ोल्डर (PLAYit / MX Player)" else "📁 Simple Mode Folder (PLAYit / MX Classic)",
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Black,
-                                            fontSize = 15.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = if (simpleModeEnabled) {
-                                                if (isHindi) "✅ चालू: $simpleModeStyle • रंग-बिरंगा बंद, एकदम तेज़ और सादा" else "✅ ON: $simpleModeStyle • Clean, Fast, No Clutter"
-                                            } else {
-                                                if (isHindi) "टैप कर खोलें या स्विच ऑन करें • बिना रंग-बिरंगे सादा प्रोफेशनल लुक" else "Tap to open folder or switch ON • Clean non-colorful UI"
-                                            },
-                                            color = Color(0xFF7DD3FC),
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp,
-                                            maxLines = 2
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Switch(
-                                    checked = simpleModeEnabled,
-                                    onCheckedChange = { enabled ->
-                                        viewModel.setSimpleModeEnabled(enabled)
-                                        Toast.makeText(
-                                            context,
-                                            if (enabled) {
-                                                if (isHindi) "✨ सिंपल मोड (PLAYit / MX Player लुक) चालू हो गया!" else "✨ Simple Mode (PLAYit / MX Classic UI) Enabled!"
-                                            } else {
-                                                if (isHindi) "💎 हाइब्रिड प्रो कलरफुल मोड वापस चालू हो गया!" else "💎 Hybrid Pro Colorful Mode Restored!"
-                                            },
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color.Black,
-                                        checkedTrackColor = Color(0xFF38BDF8)
-                                    )
-                                )
                             }
                         }
                     }
@@ -845,13 +689,11 @@ fun MeToolkitScreen(
                                     }
                                 }
 
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
+                                LazyRow(
+                                    modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    studioMascots.forEach { breed ->
+                                    items(studioMascots, key = { it.name }) { breed ->
                                         val isSavedActive = breed.displayName == selectedCompanionName || breed.name == selectedCompanionName
                                         LiquidGlassBox(
                                             modifier = Modifier
@@ -1106,6 +948,47 @@ fun MeToolkitScreen(
                         }
                     }
 
+                    // ROW 7: Simple Mode Folder (ONE Clean Folder Box) | Status Saver
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CompactGridBoxWithToggle(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("me_simple_mode_folder_card"),
+                                icon = Icons.Default.FolderSpecial,
+                                title = if (isHindi) "सरल मोड" else "Simple Mode",
+                                subtitle = if (simpleModeEnabled) simpleModeStyle else if (isHindi) "सादा और हल्का लुक" else "Clean & Fast UI",
+                                accentColor = Color(0xFF38BDF8),
+                                checked = simpleModeEnabled,
+                                onCheckedChange = { enabled ->
+                                    viewModel.setSimpleModeEnabled(enabled)
+                                    Toast.makeText(
+                                        context,
+                                        if (enabled) {
+                                            if (isHindi) "✨ सरल मोड चालू हो गया!" else "✨ Simple Mode Enabled!"
+                                        } else {
+                                            if (isHindi) "💎 हाइब्रिड कलरफुल मोड वापस चालू!" else "💎 Hybrid Pro Mode Restored!"
+                                        },
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                },
+                                onClick = { subScreen = MeSubScreen.SIMPLE_MODE_FOLDER }
+                            )
+                            CompactGridBoxItem(
+                                modifier = Modifier.weight(1f),
+                                icon = Icons.Default.DownloadForOffline,
+                                title = if (isHindi) "स्टेटस सेवर" else "Status Saver",
+                                subtitle = if (isHindi) "रील्स और स्टेटस सेव" else "Save Status & Reels",
+                                accentColor = Color(0xFF69F0AE),
+                                testTag = "me_box_status_saver",
+                                onClick = onOpenStatusSaver
+                            )
+                        }
+                    }
+
                     // =================================================================
                     // SINGLE HORIZONTAL ROW AT THE VERY BOTTOM:
                     // Rate Us | Report | Latest | Privacy Policy
@@ -1150,7 +1033,7 @@ fun MeToolkitScreen(
             }
 
             // =========================================================================
-            // SUB-SCREEN: SIMPLE MODE FOLDER (PLAYit / MX Player Clean Classic UI)
+            // SUB-SCREEN: SIMPLE MODE FOLDER (Original Clean, Flat, Lightweight UI)
             // =========================================================================
             MeSubScreen.SIMPLE_MODE_FOLDER -> {
                 LazyColumn(
@@ -1179,7 +1062,7 @@ fun MeToolkitScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = if (isHindi) "✨ सिंपल मोड (PLAYit / MX Player जैसा सादा लुक)" else "✨ Simple Mode (PLAYit / MX Player Classic UI)",
+                                            text = if (isHindi) "✨ सरल मोड (सादा और सुपर-फास्ट लुक)" else "✨ Simple Mode (Clean & Ultra-Fast UI)",
                                             color = Color.White,
                                             fontWeight = FontWeight.Black,
                                             fontSize = 18.sp
@@ -1187,9 +1070,9 @@ fun MeToolkitScreen(
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
                                             text = if (isHindi) {
-                                                "इसे चालू करने पर ऐप का सारा रंग-बिरंगा नियॉन लुक, रेनबो बॉर्डर और 3D टेडी हट जाता है और पूरे ऐप में PLAYit और MX Player जैसा एकदम सादा, साफ-सुथरा और सुपर-फास्ट क्लासिक लुक आ जाता है।"
+                                                "इसे चालू करने पर पूरे ऐप का सारा रंग-बिरंगा नियॉन लुक, चमक-दमक और भारी एनिमेशन बंद हो जाता है — एकदम सादा, साफ-सुथरा और तेज़ चलने वाला इंटरफ़ेस मिल जाता है।"
                                             } else {
-                                                "Turns off all colorful neon gradients, rainbow borders, and floating 3D mascots to give you a clean, distraction-free, ultra-fast classic interface like PLAYit and MX Player."
+                                                "Switches off colorful neon gradients and heavy visual effects across the entire app for a clean, flat, distraction-free, ultra-fast Hybrid Player experience."
                                             },
                                             color = Color.White.copy(alpha = 0.8f),
                                             fontSize = 12.sp
@@ -1217,7 +1100,7 @@ fun MeToolkitScreen(
                                             viewModel.setSimpleModeEnabled(true)
                                             Toast.makeText(
                                                 context,
-                                                if (isHindi) "✅ सिंपल मोड लागू हो गया!" else "✅ Simple Mode Activated!",
+                                                if (isHindi) "✅ सरल मोड चालू हो गया!" else "✅ Simple Mode Activated!",
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         },
@@ -1228,7 +1111,7 @@ fun MeToolkitScreen(
                                         modifier = Modifier.weight(1f)
                                     ) {
                                         Text(
-                                            text = if (isHindi) "सिंपल मोड चालू करें" else "Turn ON Simple Mode",
+                                            text = if (isHindi) "सरल मोड चालू करें" else "Turn ON Simple Mode",
                                             color = if (simpleModeEnabled) Color.Black else Color.White,
                                             fontWeight = FontWeight.ExtraBold,
                                             fontSize = 12.sp
@@ -1239,7 +1122,7 @@ fun MeToolkitScreen(
                                             viewModel.setSimpleModeEnabled(false)
                                             Toast.makeText(
                                                 context,
-                                                if (isHindi) "💎 हाइब्रिड प्रो कलरफुल मोड लागू हो गया!" else "💎 Hybrid Pro Colorful Mode Activated!",
+                                                if (isHindi) "💎 हाइब्रिड प्रो कलरफुल मोड लागू!" else "💎 Hybrid Pro Colorful Mode Activated!",
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         },
@@ -1250,7 +1133,7 @@ fun MeToolkitScreen(
                                         modifier = Modifier.weight(1f)
                                     ) {
                                         Text(
-                                            text = if (isHindi) "कलरफुल प्रो मोड" else "Colorful Pro Mode",
+                                            text = if (isHindi) "कलरफुल प्रो मोड" else "Hybrid Pro Mode",
                                             color = if (!simpleModeEnabled) Color.Black else Color.White,
                                             fontWeight = FontWeight.ExtraBold,
                                             fontSize = 12.sp
@@ -1263,7 +1146,7 @@ fun MeToolkitScreen(
 
                     item {
                         Text(
-                            text = if (isHindi) "🎨 सिंपल मोड के 3 क्लासिक स्टाइल चुनें:" else "🎨 Choose Classic Simple Style:",
+                            text = if (isHindi) "🎨 सरल मोड के 3 साफ स्टाइल:" else "🎨 Choose Clean Simple Style:",
                             color = Color.White,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 15.sp
@@ -1272,18 +1155,18 @@ fun MeToolkitScreen(
 
                     val simpleStyles = listOf(
                         Triple(
-                            "PLAYit Classic Dark",
-                            if (isHindi) "PLAYit क्लासिक डार्क (Recommended)" else "PLAYit Classic Dark (Recommended)",
-                            if (isHindi) "गहरा स्लेट डार्क बैकग्राउंड • साफ कार्ड्स • ज़ीरो चमक-दमक" else "Clean dark slate background • Crisp flat cards • Zero neon"
+                            "Classic Dark",
+                            if (isHindi) "क्लासिक डार्क (Recommended)" else "Classic Dark (Recommended)",
+                            if (isHindi) "सॉफ्ट डार्क स्लेट बैकग्राउंड • साफ कार्ड्स • ज़ीरो चमक-दमक" else "Clean dark slate background • Crisp flat cards • Zero neon"
                         ),
                         Triple(
-                            "MX Slate Blue",
-                            if (isHindi) "MX Player प्रोफेशनल स्लेट" else "MX Player Professional Slate",
-                            if (isHindi) "MX Player जैसा क्लासिक ब्लू-ग्रे इंटरफ़ेस • आंखों के लिए आरामदायक" else "Classic MX Player blue-grey layout • Easy on the eyes"
+                            "Soft Slate",
+                            if (isHindi) "सॉफ्ट स्लेट ब्लू" else "Soft Slate Blue",
+                            if (isHindi) "सादा ब्लू-ग्रे लेआउट • आंखों के लिए बेहद आरामदायक" else "Balanced muted slate-blue layout • Easy on the eyes"
                         ),
                         Triple(
-                            "AMOLED Pure Black",
-                            if (isHindi) "AMOLED प्योर ब्लैक (बैटरी सेवर)" else "AMOLED Pure Black (Battery Saver)",
+                            "AMOLED Pitch Black",
+                            if (isHindi) "AMOLED पिच ब्लैक (बैटरी सेवर)" else "AMOLED Pitch Black (Battery Saver)",
                             if (isHindi) "100% गहरा काला बैकग्राउंड • सबसे तेज़ और सबसे हल्का" else "100% pitch black background • Fastest & ultra-lightweight"
                         )
                     )
@@ -1297,8 +1180,8 @@ fun MeToolkitScreen(
                                 .clip(RoundedCornerShape(18.dp))
                                 .background(
                                     when (styleId) {
-                                        "AMOLED Pure Black" -> Color(0xFF0A0D12)
-                                        "MX Slate Blue" -> Color(0xFF131C2E)
+                                        "AMOLED Pitch Black" -> Color(0xFF0A0D12)
+                                        "Soft Slate" -> Color(0xFF131C2E)
                                         else -> Color(0xFF151922)
                                     }
                                 )
@@ -1341,6 +1224,53 @@ fun MeToolkitScreen(
                                 modifier = Modifier.size(26.dp)
                             )
                         }
+                    }
+
+                    // Advanced Simple Mode Controls
+                    item {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (isHindi) "⚙️ एडवांस्ड सरल मोड सेटिंग्स:" else "⚙️ Advanced Simple Mode Controls:",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp
+                        )
+                    }
+
+                    item {
+                        StackedFolderBoxWithToggle(
+                            icon = Icons.Default.Pets,
+                            title = if (isHindi) "सरल मोड में 3D टेडी छुपाएं" else "Hide 3D Mascot in Simple Mode",
+                            subtitle = if (isHindi) "क्लीन स्क्रीन के लिए फ़्लोटिंग मैस्कॉट बंद रखें" else "Hide floating mascot for distraction-free viewing",
+                            accentColor = Color(0xFF38BDF8),
+                            checked = simpleHideMascot,
+                            onCheckedChange = { viewModel.setSimpleHideMascot(it) },
+                            onClick = { viewModel.setSimpleHideMascot(!simpleHideMascot) }
+                        )
+                    }
+
+                    item {
+                        StackedFolderBoxWithToggle(
+                            icon = Icons.Default.History,
+                            title = if (isHindi) "ऊपरी हिस्ट्री पट्टी छुपाएं" else "Hide Top Watch History Strip",
+                            subtitle = if (isHindi) "वीडियो सेक्शन के ऊपर की हिस्ट्री स्लाइडर बंद करें" else "Keep top of Video library cleaner & compact",
+                            accentColor = Color(0xFF38BDF8),
+                            checked = simpleHideHistory,
+                            onCheckedChange = { viewModel.setSimpleHideHistory(it) },
+                            onClick = { viewModel.setSimpleHideHistory(!simpleHideHistory) }
+                        )
+                    }
+
+                    item {
+                        StackedFolderBoxWithToggle(
+                            icon = Icons.Default.Speed,
+                            title = if (isHindi) "सुपर-फास्ट फ्लैट लिस्ट मोड" else "Ultra-Light Flat List Rows",
+                            subtitle = if (isHindi) "मिड-रेंज फोन में 120fps स्मूथ स्क्रॉलिंग के लिए" else "Zero glow borders for instant 120fps scrolling",
+                            accentColor = Color(0xFF38BDF8),
+                            checked = simpleCompactRows,
+                            onCheckedChange = { viewModel.setSimpleCompactRows(it) },
+                            onClick = { viewModel.setSimpleCompactRows(!simpleCompactRows) }
+                        )
                     }
                 }
             }

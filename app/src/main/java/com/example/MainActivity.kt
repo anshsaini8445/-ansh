@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
             val activeTheme by viewModel.activeTheme.collectAsState()
             val simpleModeEnabled by viewModel.simpleModeEnabled.collectAsState()
             val simpleModeStyle by viewModel.simpleModeStyle.collectAsState()
+            val simpleHideMascot by viewModel.simpleHideMascot.collectAsState()
             val selectedLanguage by viewModel.selectedLanguage.collectAsState()
             val isHindi = remember(selectedLanguage) {
                 com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
@@ -196,10 +197,10 @@ class MainActivity : ComponentActivity() {
                     val isCompactSplitScreen = !isPipMicroWindow && maxHeight < 430.dp
 
                     if (simpleModeEnabled) {
-                        // Simple Mode (PLAYit / MX Player Clean Classic UI Backdrop)
+                        // Simple Mode Clean Flat Backdrop
                         val simpleBgColor = when (simpleModeStyle) {
-                            "AMOLED Pure Black" -> Color(0xFF05070A)
-                            "MX Slate Blue" -> Color(0xFF0D131F)
+                            "AMOLED Pitch Black", "AMOLED Pure Black" -> Color(0xFF05070A)
+                            "Soft Slate", "MX Slate Blue" -> Color(0xFF0D131F)
                             else -> Color(0xFF0E1117)
                         }
                         Box(
@@ -262,11 +263,15 @@ class MainActivity : ComponentActivity() {
                                                     ) {
                                                         MainBottomTab.entries.forEach { tab ->
                                                             val selected = selectedTab == tab
-                                                            val tabTint = when (tab) {
-                                                                MainBottomTab.VIDEO -> Color(0xFF00E676)
-                                                                MainBottomTab.MUSIC -> Color(0xFF00E5FF)
-                                                                MainBottomTab.SEARCH -> Color(0xFFFFD54F)
-                                                                MainBottomTab.ME -> Color(0xFFFF4081)
+                                                            val tabTint = if (simpleModeEnabled) {
+                                                                Color(0xFF38BDF8)
+                                                            } else {
+                                                                when (tab) {
+                                                                    MainBottomTab.VIDEO -> Color(0xFF00E676)
+                                                                    MainBottomTab.MUSIC -> Color(0xFF00E5FF)
+                                                                    MainBottomTab.SEARCH -> Color(0xFFFFD54F)
+                                                                    MainBottomTab.ME -> Color(0xFFFF4081)
+                                                                }
                                                             }
                                                             val icon = when (tab) {
                                                                 MainBottomTab.VIDEO -> if (selected) Icons.Filled.VideoLibrary else Icons.Outlined.VideoLibrary
@@ -282,6 +287,7 @@ class MainActivity : ComponentActivity() {
                                                                 cornerRadius = if (isCompactSplitScreen) 16.dp else 22.dp,
                                                                 tintColor = if (selected) tabTint else Color.White,
                                                                 glassAlpha = if (selected) 0.34f else 0.06f,
+                                                                isActive = simpleModeEnabled && selected,
                                                                 onClick = { selectedTab = tab }
                                                             ) {
                                                                 Column(
@@ -303,19 +309,15 @@ class MainActivity : ComponentActivity() {
                                                                         )
                                                                     )
                                                                     Spacer(modifier = Modifier.height(if (isCompactSplitScreen) 2.dp else 4.dp))
-                                                                    // Pure Visual Liquid Neon Indicator Pill (Language-Agnostic)
                                                                     Box(
                                                                         modifier = Modifier
                                                                             .width(if (selected) 22.dp else 6.dp)
                                                                             .height(3.dp)
-                                                                    ) {
-                                                                        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                                                                            drawRoundRect(
-                                                                                color = if (selected) tabTint else Color.White.copy(alpha = 0.22f),
-                                                                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
+                                                                            .clip(RoundedCornerShape(50))
+                                                                            .background(
+                                                                                if (selected) tabTint else Color.White.copy(alpha = 0.22f)
                                                                             )
-                                                                        }
-                                                                    }
+                                                                    )
                                                                 }
                                                             }
                                                         }
@@ -674,7 +676,6 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (bgVideoPlayingItem != null && currentScreen == ActiveScreen.MainTabs && !isFloatingMiniVideoActive && !isPipMicroWindow) {
-                        val bgPositionMs by viewModel.playbackPosition.collectAsState()
                         val bgSpeed by viewModel.playbackSpeed.collectAsState()
                         val bgBoost200 by viewModel.is200BoostEnabled.collectAsState()
                         val bgShuffle by viewModel.isShuffleMode.collectAsState()
@@ -682,7 +683,7 @@ class MainActivity : ComponentActivity() {
                         val bgSleepMin by viewModel.sleepTimerMinutes.collectAsState()
 
                         fun returnToVideoPlayerNow() {
-                            val resumePos = bgPositionMs.coerceAtLeast(0L)
+                            val resumePos = viewModel.playbackPosition.value.coerceAtLeast(0L)
                             showBgVideoFullScreen = false
                             showBgVideoQueueSheet = false
                             showBgVideoMoreMenu = false
@@ -1153,36 +1154,10 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Slider(
-                                            value = (bgPositionMs.toFloat() / totalDur.toFloat()).coerceIn(0f, 1f),
-                                            onValueChange = { frac ->
-                                                viewModel.seekTo((frac * totalDur).toLong())
-                                            },
-                                            colors = SliderDefaults.colors(
-                                                thumbColor = HybridEmerald,
-                                                activeTrackColor = HybridEmerald,
-                                                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
-                                            )
+                                        BgVideoSeekProgressBar(
+                                            viewModel = viewModel,
+                                            totalDur = totalDur
                                         )
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            val curSec = (bgPositionMs / 1000L).coerceAtLeast(0L)
-                                            val totSec = (totalDur / 1000L).coerceAtLeast(0L)
-                                            Text(
-                                                text = String.format("%02d:%02d", curSec / 60, curSec % 60),
-                                                color = HybridEmerald,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp
-                                            )
-                                            Text(
-                                                text = String.format("%02d:%02d", totSec / 60, totSec % 60),
-                                                color = Color.White.copy(alpha = 0.7f),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp
-                                            )
-                                        }
 
                                         // Transport Row: Shuffle | Prev | -10s | Play/Pause | +10s | Next | Queue
                                         Row(
@@ -1522,11 +1497,12 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // --- REALISTIC 3D ARTICULATED PUPPY & PENGUIN COMPANION OVERLAY ---
-                    // Automatically hidden in Simple Mode and raised above any bottom mini-player so it never blocks buttons!
-                    if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer) && !isPipMicroWindow && !simpleModeEnabled) {
+                    // --- REALISTIC 3D ANIMATED COMPANION OVERLAY ---
+                    // Respects `simpleHideMascot` in Simple Mode and stays raised above any bottom mini-player
+                    val hideMascotInSimple = simpleModeEnabled && simpleHideMascot
+                    if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer) && !isPipMicroWindow && !hideMascotInSimple) {
                         RealisticCompanionOverlay(
-                            enabled = companionEnabled && !simpleModeEnabled,
+                            enabled = companionEnabled && !hideMascotInSimple,
                             breedName = companionBreed,
                             isMusicPlaying = isMusicPlaying,
                             penguinsOnlyMode = penguinsOnlyMode,
@@ -1873,6 +1849,44 @@ private fun BoxScope.HybridFloatingMiniVideoWindow(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BgVideoSeekProgressBar(
+    viewModel: PlayerViewModel,
+    totalDur: Long
+) {
+    val bgPositionMs by viewModel.playbackPosition.collectAsState()
+    Slider(
+        value = (bgPositionMs.toFloat() / totalDur.coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f),
+        onValueChange = { frac ->
+            viewModel.seekTo((frac * totalDur).toLong())
+        },
+        colors = SliderDefaults.colors(
+            thumbColor = HybridEmerald,
+            activeTrackColor = HybridEmerald,
+            inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+        )
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        val curSec = (bgPositionMs / 1000L).coerceAtLeast(0L)
+        val totSec = (totalDur / 1000L).coerceAtLeast(0L)
+        Text(
+            text = String.format("%02d:%02d", curSec / 60, curSec % 60),
+            color = HybridEmerald,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp
+        )
+        Text(
+            text = String.format("%02d:%02d", totSec / 60, totSec % 60),
+            color = Color.White.copy(alpha = 0.7f),
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp
+        )
     }
 }
 
