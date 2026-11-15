@@ -133,8 +133,7 @@ fun MusicPlayerScreen(
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
 
     val isHindi = remember(selectedLanguage) {
-        selectedLanguage.contains("Hindi", ignoreCase = true) ||
-            selectedLanguage.contains("हिन्दी")
+        com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
     }
 
     val configuration = LocalConfiguration.current
@@ -233,16 +232,25 @@ fun MusicPlayerScreen(
             )
             .pointerInput(currentTrack?.id) {
                 var totalHorizontalDrag = 0f
+                var isSwipeZoneValid = false
                 detectHorizontalDragGestures(
-                    onDragStart = { totalHorizontalDrag = 0f },
+                    onDragStart = { startOffset ->
+                        totalHorizontalDrag = 0f
+                        // Restrict track-skip swipes to upper artwork/stage region so bottom seekbar dragging never collides
+                        isSwipeZoneValid = startOffset.y < size.height * 0.58f
+                    },
                     onHorizontalDrag = { _, dragAmount ->
-                        totalHorizontalDrag += dragAmount
+                        if (isSwipeZoneValid) {
+                            totalHorizontalDrag += dragAmount
+                        }
                     },
                     onDragEnd = {
-                        if (totalHorizontalDrag < -110f) {
-                            viewModel.playNext()
-                        } else if (totalHorizontalDrag > 110f) {
-                            viewModel.playPrevious()
+                        if (isSwipeZoneValid) {
+                            if (totalHorizontalDrag < -140f) {
+                                viewModel.playNext()
+                            } else if (totalHorizontalDrag > 140f) {
+                                viewModel.playPrevious()
+                            }
                         }
                     }
                 )
@@ -1883,7 +1891,16 @@ fun MusicPlayerScreen(
     }
 
     if (showEditLyricsDialog) {
-        var rawText by remember { mutableStateOf("") }
+        val initialLrcText = remember(showEditLyricsDialog, currentTrack?.id, syncedLyrics) {
+            val savedPrefs = context.getSharedPreferences("HYBRID_CUSTOM_LYRICS_STORE", android.content.Context.MODE_PRIVATE)
+            val savedRaw = currentTrack?.let { savedPrefs.getString("lrc_${it.id}", null) }
+            if (!savedRaw.isNullOrBlank()) {
+                savedRaw
+            } else {
+                syncedLyrics.joinToString("\n") { "[${it.formattedTimestamp}.00] ${it.text}" }
+            }
+        }
+        var rawText by remember(showEditLyricsDialog, currentTrack?.id) { mutableStateOf(initialLrcText) }
         AlertDialog(
             onDismissRequest = { showEditLyricsDialog = false },
             containerColor = HybridCardBg,

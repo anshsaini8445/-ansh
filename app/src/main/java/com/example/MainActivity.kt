@@ -139,8 +139,13 @@ class MainActivity : ComponentActivity() {
                 var selectedTab by remember { mutableStateOf(MainBottomTab.VIDEO) }
                 var preselectedShareItem by remember { mutableStateOf<MediaItem?>(null) }
 
+                val visualizerFrequencies by viewModel.visualizerFrequencies.collectAsState()
+                val liveBeatEnergy = remember(visualizerFrequencies) {
+                    if (visualizerFrequencies.isEmpty()) 0.45f else visualizerFrequencies.average().toFloat()
+                }
                 var activeVideoItem by remember { mutableStateOf<MediaItem?>(null) }
                 var activeVideoProgress by remember { mutableStateOf(0L) }
+                var activeVideoSpeed by remember { mutableStateOf(1.0f) }
                 var isFloatingMiniVideoActive by remember { mutableStateOf(false) }
                 var showBgVideoFullScreen by remember { mutableStateOf(false) }
 
@@ -178,11 +183,17 @@ class MainActivity : ComponentActivity() {
                     if (showBgVideoFullScreen) {
                         showBgVideoFullScreen = false
                     } else if (navigationStack.size > 1) {
-                        if (navigationStack.last() == ActiveScreen.PrivateFolder) {
+                        val popped = navigationStack.last()
+                        if (popped == ActiveScreen.PrivateFolder) {
                             viewModel.lockVault()
                         }
-                        if (navigationStack.last() == ActiveScreen.TurboShare) {
+                        if (popped == ActiveScreen.TurboShare) {
                             preselectedShareItem = null
+                        }
+                        if (popped == ActiveScreen.VideoPlayer) {
+                            activeVideoItem = null
+                            isFloatingMiniVideoActive = false
+                            activeVideoSpeed = 1.0f
                         }
                         navigationStack.removeAt(navigationStack.lastIndex)
                     } else if (selectedTab != MainBottomTab.VIDEO) {
@@ -200,7 +211,7 @@ class MainActivity : ComponentActivity() {
                         // Simple Mode Clean Flat Backdrop
                         val simpleBgColor = when (simpleModeStyle) {
                             "AMOLED Pitch Black", "AMOLED Pure Black" -> Color(0xFF05070A)
-                            "Soft Slate", "MX Slate Blue" -> Color(0xFF0D131F)
+                            "Soft Slate" -> Color(0xFF0D131F)
                             else -> Color(0xFF0E1117)
                         }
                         Box(
@@ -391,6 +402,7 @@ class MainActivity : ComponentActivity() {
                                                         viewModel.pauseMusicForVideoPlayback()
                                                         isFloatingMiniVideoActive = false
                                                         activeVideoItem = video
+                                                        activeVideoSpeed = 1.0f
                                                         activeVideoProgress = 0L
                                                         coroutineScope.launch {
                                                             val savedPos = viewModel.getVideoProgress(video.id)
@@ -403,6 +415,10 @@ class MainActivity : ComponentActivity() {
                                                         isFloatingMiniVideoActive = false
                                                         viewModel.playMusic(track)
                                                         navigationStack.add(ActiveScreen.MusicPlayer)
+                                                    },
+                                                    onOpenHybridShare = { item ->
+                                                        preselectedShareItem = item
+                                                        navigationStack.add(ActiveScreen.TurboShare)
                                                     }
                                                 )
                                             }
@@ -457,12 +473,14 @@ class MainActivity : ComponentActivity() {
                                     VideoPlayerView(
                                         videoPath = video.path,
                                         initialPositionMs = activeVideoProgress,
+                                        initialSpeed = activeVideoSpeed,
                                         onProgressUpdate = { posMs ->
                                             activeVideoProgress = posMs
                                             viewModel.saveVideoProgress(video.id, posMs)
                                         },
                                         onBackClick = {
                                             activeVideoItem = null
+                                            activeVideoSpeed = 1.0f
                                             isFloatingMiniVideoActive = false
                                             navigationStack.removeAt(navigationStack.lastIndex)
                                         },
@@ -495,6 +513,13 @@ class MainActivity : ComponentActivity() {
                                             if (navigationStack.size > 1) {
                                                 navigationStack.removeAt(navigationStack.lastIndex)
                                             }
+                                        },
+                                        onLockInVault = {
+                                            viewModel.toggleVaultLock(video)
+                                            activeVideoItem = null
+                                            activeVideoSpeed = 1.0f
+                                            isFloatingMiniVideoActive = false
+                                            navigationStack.removeAt(navigationStack.lastIndex)
                                         }
                                     )
                                 }
@@ -538,10 +563,15 @@ class MainActivity : ComponentActivity() {
                                     watchedVideoIds = watchedVideoIds,
                                     onMoveToTrash = { item -> viewModel.moveToRecycleBin(item) },
                                     onPlayVideo = { video ->
+                                        viewModel.pauseMusicForVideoPlayback()
                                         isFloatingMiniVideoActive = false
                                         activeVideoItem = video
+                                        activeVideoSpeed = 1.0f
                                         activeVideoProgress = 0L
-                                        navigationStack.add(ActiveScreen.VideoPlayer)
+                                        coroutineScope.launch {
+                                            activeVideoProgress = viewModel.getVideoProgress(video.id)
+                                            navigationStack.add(ActiveScreen.VideoPlayer)
+                                        }
                                     },
                                     onBackClick = { navigationStack.removeAt(navigationStack.lastIndex) }
                                 )
@@ -576,10 +606,15 @@ class MainActivity : ComponentActivity() {
                                 StatusSaverScreen(
                                     allVideos = videos,
                                     onPlayVideo = { video ->
+                                        viewModel.pauseMusicForVideoPlayback()
                                         isFloatingMiniVideoActive = false
                                         activeVideoItem = video
+                                        activeVideoSpeed = 1.0f
                                         activeVideoProgress = 0L
-                                        navigationStack.add(ActiveScreen.VideoPlayer)
+                                        coroutineScope.launch {
+                                            activeVideoProgress = viewModel.getVideoProgress(video.id)
+                                            navigationStack.add(ActiveScreen.VideoPlayer)
+                                        }
                                     },
                                     onBackClick = { navigationStack.removeAt(navigationStack.lastIndex) }
                                 )
@@ -684,6 +719,7 @@ class MainActivity : ComponentActivity() {
 
                         fun returnToVideoPlayerNow() {
                             val resumePos = viewModel.playbackPosition.value.coerceAtLeast(0L)
+                            activeVideoSpeed = bgSpeed
                             showBgVideoFullScreen = false
                             showBgVideoQueueSheet = false
                             showBgVideoMoreMenu = false
@@ -708,12 +744,20 @@ class MainActivity : ComponentActivity() {
                                     formatPreset = "MP3 320kbps"
                                 )
                                 isConvertingBgVideoMp3 = false
-                                viewModel.loadMedia()
-                                android.widget.Toast.makeText(
-                                    this@MainActivity,
-                                    if (isHindi) "✅ MP3 तैयार हो गया: ${res.fileName} (Music सेक्शन में सेव किया गया)" else "✅ MP3 Ready: ${res.fileName} (Saved to Music Library)",
-                                    android.widget.Toast.LENGTH_LONG
-                                ).show()
+                                if (res.success) {
+                                    viewModel.loadMedia()
+                                    android.widget.Toast.makeText(
+                                        this@MainActivity,
+                                        if (isHindi) "✅ ऑडियो तैयार हो गया: ${res.fileName} (Music सेक्शन में सेव)" else "✅ Audio Ready: ${res.fileName} (Saved to Music Library)",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        this@MainActivity,
+                                        res.errorMessage ?: if (isHindi) "इस वीडियो का ऑडियो बदला नहीं जा सका" else "Could not extract audio from this video",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             }
                         }
 
@@ -1500,6 +1544,12 @@ class MainActivity : ComponentActivity() {
                     // --- REALISTIC 3D ANIMATED COMPANION OVERLAY ---
                     // Respects `simpleHideMascot` in Simple Mode and stays raised above any bottom mini-player
                     val hideMascotInSimple = simpleModeEnabled && simpleHideMascot
+                    val dynamicMascotClearance = when {
+                        currentScreen == ActiveScreen.MusicPlayer -> 22.dp
+                        bgVideoPlayingItem != null && !isFloatingMiniVideoActive -> 228.dp
+                        nowPlaying != null && !nowPlaying!!.isVideo && selectedTab == MainBottomTab.MUSIC -> 192.dp
+                        else -> 112.dp
+                    }
                     if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer) && !isPipMicroWindow && !hideMascotInSimple) {
                         RealisticCompanionOverlay(
                             enabled = companionEnabled && !hideMascotInSimple,
@@ -1508,11 +1558,12 @@ class MainActivity : ComponentActivity() {
                             nowPlayingTitle = nowPlaying?.cleanTitle ?: "",
                             penguinsOnlyMode = penguinsOnlyMode,
                             mascotSizeDp = companionSizeDp.dp,
-                            bottomClearanceDp = if (nowPlaying != null) 204.dp else 118.dp,
+                            bottomClearanceDp = dynamicMascotClearance,
                             danceModeId = companionDanceMode,
                             auraEffectId = companionAuraEffect,
                             autoWalkEnabled = companionAutoWalk,
                             animSpeedMultiplier = companionAnimSpeed,
+                            beatEnergy = liveBeatEnergy,
                             onQuickPlayTrigger = {
                                 if (nowPlaying != null) {
                                     viewModel.togglePlayPause()

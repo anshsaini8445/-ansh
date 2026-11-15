@@ -1,5 +1,6 @@
 package com.example.ui.menus
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -72,14 +73,23 @@ fun MediaSevenActionDialog(
 
     val systemDeleteLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) {
-        onPermanentDeleteConfirmed(item)
-        Toast.makeText(
-            context,
-            if (isHindi) "फ़ोन से हमेशा के लिए हटा दिया गया" else "Deleted from Phone Storage",
-            Toast.LENGTH_SHORT
-        ).show()
-        onDismiss()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            PermanentDeleteHelper.markItemsPermanentlyDeleted(context, listOf(item))
+            onPermanentDeleteConfirmed(item)
+            Toast.makeText(
+                context,
+                if (isHindi) "फ़ोन से हमेशा के लिए हटा दिया गया" else "Deleted from Phone Storage",
+                Toast.LENGTH_SHORT
+            ).show()
+            onDismiss()
+        } else {
+            Toast.makeText(
+                context,
+                if (isHindi) "डिलीट रद्द किया गया — फ़ाइल सुरक्षित है" else "Delete Cancelled — File Kept",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     if (showRenameDialog) {
@@ -342,20 +352,7 @@ fun MediaSevenActionDialog(
                     testTag = "menu_action_permanent_delete",
                     onClick = {
                         val deletedDirectly = PermanentDeleteHelper.deletePermanently(context, item)
-                        val pendingIntent = if (!deletedDirectly) {
-                            PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, listOf(item))
-                        } else null
-
-                        if (pendingIntent != null) {
-                            try {
-                                systemDeleteLauncher.launch(
-                                    IntentSenderRequest.Builder(pendingIntent.intentSender).build()
-                                )
-                            } catch (_: Exception) {
-                                onPermanentDeleteConfirmed(item)
-                                onDismiss()
-                            }
-                        } else {
+                        if (deletedDirectly) {
                             onPermanentDeleteConfirmed(item)
                             Toast.makeText(
                                 context,
@@ -363,6 +360,27 @@ fun MediaSevenActionDialog(
                                 Toast.LENGTH_SHORT
                             ).show()
                             onDismiss()
+                        } else {
+                            val pendingIntent = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, listOf(item))
+                            if (pendingIntent != null) {
+                                try {
+                                    systemDeleteLauncher.launch(
+                                        IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                                    )
+                                } catch (_: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        if (isHindi) "सिस्टम डिलीट परमिशन नहीं खुल सकी" else "Could not open system delete prompt",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "फ़ाइल डिलीट नहीं हो सकी (रीसायकल बिन उपयोग करें)" else "Could not delete file directly (try Recycle Bin)",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                         }
                     }
                 )

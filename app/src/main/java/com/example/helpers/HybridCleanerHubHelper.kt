@@ -40,8 +40,12 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.MediaItem
 import com.example.data.model.RecycledMediaItem
 import com.example.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -62,16 +66,66 @@ data class StorageStatsInfo(
             return if (gb >= 1.0) {
                 String.format(Locale.US, "%.2fGB", gb)
             } else {
-                val mb = (cleanableBytes / (1024.0 * 1024.0)).coerceAtLeast(128.0)
-                String.format(Locale.US, "%.0fMB", mb)
+                val mb = (cleanableBytes / (1024.0 * 1024.0)).coerceAtLeast(0.0)
+                if (mb < 1.0 && cleanableBytes > 0L) {
+                    val kb = (cleanableBytes / 1024.0).coerceAtLeast(1.0)
+                    String.format(Locale.US, "%.0fKB", kb)
+                } else {
+                    String.format(Locale.US, "%.0fMB", mb)
+                }
             }
         }
 
     val usedFraction: Float
-        get() = if (totalBytes > 0) (usedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0.1f, 0.95f) else 0.62f
+        get() = if (totalBytes > 0) (usedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0.05f, 0.98f) else 0.0f
 }
 
 object HybridCleanerHubHelper {
+
+    fun findDuplicateVideos(videos: List<MediaItem>): List<MediaItem> {
+        if (videos.size < 2) return emptyList()
+        val duplicates = mutableListOf<MediaItem>()
+        val seenIds = mutableSetOf<String>()
+
+        // 1. Group by identical exact file size (> 64KB) & nearly identical duration
+        videos.filter { it.size > 65_536L }.groupBy { it.size }.forEach { (_, group) ->
+            if (group.size > 1) {
+                val sorted = group.sortedBy { it.dateAdded }
+                val firstDur = sorted.first().duration
+                val matched = sorted.filter { item ->
+                    firstDur <= 0L || item.duration <= 0L || abs(item.duration - firstDur) <= 1500L
+                }
+                if (matched.size > 1) {
+                    matched.drop(1).forEach { dup ->
+                        if (seenIds.add(dup.id)) duplicates.add(dup)
+                    }
+                }
+            }
+        }
+
+        // 2. Also match normalized title + approximate size (copies like "video (1).mp4")
+        val normalizedGroups = videos.groupBy {
+            it.cleanTitle.lowercase(Locale.ROOT)
+                .replace(Regex("\\s*\\(\\d+\\)$"), "")
+                .replace(Regex("_copy\\d*$"), "")
+                .trim() to (it.duration / 1000L)
+        }
+        normalizedGroups.forEach { (key, group) ->
+            if (key.first.isNotBlank() && group.size > 1) {
+                val sorted = group.sortedBy { it.dateAdded }
+                sorted.drop(1).forEach { dup ->
+                    if (seenIds.add(dup.id)) duplicates.add(dup)
+                }
+            }
+        }
+        return duplicates
+    }
+
+    fun getRealCacheBytes(context: Context): Long {
+        return getDirSize(context.cacheDir) +
+            getDirSize(context.externalCacheDir) +
+            getDirSize(context.codeCacheDir)
+    }
 
     /**
      * Reads real device storage stats via StatFs blockCountLong and availableBlocksLong.
@@ -88,9 +142,9 @@ object HybridCleanerHubHelper {
             val freeBytes = availableBlocks * blockSize
             val usedBytes = (totalBytes - freeBytes).coerceAtLeast(0L)
 
-            val cacheSize = getDirSize(context.cacheDir)
-            val bigVideosSize = videos.filter { it.size > 40_000_000L }.sumOf { it.size / 3 }
-            val cleanable = (cacheSize + bigVideosSize + 1_420_000_000L).coerceAtLeast(480_000_000L)
+            val cacheSize = getRealCacheBytes(context)
+            val duplicateBytes = findDuplicateVideos(videos).sumOf { it.size.coerceAtLeast(0L) }
+            val cleanable = (cacheSize + duplicateBytes).coerceAtLeast(0L)
 
             StorageStatsInfo(
                 usedBytes = usedBytes,
@@ -99,32 +153,47 @@ object HybridCleanerHubHelper {
             )
         } catch (_: Exception) {
             StorageStatsInfo(
-                usedBytes = 46_170_898_432L, // ~43.0GB
-                totalBytes = 73_766_068_224L, // ~68.7GB
-                cleanableBytes = 4_756_676_608L // ~4.43GB
+                usedBytes = 0L,
+                totalBytes = 0L,
+                cleanableBytes = getRealCacheBytes(context)
             )
         }
     }
 
     fun cleanAppCacheAndTemp(context: Context): Long {
-        var freed = getDirSize(context.cacheDir)
+        var freed = 0L
+        listOfNotNull(context.cacheDir, context.externalCacheDir, context.codeCacheDir).forEach { dir ->
+            freed += clearDirectoryContents(dir)
+        }
+        return freed.coerceAtLeast(0L)
+    }
+
+    private fun clearDirectoryContents(dir: File?): Long {
+        if (dir == null || !dir.exists()) return 0L
+        var freed = 0L
         try {
-            context.cacheDir.listFiles()?.forEach { file ->
-                if (file.isFile) {
-                    val len = file.length()
-                    if (file.delete()) freed += len
+            dir.listFiles()?.forEach { child ->
+                if (child.isDirectory) {
+                    freed += clearDirectoryContents(child)
+                    child.delete()
+                } else {
+                    val len = child.length()
+                    if (child.delete()) freed += len
                 }
             }
         } catch (_: Exception) {
         }
-        return (freed + 384_000_000L)
+        return freed
     }
 
     private fun getDirSize(dir: File?): Long {
         if (dir == null || !dir.exists()) return 0L
         var result = 0L
-        dir.listFiles()?.forEach { f ->
-            result += if (f.isDirectory) getDirSize(f) else f.length()
+        try {
+            dir.listFiles()?.forEach { f ->
+                result += if (f.isDirectory) getDirSize(f) else f.length()
+            }
+        } catch (_: Exception) {
         }
         return result
     }
@@ -140,16 +209,28 @@ fun CleanJunkHubScreen(
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var isCleaned by remember { mutableStateOf(false) }
+    var isCleaningNow by remember { mutableStateOf(false) }
     var activeSubTool by remember { mutableStateOf<String?>(null) }
     var duplicateConfirmStep by remember { mutableStateOf(0) }
     var refreshTrigger by remember { mutableStateOf(0) }
 
-    val stats = remember(allVideos, isCleaned, refreshTrigger) {
-        val raw = HybridCleanerHubHelper.getRealStorageStats(context, allVideos)
-        if (isCleaned) {
-            raw.copy(cleanableBytes = 128_000_000L)
-        } else raw
+    var stats by remember { mutableStateOf(StorageStatsInfo(0L, 0L, 0L)) }
+    var cacheSizeBytes by remember { mutableLongStateOf(0L) }
+    var duplicateCount by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(allVideos, isCleaned, refreshTrigger) {
+        withContext(Dispatchers.IO) {
+            val realStats = HybridCleanerHubHelper.getRealStorageStats(context, allVideos)
+            val realCache = HybridCleanerHubHelper.getRealCacheBytes(context)
+            val dups = HybridCleanerHubHelper.findDuplicateVideos(allVideos).size
+            withContext(Dispatchers.Main) {
+                stats = realStats
+                cacheSizeBytes = realCache
+                duplicateCount = dups
+            }
+        }
     }
 
     val animatedSweep by animateFloatAsState(
@@ -341,15 +422,29 @@ fun CleanJunkHubScreen(
                     // Coral-Red Clean Junk Button
                     Button(
                         onClick = {
-                            val freedBytes = HybridCleanerHubHelper.cleanAppCacheAndTemp(context)
-                            isCleaned = true
-                            val freedMb = freedBytes / (1024 * 1024)
-                            Toast.makeText(
-                                context,
-                                "Cleaned ${freedMb}MB of Junk & Temp Cache!",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            if (!isCleaningNow) {
+                                isCleaningNow = true
+                                coroutineScope.launch {
+                                    val freedBytes = withContext(Dispatchers.IO) {
+                                        HybridCleanerHubHelper.cleanAppCacheAndTemp(context)
+                                    }
+                                    isCleaningNow = false
+                                    isCleaned = true
+                                    refreshTrigger++
+                                    val freedLabel = if (freedBytes >= 1024L * 1024L) {
+                                        String.format(Locale.US, "%.1f MB", freedBytes / (1024.0 * 1024.0))
+                                    } else {
+                                        "${(freedBytes / 1024L).coerceAtLeast(0L)} KB"
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        if (freedBytes > 0L) "Cleaned $freedLabel of App & Temp Cache!" else "App Cache is already clean!",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
                         },
+                        enabled = !isCleaningNow,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isCleaned) HybridEmerald else HybridCoralRed
                         ),
@@ -365,7 +460,11 @@ fun CleanJunkHubScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (isCleaned) "Junk Cleaned ✓" else "Clean Junk (${stats.cleanableBadgeText})",
+                            text = when {
+                                isCleaningNow -> "Cleaning Cache..."
+                                isCleaned -> "Cache Cleaned ✓"
+                                else -> "Clean Cache (${stats.cleanableBadgeText})"
+                            },
                             color = Color.White,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold
@@ -430,7 +529,7 @@ fun CleanJunkHubScreen(
                             )
                             CleanerToolCard(
                                 title = "Duplicate Cleaner",
-                                subtitle = "2-Step Safe Clean",
+                                subtitle = "$duplicateCount redundant copies",
                                 icon = Icons.Default.FileCopy,
                                 accent = HybridGold,
                                 modifier = Modifier.weight(1f),
@@ -444,18 +543,34 @@ fun CleanJunkHubScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
+                            val cacheLabel = if (cacheSizeBytes >= 1024L * 1024L) {
+                                String.format(Locale.US, "%.1f MB temp", cacheSizeBytes / (1024.0 * 1024.0))
+                            } else {
+                                "${(cacheSizeBytes / 1024L).coerceAtLeast(0L)} KB temp"
+                            }
                             CleanerToolCard(
-                                title = "Game Source",
-                                subtitle = "Shader & Temp Cache",
-                                icon = Icons.Default.SportsEsports,
+                                title = "App & Temp Cache",
+                                subtitle = cacheLabel,
+                                icon = Icons.Default.Cached,
                                 accent = Color(0xFFB388FF),
                                 modifier = Modifier.weight(1f),
                                 onClick = {
-                                    Toast.makeText(
-                                        context,
-                                        "Game Shader & Temp Media Cache Cleared (142 MB Freed)",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    coroutineScope.launch {
+                                        val freed = withContext(Dispatchers.IO) {
+                                            HybridCleanerHubHelper.cleanAppCacheAndTemp(context)
+                                        }
+                                        refreshTrigger++
+                                        val freedStr = if (freed >= 1024L * 1024L) {
+                                            String.format(Locale.US, "%.1f MB", freed / (1024.0 * 1024.0))
+                                        } else {
+                                            "${(freed / 1024L).coerceAtLeast(0L)} KB"
+                                        }
+                                        Toast.makeText(
+                                            context,
+                                            if (freed > 0L) "App & Thumbnail Cache Cleared ($freedStr Freed)" else "App Cache Already Clean",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
                             )
                             CleanerToolCard(
@@ -601,7 +716,8 @@ private fun CleanerSubToolView(
             "Big File Cleaner" -> allVideos.filter { it.size > 40_000_000L }.sortedByDescending { it.size }
             "Watched Videos" -> allVideos.filter { it.id in watchedVideoIds }
             "Rarely Watch Videos" -> allVideos.filter { it.id !in watchedVideoIds }
-            else -> allVideos.take(2)
+            "Duplicate Cleaner" -> HybridCleanerHubHelper.findDuplicateVideos(allVideos)
+            else -> emptyList()
         }
     }
 
@@ -629,30 +745,42 @@ private fun CleanerSubToolView(
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Original master files are always preserved. Only identical redundant copies are flagged.",
+                        text = if (filteredList.isEmpty()) {
+                            "No duplicate video copies detected in your library."
+                        } else {
+                            "Found ${filteredList.size} redundant copies. Original oldest copies are preserved."
+                        },
                         color = HybridTextSecondary,
                         fontSize = 13.sp
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = {
-                            if (duplicateConfirmStep == 0) {
-                                onDuplicateConfirmStepChange(1)
-                            } else {
-                                onDuplicateConfirmStepChange(0)
-                                Toast.makeText(context, "All Duplicate Cache Copies Safely Cleaned!", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (duplicateConfirmStep == 1) HybridCoralRed else HybridEmerald
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = if (duplicateConfirmStep == 0) "Step 1: Verify Duplicate Hash" else "Step 2: Confirm Safe Removal",
-                            color = Color.Black,
-                            fontWeight = FontWeight.Bold
-                        )
+                    if (filteredList.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                if (duplicateConfirmStep == 0) {
+                                    onDuplicateConfirmStepChange(1)
+                                } else {
+                                    onDuplicateConfirmStepChange(0)
+                                    val count = filteredList.size
+                                    filteredList.forEach { dup -> onMoveToTrash(dup) }
+                                    Toast.makeText(
+                                        context,
+                                        "Moved $count Duplicate Copies to 30-Day Recycle Bin!",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (duplicateConfirmStep == 1) HybridCoralRed else HybridEmerald
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = if (duplicateConfirmStep == 0) "Step 1: Verify ${filteredList.size} Duplicates" else "Step 2: Move Duplicates to Recycle Bin",
+                                color = Color.Black,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }

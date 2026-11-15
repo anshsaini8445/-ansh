@@ -319,7 +319,7 @@ fun MeToolkitScreen(
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp)
+                    contentPadding = PaddingValues(top = 8.dp, bottom = 160.dp)
                 ) {
                     // 1. SLEEK HERO BRANDING CARD — HYBRID PLAYER ORIGINAL FEATURES
                     item {
@@ -424,7 +424,7 @@ fun MeToolkitScreen(
                                         val onClick: () -> Unit
                                     )
                                     val pills = listOf(
-                                        AppHighlightPill("⚡", if (isHindi) "8K/4K इंजन" else "8K/4K Engine", HybridEmerald) {},
+                                        AppHighlightPill("⚡", if (isHindi) "8K/4K इंजन" else "8K/4K Engine", HybridEmerald) { activeBottomModal = "engine_info" },
                                         AppHighlightPill("🎧", if (isHindi) "BG ऑडियो + MP3" else "BG Audio + MP3", HybridCyan) { onOpenMp3Converter() },
                                         AppHighlightPill("🔊", if (isHindi) "200% बूस्ट + EQ" else "200% Boost + EQ", Color(0xFFFFD54F)) { subScreen = MeSubScreen.VISUALIZER_3D_SETTINGS },
                                         AppHighlightPill("🎨", if (isHindi) "${StudioThemes.size} थीम्स" else "${StudioThemes.size} Themes", Color(0xFFB388FF)) { subScreen = MeSubScreen.THEMES_GALLERY }
@@ -2156,6 +2156,7 @@ fun MeToolkitScreen(
                         "rate_us" -> if (isHindi) "रेट करें" else "Rate Us"
                         "report" -> if (isHindi) "रिपोर्ट" else "Report"
                         "latest" -> if (isHindi) "नवीनतम वर्ज़न" else "Latest Version"
+                        "engine_info" -> if (isHindi) "8K/4K अल्ट्रा हार्डवेयर इंजन" else "8K/4K Hardware Engine"
                         else -> if (isHindi) "गोपनीयता नीति" else "Privacy Policy"
                     },
                     fontWeight = FontWeight.ExtraBold
@@ -2164,29 +2165,80 @@ fun MeToolkitScreen(
             text = {
                 Text(
                     text = when (modalType) {
-                        "rate_us" -> "Enjoying Hybrid Player? Share your 5-star feedback or tell us how we can make your experience even better."
-                        "report" -> "Found an issue with a media format, subtitle, or audio track? Send a diagnostic report directly to our engineering team."
-                        "latest" -> "Hybrid Player Latest Build\n• Real 3D Plush Studio Mascots with Transparent Cutout & Beat Dance\n• Multi-Tech Hybrid Share with Live Camera Barcode/QR Scanner & 254-IP Subnet Radar\n• Network Stream Pro Studio with 8 Built-In 4K/HD Channels\n• System Default + Native Hindi & English Language Engine"
+                        "rate_us" -> if (isHindi) {
+                            "क्या आपको Hybrid Player पसंद आया? Play Store पर 5-स्टार रेटिंग दें और हमारा हौसला बढ़ाएं।"
+                        } else {
+                            "Enjoying Hybrid Player? Rate us 5 stars on Google Play to help keep the app fast and ad-free."
+                        }
+                        "report" -> if (isHindi) {
+                            "क्या किसी वीडियो फॉर्मेट, सबटाइटल या ऑडियो में दिक्कत है? हमारी टीम को डायग्नोस्टिक रिपोर्ट भेजें।"
+                        } else {
+                            "Found an issue with a media format, subtitle, or audio track? Send a diagnostic report directly to our engineering team."
+                        }
+                        "latest" -> "Hybrid Player Latest Build\n• Real 3D Plush Studio Mascots & Beat Dance\n• Multi-Tech Hybrid Share with Live Camera Viewfinder & 254-IP Subnet Radar\n• Network Stream Pro Studio with 8 Built-In 4K/HD Channels\n• System Default + Native Hindi & Multi-Language Engine"
+                        "engine_info" -> if (isHindi) {
+                            "• हार्डवेयर SurfaceView + सॉफ्टवेयर फॉलबैक डिकोडर\n• लाइव 200% लाउडनेस बूस्ट + 5-बैंड इक्वलाइज़र\n• बैकग्राउंड वीडियो ऑडियो + MP3/M4A एक्सट्रैक्टर\n• इमर्सिव स्टिकी 4K/HD प्लेबैक (Android 6–17)"
+                        } else {
+                            "• Hardware SurfaceView + SW Frame Fallback Decoder\n• Live 200% Loudness Boost + 5-Band Equalizer\n• Background Video Audio Studio + MP3/M4A Extractor\n• Immersive Sticky Fullscreen Playback (Android 6–17)"
+                        }
                         else -> "100% Local On-Device Privacy:\nAll your videos, songs, PDFs, and private vault files remain strictly on your device. No personal media is ever uploaded to external servers."
                     }
                 )
             },
+            dismissButton = if (modalType == "rate_us" || modalType == "report" || modalType == "engine_info") {
+                {
+                    TextButton(onClick = { activeBottomModal = null }) {
+                        Text(if (isHindi) "बंद करें" else "Close", color = Color.White.copy(alpha = 0.7f))
+                    }
+                }
+            } else null,
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (modalType == "report") {
-                            runCatching {
-                                val emailIntent = Intent(Intent.ACTION_SENDTO).apply {
-                                    data = Uri.parse("mailto:support@hybridplayer.app")
-                                    putExtra(Intent.EXTRA_SUBJECT, "Hybrid Player Feedback / Issue Report")
+                        when (modalType) {
+                            "rate_us" -> {
+                                val pkg = context.packageName
+                                val launched = runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$pkg"))
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }.isSuccess
+                                if (!launched) {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$pkg"))
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                    }
                                 }
-                                context.startActivity(emailIntent)
+                            }
+                            "report" -> {
+                                runCatching {
+                                    val emailIntent = Intent(Intent.ACTION_SENDTO).apply {
+                                        data = Uri.parse("mailto:support@hybridplayer.app")
+                                        putExtra(Intent.EXTRA_SUBJECT, "Hybrid Player Feedback / Issue Report")
+                                    }
+                                    context.startActivity(emailIntent)
+                                }
+                            }
+                            "engine_info" -> {
+                                subScreen = MeSubScreen.NETWORK_STREAM_STUDIO
                             }
                         }
                         activeBottomModal = null
                     }
                 ) {
-                    Text("OK", color = accent, fontWeight = FontWeight.ExtraBold)
+                    Text(
+                        text = when (modalType) {
+                            "rate_us" -> if (isHindi) "रेट करें ⭐" else "Rate Now ⭐"
+                            "report" -> if (isHindi) "ईमेल भेजें" else "Send Report"
+                            "engine_info" -> if (isHindi) "नेटवर्क स्ट्रीम खोलें" else "Open Stream Studio"
+                            else -> "OK"
+                        },
+                        color = accent,
+                        fontWeight = FontWeight.ExtraBold
+                    )
                 }
             }
         )

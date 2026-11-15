@@ -60,8 +60,7 @@ fun PrivateFolderScreen(
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
 
     val isHindi = remember(selectedLanguage) {
-        selectedLanguage.contains("Hindi", ignoreCase = true) ||
-            selectedLanguage.contains("हिन्दी")
+        com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
     }
 
     var pinDigits by remember { mutableStateOf("") }
@@ -116,7 +115,7 @@ fun PrivateFolderScreen(
             allVideos = vaultVideos.ifEmpty { listOf(currentVideo) },
             onSelectVideo = { nextVid -> activeVaultVideo = nextVid },
             onBackgroundAudioPlay = {
-                viewModel.playMusic(currentVideo)
+                viewModel.playVideoInBackground(currentVideo, 0L)
                 activeVaultVideo = null
                 showVaultFullAudioPlayer = true
             }
@@ -389,6 +388,7 @@ fun PrivateFolderScreen(
                                     glassAlpha = 0.20f,
                                     onClick = {
                                         if (item.isVideo) {
+                                            viewModel.pauseMusicForVideoPlayback()
                                             activeVaultVideo = item
                                         } else {
                                             viewModel.playMusic(item)
@@ -429,6 +429,7 @@ fun PrivateFolderScreen(
                                         IconButton(
                                             onClick = {
                                                 if (item.isVideo) {
+                                                    viewModel.pauseMusicForVideoPlayback()
                                                     activeVaultVideo = item
                                                 } else {
                                                     viewModel.playMusic(item)

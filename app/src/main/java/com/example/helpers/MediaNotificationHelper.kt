@@ -30,8 +30,13 @@ import android.os.SystemClock
 import android.util.LruCache
 import android.view.KeyEvent
 import com.example.R
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 import java.lang.ref.WeakReference
+import java.util.Collections
 
 /**
  * Full-Featured MediaSession & Notification Panel Controller for Hybrid Player:
@@ -77,6 +82,12 @@ object MediaNotificationHelper {
     private var delegateRef: WeakReference<ControlDelegate>? = null
     private var mediaSession: MediaSession? = null
     private val artworkCache = LruCache<String, Bitmap>(32)
+    private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlightArtworkKeys: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+    @Volatile
+    private var lastNotification: Notification? = null
+    @Volatile
+    private var lastShownKey: String = ""
 
     fun setControlDelegate(delegate: ControlDelegate?) {
         delegateRef = if (delegate != null) WeakReference(delegate) else null
@@ -217,42 +228,84 @@ object MediaNotificationHelper {
         return session
     }
 
-    private fun extractOrCreateArtwork(path: String, title: String, isVideo: Boolean): Bitmap {
+    private fun getCachedOrFallbackArtworkAsync(
+        context: Context,
+        path: String,
+        title: String,
+        subtitle: String,
+        isVideo: Boolean,
+        isPlaying: Boolean,
+        positionMs: Long,
+        durationMs: Long,
+        playbackSpeed: Float,
+        isShuffle: Boolean,
+        repeatMode: Int,
+        contentIntentActivity: Class<*>?
+    ): Bitmap {
         val cacheKey = "$path|$title|$isVideo"
         val cached = artworkCache.get(cacheKey)
         if (cached != null && !cached.isRecycled) {
             return cached
         }
 
-        var extracted: Bitmap? = null
-        if (path.isNotBlank() && File(path).exists()) {
-            val retriever = MediaMetadataRetriever()
-            try {
-                retriever.setDataSource(path)
-                val embedded = retriever.embeddedPicture
-                if (embedded != null && embedded.isNotEmpty()) {
-                    extracted = BitmapFactory.decodeByteArray(embedded, 0, embedded.size)
-                }
-                if (extracted == null && isVideo) {
-                    extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                }
-            } catch (_: Exception) {
-            } finally {
+        val fallback = createFallbackGradientArtwork(title, isVideo)
+
+        if (path.isNotBlank() && !path.startsWith("http") && inFlightArtworkKeys.add(cacheKey)) {
+            val appCtx = context.applicationContext
+            artworkScope.launch {
+                var extracted: Bitmap? = null
+                val retriever = MediaMetadataRetriever()
                 try {
-                    retriever.release()
+                    if (path.startsWith("content://")) {
+                        retriever.setDataSource(appCtx, android.net.Uri.parse(path))
+                    } else if (File(path).exists()) {
+                        retriever.setDataSource(path)
+                    }
+                    val embedded = retriever.embeddedPicture
+                    if (embedded != null && embedded.isNotEmpty()) {
+                        extracted = BitmapFactory.decodeByteArray(embedded, 0, embedded.size)
+                    }
+                    if (extracted == null && isVideo) {
+                        extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    }
                 } catch (_: Exception) {
+                } finally {
+                    try {
+                        retriever.release()
+                    } catch (_: Exception) {
+                    }
                 }
+
+                if (extracted != null) {
+                    val scaled = try {
+                        Bitmap.createScaledBitmap(extracted, 256, 256, true)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (scaled != null) {
+                        artworkCache.put(cacheKey, scaled)
+                        if (lastShownKey == cacheKey) {
+                            showOrUpdateNotification(
+                                context = appCtx,
+                                title = title,
+                                subtitle = subtitle,
+                                mediaPath = path,
+                                isVideo = isVideo,
+                                isPlaying = isPlaying,
+                                positionMs = positionMs,
+                                durationMs = durationMs,
+                                playbackSpeed = playbackSpeed,
+                                isShuffle = isShuffle,
+                                repeatMode = repeatMode,
+                                contentIntentActivity = contentIntentActivity
+                            )
+                        }
+                    }
+                }
+                inFlightArtworkKeys.remove(cacheKey)
             }
         }
-
-        val finalBitmap = if (extracted != null) {
-            Bitmap.createScaledBitmap(extracted, 256, 256, true)
-        } else {
-            createFallbackGradientArtwork(title, isVideo)
-        }
-
-        artworkCache.put(cacheKey, finalBitmap)
-        return finalBitmap
+        return fallback
     }
 
     private fun createFallbackGradientArtwork(title: String, isVideo: Boolean): Bitmap {
@@ -380,7 +433,21 @@ object MediaNotificationHelper {
         if (!session.isActive) {
             session.isActive = true
         }
-        val artwork = extractOrCreateArtwork(mediaPath, title, isVideo)
+        lastShownKey = "$mediaPath|$title|$isVideo"
+        val artwork = getCachedOrFallbackArtworkAsync(
+            context = context,
+            path = mediaPath,
+            title = title,
+            subtitle = subtitle,
+            isVideo = isVideo,
+            isPlaying = isPlaying,
+            positionMs = positionMs,
+            durationMs = durationMs,
+            playbackSpeed = playbackSpeed,
+            isShuffle = isShuffle,
+            repeatMode = repeatMode,
+            contentIntentActivity = contentIntentActivity
+        )
 
         val safeDuration = if (durationMs > 0L) durationMs else 180_000L
         val safePosition = positionMs.coerceIn(0L, safeDuration)
@@ -588,12 +655,38 @@ object MediaNotificationHelper {
             repeatMode = repeatMode,
             contentIntentActivity = contentIntentActivity
         )
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIFICATION_ID, notification)
-        AudioService.syncForegroundWithNotification(notification, isPlaying)
+        lastNotification = notification
+        if (!AudioService.syncForegroundWithNotification(notification, isPlaying)) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIFICATION_ID, notification)
+        } else if (isPlaying) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIFICATION_ID, notification)
+        }
+    }
+
+    fun buildBootstrapNotification(context: Context): Notification {
+        lastNotification?.let { return it }
+        ensureChannel(context)
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(context, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(context)
+        }
+        return builder
+            .setSmallIcon(R.drawable.ic_notif_play)
+            .setContentTitle("Hybrid Player")
+            .setContentText("Preparing audio playback...")
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
+            .build()
     }
 
     fun cancelNotification(context: Context) {
+        lastShownKey = ""
+        lastNotification = null
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(NOTIFICATION_ID)
         try {
@@ -696,8 +789,8 @@ class AudioService : Service() {
             }
         }
 
-        fun syncForegroundWithNotification(notification: Notification, isPlaying: Boolean) {
-            val instance = activeInstance ?: return
+        fun syncForegroundWithNotification(notification: Notification, isPlaying: Boolean): Boolean {
+            val instance = activeInstance ?: return false
             try {
                 if (isPlaying) {
                     instance.acquireWakeLockIfNeeded()
@@ -706,7 +799,9 @@ class AudioService : Service() {
                     instance.releaseWakeLockIfHeld()
                     instance.demoteFromForegroundKeepNotification(notification)
                 }
+                return true
             } catch (_: Exception) {
+                return false
             }
         }
     }
@@ -754,13 +849,16 @@ class AudioService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         activeInstance = this
         val action = intent?.action
+        if (action == MediaNotificationHelper.ACTION_MEDIA_STOP) {
+            MediaNotificationHelper.dispatchAction(this, action)
+            stopForegroundCompletely()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // Immediately satisfy Android 8+/14+ startForegroundService() contract even if MediaPlayer is still preparing
+        promoteNotificationToForeground(MediaNotificationHelper.buildBootstrapNotification(this))
         if (action != null) {
             MediaNotificationHelper.dispatchAction(this, action)
-            if (action == MediaNotificationHelper.ACTION_MEDIA_STOP) {
-                stopForegroundCompletely()
-                stopSelf()
-                return START_NOT_STICKY
-            }
         }
         return START_NOT_STICKY
     }

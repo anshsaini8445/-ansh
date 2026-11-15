@@ -68,7 +68,8 @@ object Mp3ConverterHelper {
         val success: Boolean,
         val fileName: String,
         val outputPath: String,
-        val mediaItem: MediaItem
+        val mediaItem: MediaItem,
+        val errorMessage: String? = null
     )
 
     @SuppressLint("WrongConstant")
@@ -106,17 +107,12 @@ object Mp3ConverterHelper {
             .take(36)
             .ifBlank { "Hybrid_Audio_${System.currentTimeMillis() % 10000}" }
 
-        val targetExt = when {
-            formatPreset.contains("M4A", ignoreCase = true) -> "m4a"
-            formatPreset.contains("AAC", ignoreCase = true) -> "m4a"
-            else -> "mp3"
-        }
-        val outFile = File(outDir, "${safeName}_Audio.$targetExt")
-        if (outFile.exists()) {
-            try { outFile.delete() } catch (_: Exception) {}
-        }
-
         var muxedSuccessfully = false
+        var finalExt = if (formatPreset.contains("MP3", ignoreCase = true)) "mp3" else "m4a"
+        var finalMime = if (finalExt == "mp3") "audio/mpeg" else "audio/mp4"
+        var failureReason: String? = null
+        var outFile = File(outDir, "${safeName}_Audio.$finalExt")
+
         val extractor = MediaExtractor()
         var muxer: MediaMuxer? = null
         var pfd: android.os.ParcelFileDescriptor? = null
@@ -156,104 +152,124 @@ object Mp3ConverterHelper {
 
             if (audioTrackIndex >= 0 && audioFormat != null) {
                 extractor.selectTrack(audioTrackIndex)
+                val isMp3Track = audioMime.equals("audio/mpeg", ignoreCase = true)
                 val isWebmAudio = audioMime.contains("vorbis", ignoreCase = true) ||
                     audioMime.contains("opus", ignoreCase = true)
-                val muxerFormat = if (isWebmAudio && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-                    MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
-                } else {
-                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+
+                finalExt = when {
+                    isMp3Track -> "mp3"
+                    isWebmAudio -> "webm"
+                    else -> "m4a"
+                }
+                finalMime = when (finalExt) {
+                    "mp3" -> "audio/mpeg"
+                    "webm" -> "audio/webm"
+                    else -> "audio/mp4"
                 }
 
-                muxer = MediaMuxer(outFile.absolutePath, muxerFormat)
-                val dstTrack = muxer.addTrack(audioFormat)
-                muxer.start()
+                outFile = File(outDir, "${safeName}_Audio.$finalExt")
+                if (outFile.exists()) {
+                    try { outFile.delete() } catch (_: Exception) {}
+                }
 
                 val buffer = ByteBuffer.allocate(512 * 1024)
-                val bufferInfo = MediaCodec.BufferInfo()
                 var writtenBytes = 0L
 
-                while (true) {
-                    val sampleSize = extractor.readSampleData(buffer, 0)
-                    if (sampleSize < 0) break
-                    bufferInfo.offset = 0
-                    bufferInfo.size = sampleSize
-                    bufferInfo.presentationTimeUs = extractor.sampleTime.coerceAtLeast(0L)
-                    bufferInfo.flags = extractor.sampleFlags
-                    muxer.writeSampleData(dstTrack, buffer, bufferInfo)
-                    writtenBytes += sampleSize
-                    extractor.advance()
+                if (isMp3Track) {
+                    // MP3 elementary stream cannot be placed in MediaMuxer MP4 container — write MP3 frames directly!
+                    outFile.outputStream().use { os ->
+                        val chunk = ByteArray(512 * 1024)
+                        while (true) {
+                            buffer.clear()
+                            val sampleSize = extractor.readSampleData(buffer, 0)
+                            if (sampleSize < 0) break
+                            buffer.position(0)
+                            buffer.get(chunk, 0, sampleSize)
+                            os.write(chunk, 0, sampleSize)
+                            writtenBytes += sampleSize
+                            extractor.advance()
+                        }
+                    }
+                    muxedSuccessfully = outFile.exists() && outFile.length() > 512L && writtenBytes > 0L
+                } else {
+                    val muxerFormat = if (isWebmAudio && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                        MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
+                    } else {
+                        MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+                    }
+                    muxer = MediaMuxer(outFile.absolutePath, muxerFormat)
+                    val dstTrack = muxer.addTrack(audioFormat)
+                    muxer.start()
+
+                    val bufferInfo = MediaCodec.BufferInfo()
+                    while (true) {
+                        val sampleSize = extractor.readSampleData(buffer, 0)
+                        if (sampleSize < 0) break
+                        bufferInfo.offset = 0
+                        bufferInfo.size = sampleSize
+                        bufferInfo.presentationTimeUs = extractor.sampleTime.coerceAtLeast(0L)
+                        bufferInfo.flags = extractor.sampleFlags
+                        muxer.writeSampleData(dstTrack, buffer, bufferInfo)
+                        writtenBytes += sampleSize
+                        extractor.advance()
+                    }
+                    muxer.stop()
+                    muxedSuccessfully = outFile.exists() && outFile.length() > 512L && writtenBytes > 0L
                 }
-                muxer.stop()
-                muxedSuccessfully = outFile.exists() && outFile.length() > 1024L && writtenBytes > 0L
+            } else {
+                failureReason = "No audio track found inside this video file"
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             muxedSuccessfully = false
+            failureReason = e.localizedMessage ?: "Audio codec not supported for direct track extraction"
+            try {
+                if (outFile.exists()) outFile.delete()
+            } catch (_: Exception) {}
         } finally {
             try { extractor.release() } catch (_: Exception) {}
             try { muxer?.release() } catch (_: Exception) {}
             try { pfd?.close() } catch (_: Exception) {}
         }
 
-        // Universal Direct Stream Copy Fallback if container codec wasn't directly MPEG-4/WebM muxable:
-        // Android MediaPlayer plays audio seamlessly from any media stream container stored in Music!
-        if (!muxedSuccessfully || !outFile.exists() || outFile.length() < 1024L) {
-            try {
-                if (video.path.startsWith("content://")) {
-                    context.contentResolver.openInputStream(android.net.Uri.parse(video.path))?.use { input ->
-                        outFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                } else {
-                    val srcFile = File(video.path)
-                    if (srcFile.exists()) {
-                        srcFile.inputStream().use { input ->
-                            outFile.outputStream().use { output ->
-                                input.copyTo(output)
-                            }
-                        }
-                    }
-                }
-                muxedSuccessfully = outFile.exists() && outFile.length() > 0L
-            } catch (_: Exception) {
-            }
+        if (!muxedSuccessfully || !outFile.exists() || outFile.length() <= 512L) {
+            return@withContext ExtractedAudioResult(
+                success = false,
+                fileName = outFile.name,
+                outputPath = "",
+                mediaItem = video.copy(isVideo = false),
+                errorMessage = failureReason ?: "Could not extract audio track"
+            )
         }
 
-        val finalPlayablePath = if (outFile.exists() && outFile.length() > 0L) {
-            try {
-                android.media.MediaScannerConnection.scanFile(
-                    context,
-                    arrayOf(outFile.absolutePath),
-                    arrayOf(if (targetExt == "mp3") "audio/mpeg" else "audio/mp4"),
-                    null
-                )
-            } catch (_: Exception) {
-            }
-            outFile.absolutePath
-        } else {
-            video.path
+        try {
+            android.media.MediaScannerConnection.scanFile(
+                context,
+                arrayOf(outFile.absolutePath),
+                arrayOf(finalMime),
+                null
+            )
+        } catch (_: Exception) {
         }
 
-        val finalSize = if (outFile.exists() && outFile.length() > 0L) outFile.length() else video.size
         val extractedItem = MediaItem(
             id = "extracted_aud_${outFile.absolutePath.hashCode()}",
-            title = "${safeName} (${formatPreset.substringBefore(" ")})",
+            title = "${safeName} (${finalExt.uppercase()})",
             artist = "Extracted from Video • Hybrid Studio",
             duration = video.duration.coerceAtLeast(1000L),
-            size = finalSize.coerceAtLeast(1024L),
-            path = finalPlayablePath,
+            size = outFile.length().coerceAtLeast(512L),
+            path = outFile.absolutePath,
             isVideo = false,
             folderName = "Hybrid Extracted Audio",
             albumName = "Video to Audio",
             resolution = "Hi-Res Audio",
-            format = targetExt.uppercase(),
+            format = finalExt.uppercase(),
             dateAdded = System.currentTimeMillis()
         )
 
         return@withContext ExtractedAudioResult(
             success = true,
             fileName = outFile.name,
-            outputPath = finalPlayablePath,
+            outputPath = outFile.absolutePath,
             mediaItem = extractedItem
         )
     }
@@ -802,14 +818,22 @@ fun Mp3ConverterScreen(
                                         formatPreset = selectedFormat
                                     )
                                     convertingId = null
-                                    convertedResults.removeAll { it.outputPath == result.outputPath }
-                                    convertedResults.add(0, result)
-                                    onAudioExtracted()
-                                    Toast.makeText(
-                                        context,
-                                        "🎵 Audio Extracted: ${result.fileName}",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    if (result.success) {
+                                        convertedResults.removeAll { it.outputPath == result.outputPath }
+                                        convertedResults.add(0, result)
+                                        onAudioExtracted()
+                                        Toast.makeText(
+                                            context,
+                                            "🎵 Audio Extracted: ${result.fileName}",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            result.errorMessage ?: "Audio track could not be extracted",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald),
@@ -840,8 +864,16 @@ fun StatusSaverScreen(
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var selectedSource by remember { mutableStateOf("WhatsApp") }
     val savedIds = remember { mutableStateListOf<String>() }
+    var discoveredStatuses by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+
+    LaunchedEffect(selectedSource, allVideos) {
+        discoveredStatuses = withContext(Dispatchers.IO) {
+            scanRealStatusVideos(context, selectedSource, allVideos)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -888,59 +920,196 @@ fun StatusSaverScreen(
                 }
             }
 
-            items(allVideos, key = { it.id }) { statusVideo ->
-                val isSaved = statusVideo.id in savedIds
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(HybridCardBg)
-                        .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
-                        .clickable { onPlayVideo(statusVideo) }
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+            if (discoveredStatuses.isEmpty()) {
+                item {
                     Box(
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(HybridEmerald.copy(alpha = 0.16f)),
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(HybridCardBg)
+                            .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
+                            .padding(24.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = HybridEmerald)
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = statusVideo.cleanTitle,
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "$selectedSource Status • ${statusVideo.formattedSize}",
+                            text = "No $selectedSource Status videos found yet. View statuses in $selectedSource first, then reopen here.",
                             color = HybridTextSecondary,
-                            fontSize = 12.sp
+                            fontSize = 13.sp
                         )
                     }
-                    Button(
-                        onClick = {
-                            if (!isSaved) savedIds.add(statusVideo.id)
-                            Toast.makeText(context, "Status Saved to Hybrid Gallery!", Toast.LENGTH_SHORT).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isSaved) HybridCardAlt else HybridEmerald
-                        )
+                }
+            } else {
+                items(discoveredStatuses, key = { it.id }) { statusVideo ->
+                    val isSaved = statusVideo.id in savedIds
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(HybridCardBg)
+                            .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
+                            .clickable { onPlayVideo(statusVideo) }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (isSaved) "Saved ✓" else "Save",
-                            color = if (isSaved) HybridEmerald else Color.Black,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(HybridEmerald.copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = HybridEmerald)
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = statusVideo.cleanTitle,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "$selectedSource Status • ${statusVideo.formattedSize}",
+                                color = HybridTextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    val savedOk = withContext(Dispatchers.IO) {
+                                        copyStatusVideoToGallery(context, statusVideo)
+                                    }
+                                    if (savedOk) {
+                                        if (!isSaved) savedIds.add(statusVideo.id)
+                                        Toast.makeText(context, "Saved to Movies/HybridStatus!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Could not save status file", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSaved) HybridCardAlt else HybridEmerald
+                            )
+                        ) {
+                            Text(
+                                text = if (isSaved) "Saved ✓" else "Save",
+                                color = if (isSaved) HybridEmerald else Color.Black,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private fun scanRealStatusVideos(
+    context: Context,
+    sourceTab: String,
+    allVideos: List<MediaItem>
+): List<MediaItem> {
+    val extRoot = Environment.getExternalStorageDirectory()
+    val isBusiness = sourceTab.contains("Business", ignoreCase = true)
+    val dirs = if (isBusiness) {
+        listOf(
+            File(extRoot, "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses"),
+            File(extRoot, "WhatsApp Business/Media/.Statuses")
+        )
+    } else {
+        listOf(
+            File(extRoot, "Android/media/com.whatsapp/WhatsApp/Media/.Statuses"),
+            File(extRoot, "WhatsApp/Media/.Statuses")
+        )
+    }
+
+    val results = mutableListOf<MediaItem>()
+    val seen = mutableSetOf<String>()
+    dirs.forEach { dir ->
+        try {
+            if (dir.exists() && dir.isDirectory) {
+                dir.listFiles()?.forEach { f ->
+                    val nameLower = f.name.lowercase(java.util.Locale.ROOT)
+                    if (f.isFile && f.length() > 1024L &&
+                        (nameLower.endsWith(".mp4") || nameLower.endsWith(".mkv") || nameLower.endsWith(".3gp")) &&
+                        seen.add(f.absolutePath)
+                    ) {
+                        results.add(
+                            MediaItem(
+                                id = "wa_status_${f.absolutePath.hashCode()}",
+                                title = f.name,
+                                artist = "$sourceTab Status",
+                                duration = 15_000L,
+                                size = f.length(),
+                                path = f.absolutePath,
+                                isVideo = true,
+                                folderName = "$sourceTab Statuses",
+                                format = "MP4",
+                                dateAdded = f.lastModified()
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    if (results.isNotEmpty()) return results.sortedByDescending { it.dateAdded }
+
+    // Fallback to matching short status/reel videos tagged by source
+    val folderFiltered = allVideos.filter { vid ->
+        val p = vid.path.lowercase(java.util.Locale.ROOT)
+        val f = vid.folderName.lowercase(java.util.Locale.ROOT)
+        if (isBusiness) {
+            p.contains("whatsapp business") || p.contains("w4b") || f.contains("business")
+        } else {
+            (p.contains("whatsapp") || f.contains("status")) && !p.contains("w4b") && !f.contains("business")
+        }
+    }
+    if (folderFiltered.isNotEmpty()) return folderFiltered
+    return if (!isBusiness) allVideos.filter { it.duration in 1000L..65_000L }.take(20) else emptyList()
+}
+
+private fun copyStatusVideoToGallery(context: Context, video: MediaItem): Boolean {
+    return try {
+        val safeTitle = video.cleanTitle.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "Status_${System.currentTimeMillis()}" }
+        val fileName = if (safeTitle.endsWith(".mp4", ignoreCase = true)) safeTitle else "$safeTitle.mp4"
+        val resolver = context.contentResolver
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/HybridStatus")
+                put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+            val copied = resolver.openOutputStream(uri)?.use { out ->
+                if (video.path.startsWith("content://")) {
+                    resolver.openInputStream(android.net.Uri.parse(video.path))?.use { it.copyTo(out) } ?: 0L
+                } else {
+                    val src = File(video.path)
+                    if (!src.exists()) return false
+                    src.inputStream().use { it.copyTo(out) }
+                }
+            } ?: 0L
+            values.clear()
+            values.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            copied > 0L
+        } else {
+            val destDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "HybridStatus")
+            if (!destDir.exists()) destDir.mkdirs()
+            val outFile = File(destDir, fileName)
+            val src = File(video.path)
+            if (!src.exists()) return false
+            src.inputStream().use { input -> outFile.outputStream().use { input.copyTo(it) } }
+            android.media.MediaScannerConnection.scanFile(context, arrayOf(outFile.absolutePath), arrayOf("video/mp4"), null)
+            outFile.exists() && outFile.length() > 0L
+        }
+    } catch (_: Exception) {
+        false
     }
 }

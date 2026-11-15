@@ -117,6 +117,7 @@ fun ShareKaroTransferScreen(
     var mediaPickerTab by remember {
         mutableIntStateOf(if (initialPreselectedItem != null && !initialPreselectedItem.isVideo) 1 else 0)
     } // 0 = Videos, 1 = Songs
+    var mediaPickerSearch by remember { mutableStateOf("") }
 
     val localDeviceName = remember {
         "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
@@ -235,6 +236,7 @@ fun ShareKaroTransferScreen(
             }
 
             val success = WifiDirectTransferEngine.sendFilesOverTcpSocket(
+                context = context,
                 senderDeviceName = localDeviceName,
                 targetIp = peer.ipAddress,
                 port = peer.port,
@@ -768,9 +770,45 @@ fun ShareKaroTransferScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                val activeList = if (mediaPickerTab == 0) videos else audios
+                OutlinedTextField(
+                    value = mediaPickerSearch,
+                    onValueChange = { mediaPickerSearch = it },
+                    placeholder = {
+                        Text(
+                            if (isHindi) "भेजने के लिए वीडियो या गाना खोजें..." else "Filter videos or songs to send...",
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 12.sp
+                        )
+                    },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = {
+                        if (mediaPickerSearch.isNotEmpty()) {
+                            IconButton(onClick = { mediaPickerSearch = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = accent,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val rawActiveList = if (mediaPickerTab == 0) videos else audios
+                val activeList = remember(rawActiveList, mediaPickerSearch) {
+                    val q = mediaPickerSearch.trim()
+                    if (q.isBlank()) rawActiveList
+                    else rawActiveList.filter { it.cleanTitle.contains(q, ignoreCase = true) || it.folderName.contains(q, ignoreCase = true) }
+                }
 
                 LazyColumn(
                     modifier = Modifier.weight(1f),
@@ -1524,8 +1562,15 @@ private fun LiveCameraQrBarcodeScannerView(
     val lifecycleOwner = LocalLifecycleOwner.current
     var torchEnabled by remember { mutableStateOf(false) }
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
-    var lastScanTriggerMs by remember { mutableLongStateOf(0L) }
-    var opticalConfidencePct by remember { mutableIntStateOf(0) }
+    var boundProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+
+    DisposableEffect(lifecycleOwner) {
+        onDispose {
+            runCatching { boundProvider?.unbindAll() }
+            runCatching { analysisExecutor.shutdownNow() }
+        }
+    }
 
     val infiniteTransition = rememberInfiniteTransition(label = "laser_scanner")
     val laserFraction by infiniteTransition.animateFloat(
@@ -1549,6 +1594,7 @@ private fun LiveCameraQrBarcodeScannerView(
                 .clip(RoundedCornerShape(18.dp))
                 .background(Color.Black)
                 .border(1.5.dp, accentColor.copy(alpha = 0.8f), RoundedCornerShape(18.dp))
+                .clickable { onOpticalBarcodeDetected() }
         ) {
             AndroidView(
                 factory = { ctx ->
@@ -1557,67 +1603,19 @@ private fun LiveCameraQrBarcodeScannerView(
                         scaleType = PreviewView.ScaleType.FILL_CENTER
                     }
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                    val executor = Executors.newSingleThreadExecutor()
 
                     cameraProviderFuture.addListener({
                         try {
                             val cameraProvider = cameraProviderFuture.get()
+                            boundProvider = cameraProvider
                             val preview = Preview.Builder().build().also {
                                 it.setSurfaceProvider(previewView.surfaceProvider)
                             }
-                            val imageAnalysis = ImageAnalysis.Builder()
-                                .setTargetResolution(AndroidSize(640, 480))
-                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                .build()
-
-                            imageAnalysis.setAnalyzer(executor) { imageProxy ->
-                                try {
-                                    val plane = imageProxy.planes.firstOrNull()
-                                    if (plane != null) {
-                                        val buf = plane.buffer
-                                        val width = imageProxy.width
-                                        val height = imageProxy.height
-                                        val rowStride = plane.rowStride
-                                        // Sample center scanlines for high-frequency black/white QR & 1D barcode transitions
-                                        var highContrastTransitions = 0
-                                        for (sampleRowOffset in listOf(-24, 0, 24)) {
-                                            val y = (height / 2 + sampleRowOffset).coerceIn(0, height - 1)
-                                            val rowStart = y * rowStride + (width / 4)
-                                            val rowEnd = (y * rowStride + (width * 3 / 4)).coerceAtMost(buf.limit() - 1)
-                                            var prevBright = false
-                                            var step = rowStart
-                                            while (step < rowEnd) {
-                                                val luma = buf.get(step).toInt() and 0xFF
-                                                val isBright = luma > 145
-                                                if (isBright != prevBright) {
-                                                    highContrastTransitions++
-                                                    prevBright = isBright
-                                                }
-                                                step += 2
-                                            }
-                                        }
-                                        val confidence = ((highContrastTransitions - 18) * 3).coerceIn(0, 100)
-                                        opticalConfidencePct = confidence
-                                        val now = System.currentTimeMillis()
-                                        if (highContrastTransitions >= 42 && now - lastScanTriggerMs > 1800L) {
-                                            lastScanTriggerMs = now
-                                            previewView.post {
-                                                onOpticalBarcodeDetected()
-                                            }
-                                        }
-                                    }
-                                } catch (_: Exception) {
-                                } finally {
-                                    imageProxy.close()
-                                }
-                            }
-
                             cameraProvider.unbindAll()
                             cameraRef = cameraProvider.bindToLifecycle(
                                 lifecycleOwner,
                                 CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                imageAnalysis
+                                preview
                             )
                         } catch (_: Exception) {
                         }
@@ -1641,20 +1639,15 @@ private fun LiveCameraQrBarcodeScannerView(
                 val cornerLen = 24.dp.toPx()
                 val strokeW = 3.dp.toPx()
 
-                // Top-left bracket
                 drawLine(accentColor, Offset(left, top), Offset(left + cornerLen, top), strokeW, StrokeCap.Round)
                 drawLine(accentColor, Offset(left, top), Offset(left, top + cornerLen), strokeW, StrokeCap.Round)
-                // Top-right bracket
                 drawLine(accentColor, Offset(right, top), Offset(right - cornerLen, top), strokeW, StrokeCap.Round)
                 drawLine(accentColor, Offset(right, top), Offset(right, top + cornerLen), strokeW, StrokeCap.Round)
-                // Bottom-left bracket
                 drawLine(accentColor, Offset(left, bottom), Offset(left + cornerLen, bottom), strokeW, StrokeCap.Round)
                 drawLine(accentColor, Offset(left, bottom), Offset(left, bottom - cornerLen), strokeW, StrokeCap.Round)
-                // Bottom-right bracket
                 drawLine(accentColor, Offset(right, bottom), Offset(right - cornerLen, bottom), strokeW, StrokeCap.Round)
                 drawLine(accentColor, Offset(right, bottom), Offset(right, bottom - cornerLen), strokeW, StrokeCap.Round)
 
-                // Animated horizontal neon laser beam
                 val laserY = top + boxH * laserFraction
                 drawLine(
                     brush = Brush.horizontalGradient(
@@ -1695,19 +1688,16 @@ private fun LiveCameraQrBarcodeScannerView(
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 6.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.Black.copy(alpha = 0.68f))
+                    .background(Color.Black.copy(alpha = 0.72f))
                     .padding(horizontal = 12.dp, vertical = 4.dp)
             ) {
                 Text(
                     text = if (discoveredPeers.isNotEmpty()) {
                         if (isHindi) "✅ ${discoveredPeers.first().deviceName} मिला! कनेक्ट करने के लिए टैप करें"
-                        else "✅ Locked: ${discoveredPeers.first().deviceName}! Tap to Connect"
-                    } else if (opticalConfidencePct > 35) {
-                        if (isHindi) "🔍 बारकोड पैटर्न डिटेक्टेड ($opticalConfidencePct%) • सबनेट हैंडशेक..."
-                        else "🔍 Barcode Pattern Detected ($opticalConfidencePct%) • Handshaking..."
+                        else "✅ Peer Ready: ${discoveredPeers.first().deviceName} • Tap to Connect"
                     } else {
-                        if (isHindi) "कैमरे को दूसरे फ़ोन के Receive बारकोड/QR पर रखें"
-                        else "Point camera at the Receiver phone's Barcode / QR screen"
+                        if (isHindi) "सबनेट रडार सक्रिय • रडार रीस्कैन या 'कोड / IP' टैब से जुड़ें"
+                        else "Subnet Radar Active • Tap to Rescan or use Code / IP tab"
                     },
                     color = accentColor,
                     fontWeight = FontWeight.Bold,

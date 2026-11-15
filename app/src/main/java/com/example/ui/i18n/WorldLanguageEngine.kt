@@ -157,11 +157,25 @@ object WorldLanguageEngine {
         val code = resolveEffectiveLanguageCode(selectedDisplay)
         if (code == "en") return rawText
 
-        // Preserve language picker rows, URLs, file paths, or pure numbers/timecodes
+        // Preserve language picker rows, URLs, file paths, or media filenames
         if (DISPLAY_NAME_SET.contains(rawText) || REGION_SUBTITLE_SET.contains(rawText.removePrefix("✓ ").trim())) {
             return rawText
         }
-        if (rawText.startsWith("http://") || rawText.startsWith("https://") || rawText.startsWith("/storage/")) {
+        val lower = rawText.lowercase()
+        if (lower.startsWith("http://") ||
+            lower.startsWith("https://") ||
+            lower.startsWith("content://") ||
+            lower.startsWith("/storage/") ||
+            lower.endsWith(".mp3") ||
+            lower.endsWith(".mp4") ||
+            lower.endsWith(".mkv") ||
+            lower.endsWith(".m4a") ||
+            lower.endsWith(".wav") ||
+            lower.endsWith(".flac") ||
+            lower.endsWith(".webm") ||
+            lower.endsWith(".3gp") ||
+            lower.endsWith(".pdf")
+        ) {
             return rawText
         }
 
@@ -176,32 +190,38 @@ object WorldLanguageEngine {
             return it
         }
 
-        // 2. Sorted Phrase & Word Replacement (Longest phrases first)
-        var result = rawText
-        val orderedRules = COMPILED_PATTERNS.getOrPut(code) {
-            dictionary.entries
-                .sortedByDescending { it.key.length }
-                .map { (enPhrase, translated) ->
-                    val escaped = Regex.escape(enPhrase)
-                    val regex = if (enPhrase.first().isLetterOrDigit() && enPhrase.last().isLetterOrDigit()) {
-                        Regex("\\b$escaped\\b", RegexOption.IGNORE_CASE)
-                    } else {
-                        Regex(escaped, RegexOption.IGNORE_CASE)
-                    }
-                    regex to translated
-                }
-        }
-
-        for ((regex, replacement) in orderedRules) {
-            if (regex.containsMatchIn(result)) {
-                result = regex.replace(result, replacement)
+        // 2. Safe UI Count-Chip Pattern (e.g. "All (94)", "Videos (5)", "Themes (60)")
+        val countMatch = UI_COUNT_CHIP_REGEX.matchEntire(rawText.trim())
+        if (countMatch != null) {
+            val prefix = countMatch.groupValues[1].trim()
+            val countPart = countMatch.groupValues[2]
+            val translatedPrefix = dictionary[prefix]
+            if (translatedPrefix != null) {
+                val formatted = "$translatedPrefix ($countPart)"
+                translationCache.put(cacheKey, formatted)
+                return formatted
             }
         }
-        translationCache.put(cacheKey, result)
-        return result
+
+        // 3. Safe UI Prefixed Labels (only when exact UI prefix matches known label + delimiter)
+        val colonIdx = rawText.indexOf(':')
+        if (colonIdx in 2..28) {
+            val label = rawText.substring(0, colonIdx).trim()
+            val rest = rawText.substring(colonIdx + 1)
+            val translatedLabel = dictionary[label]
+            if (translatedLabel != null) {
+                val formatted = "$translatedLabel:$rest"
+                translationCache.put(cacheKey, formatted)
+                return formatted
+            }
+        }
+
+        // Do NOT run blind single-word regex across unknown strings (protects real song/video/folder titles)
+        translationCache.put(cacheKey, rawText)
+        return rawText
     }
 
-    private val COMPILED_PATTERNS = mutableMapOf<String, List<Pair<Regex, String>>>()
+    private val UI_COUNT_CHIP_REGEX = Regex("^([A-Za-z0-9 &/+_-]{1,28})\\s*\\((\\d+\\+?)\\)$")
 
     private fun buildDict(
         video: String, videos: String, music: String, audio: String, songs: String, song: String,

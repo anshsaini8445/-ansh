@@ -6,6 +6,7 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.example.data.model.MediaItem
@@ -552,6 +553,7 @@ object WifiDirectTransferEngine {
      * and streams the selected media files with real byte progress.
      */
     suspend fun sendFilesOverTcpSocket(
+        context: Context,
         senderDeviceName: String = "Sender Phone",
         targetIp: String,
         port: Int = DEFAULT_PORT,
@@ -584,38 +586,71 @@ object WifiDirectTransferEngine {
                 val buffer = ByteArray(CHUNK_BUFFER_SIZE)
                 items.forEachIndexed { idx, media ->
                     val file = File(media.path)
-                    val fileLen = if (file.exists()) file.length() else media.size.coerceAtLeast(1024L)
-                    val safeFileName = file.name.ifBlank {
+                    var fileLen = if (file.exists()) file.length() else media.size.coerceAtLeast(0L)
+                    var resolvedName = if (file.exists()) file.name else ""
+
+                    if (!file.exists() && media.path.startsWith("content://")) {
+                        runCatching {
+                            val uri = Uri.parse(media.path)
+                            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                                if (c.moveToFirst()) {
+                                    val nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                    val sizeIdx = c.getColumnIndex(OpenableColumns.SIZE)
+                                    if (nameIdx >= 0) resolvedName = c.getString(nameIdx) ?: resolvedName
+                                    if (sizeIdx >= 0 && !c.isNull(sizeIdx)) fileLen = c.getLong(sizeIdx)
+                                }
+                            }
+                            if (fileLen <= 0L) {
+                                context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+                                    if (afd.length > 0L) fileLen = afd.length
+                                }
+                            }
+                        }
+                    }
+
+                    val safeFileName = resolvedName.ifBlank {
                         val ext = if (media.isVideo) "mp4" else "mp3"
                         "${media.cleanTitle.replace(Regex("[^a-zA-Z0-9 _.-]"), "_")}.$ext"
                     }
-                    out.writeUTF(safeFileName)
-                    out.writeLong(fileLen)
-                    if (file.exists()) {
+                    val stream = if (file.exists()) {
+                        FileInputStream(file)
+                    } else if (media.path.startsWith("content://")) {
+                        context.contentResolver.openInputStream(Uri.parse(media.path))
+                    } else null
+
+                    if (stream == null) {
+                        out.writeUTF(safeFileName)
+                        out.writeLong(0L)
+                        withContext(Dispatchers.Main) { onProgress(idx, 0L, 1L, 0f) }
+                    } else {
+                        out.writeUTF(safeFileName)
+                        out.writeLong(fileLen.coerceAtLeast(1L))
                         var sent = 0L
                         var lastUiUpdateMs = 0L
                         val startNs = System.nanoTime()
-                        FileInputStream(file).use { fis ->
+                        stream.use { fis ->
                             while (true) {
                                 val read = fis.read(buffer)
                                 if (read <= 0) break
                                 out.write(buffer, 0, read)
                                 sent += read
                                 val nowMs = System.currentTimeMillis()
-                                if (sent >= fileLen || nowMs - lastUiUpdateMs >= 70L) {
+                                val effectiveTotal = fileLen.coerceAtLeast(sent).coerceAtLeast(1L)
+                                if (sent >= effectiveTotal || nowMs - lastUiUpdateMs >= 70L) {
                                     lastUiUpdateMs = nowMs
                                     val elapsedSec = ((System.nanoTime() - startNs) / 1_000_000_000.0).coerceAtLeast(0.05)
                                     val mbps = ((sent / (1024.0 * 1024.0)) / elapsedSec).toFloat()
                                     withContext(Dispatchers.Main) {
-                                        onProgress(idx, sent, fileLen, mbps)
+                                        onProgress(idx, sent, effectiveTotal, mbps)
                                     }
                                 }
                             }
                         }
-                    } else {
-                        // Fallback if path is a content:// URI
                         withContext(Dispatchers.Main) {
-                            onProgress(idx, fileLen, fileLen, 45.0f)
+                            val totalBytes = fileLen.coerceAtLeast(sent).coerceAtLeast(1L)
+                            val elapsedSec = ((System.nanoTime() - startNs) / 1_000_000_000.0).coerceAtLeast(0.05)
+                            val mbps = ((sent / (1024.0 * 1024.0)) / elapsedSec).toFloat()
+                            onProgress(idx, sent, totalBytes, mbps)
                         }
                     }
                     out.flush()

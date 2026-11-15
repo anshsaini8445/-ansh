@@ -52,7 +52,7 @@ fun PlaylistsScreen(
             TopAppBar(
                 title = { 
                     Text(
-                        text = selectedPlaylist?.name ?: "MAX Playlists",
+                        text = selectedPlaylist?.name ?: "Hybrid Playlists",
                         color = Color.White
                     ) 
                 },
@@ -266,11 +266,11 @@ fun PlaylistsScreen(
 
         AlertDialog(
             onDismissRequest = { showAddSongsDialog = false },
-            title = { Text("Add Premium Tracks", color = Color.White) },
+            title = { Text("Add Audio Tracks", color = Color.White) },
             text = {
                 Box(modifier = Modifier.sizeIn(maxHeight = 300.dp)) {
                     if (nonPlaylistSongs.isEmpty()) {
-                        Text("All available premium tracks are already in this playlist.", color = Color.Gray)
+                        Text("All available audio tracks are already in this playlist.", color = Color.Gray)
                     } else {
                         LazyColumn {
                             items(nonPlaylistSongs) { song ->

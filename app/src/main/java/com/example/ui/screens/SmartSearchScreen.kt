@@ -126,9 +126,14 @@ fun SmartSearchScreen(
         }
     }
 
+    val displayResults = remember(query, results) {
+        if (query.isBlank()) results.take(36) else results
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
             .padding(horizontal = if (isTablet) 22.dp else 14.dp)
             .padding(top = 8.dp, bottom = 6.dp)
     ) {
@@ -193,9 +198,9 @@ fun SmartSearchScreen(
                 Text(
                     text = if (query.isBlank()) {
                         when (categoryFilter) {
-                            SearchCategoryFilter.VIDEOS -> if (isHindi) "सभी वीडियो (${results.size})" else "Videos (${results.size})"
-                            SearchCategoryFilter.AUDIO -> if (isHindi) "सभी ऑडियो गाने (${results.size})" else "Audio Songs (${results.size})"
-                            SearchCategoryFilter.ALL -> if (isHindi) "सभी वीडियो और ऑडियो (${results.size})" else "All Videos & Audio (${results.size})"
+                            SearchCategoryFilter.VIDEOS -> if (isHindi) "हाल के वीडियो (${displayResults.size}/${results.size})" else "Recent Videos (${displayResults.size}/${results.size})"
+                            SearchCategoryFilter.AUDIO -> if (isHindi) "हाल के ऑडियो (${displayResults.size}/${results.size})" else "Recent Audio (${displayResults.size}/${results.size})"
+                            SearchCategoryFilter.ALL -> if (isHindi) "हाल की मीडिया (${displayResults.size}/${results.size})" else "Recent Media (${displayResults.size}/${results.size})"
                         }
                     } else {
                         if (isHindi) "${results.size} परिणाम मिले" else "${results.size} Results Found"
@@ -207,7 +212,7 @@ fun SmartSearchScreen(
                 )
             }
 
-            items(results, key = { it.id }) { item ->
+            items(displayResults, key = { it.id }) { item ->
                 val accent = if (item.isVideo) HybridCyan else HybridEmerald
                 LiquidGlassBox(
                     modifier = Modifier
@@ -389,8 +394,7 @@ fun SmartSearchScreen(
             },
             onPlayBackgroundAudio = if (item.isVideo) {
                 { videoTrack ->
-                    onPlayMusic(videoTrack)
-                    onOpenMusicPlayer()
+                    viewModel.playVideoInBackground(videoTrack, 0L)
                 }
             } else null,
             onRenameCompleted = {

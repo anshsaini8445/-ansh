@@ -123,18 +123,12 @@ object PermanentDeleteHelper {
         return deleteBatchPermanently(context, listOf(item)) > 0
     }
 
-    /**
-     * Permanently deletes 1 to 1000+ selected media items at once from phone storage + MediaStore + Cache.
-     */
-    fun deleteBatchPermanently(context: Context, items: List<MediaItem>): Int {
-        if (items.isEmpty()) return 0
+    fun markItemsPermanentlyDeleted(context: Context, items: List<MediaItem>) {
+        if (items.isEmpty()) return
         val targetIdSet = items.map { it.id }.toSet()
-
-        // 1. Remove from recycle bin if present
         val current = getRecycledItems(context).filterNot { it.mediaItem.id in targetIdSet }
         saveRecycledItems(context, current)
 
-        // 2. Record all IDs and paths as permanently deleted in a single batch commit
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val deletedIds = prefs.getStringSet(KEY_PERMANENTLY_DELETED_IDS, emptySet())?.toMutableSet() ?: mutableSetOf()
         val deletedPaths = prefs.getStringSet(KEY_PERMANENTLY_DELETED_PATHS, emptySet())?.toMutableSet() ?: mutableSetOf()
@@ -148,22 +142,33 @@ object PermanentDeleteHelper {
             .putStringSet(KEY_PERMANENTLY_DELETED_IDS, deletedIds)
             .putStringSet(KEY_PERMANENTLY_DELETED_PATHS, deletedPaths)
             .apply()
+        com.example.data.scanner.DeepMediaScanner.invalidateMemoryCache()
+    }
 
-        var deletedCount = 0
+    /**
+     * Permanently deletes 1 to 1000+ selected media items at once from phone storage + MediaStore + Cache.
+     * Records an item as permanently deleted ONLY if storage/MediaStore deletion actually succeeded.
+     */
+    fun deleteBatchPermanently(context: Context, items: List<MediaItem>): Int {
+        if (items.isEmpty()) return 0
+        val actuallyDeleted = mutableListOf<MediaItem>()
+
         for (item in items) {
             var itemDeleted = false
-            // 3. Delete physical file from phone storage
+            // 1. Delete physical file from phone storage
             try {
                 if (!item.path.startsWith("http") && !item.path.startsWith("content://")) {
                     val file = File(item.path)
-                    if (file.exists() && file.delete()) {
+                    if (!file.exists()) {
+                        itemDeleted = true
+                    } else if (file.delete()) {
                         itemDeleted = true
                     }
                 }
             } catch (_: Exception) {
             }
 
-            // 4. Delete from Android MediaStore ContentResolver
+            // 2. Delete from Android MediaStore ContentResolver
             try {
                 val mediaStoreUri = resolveMediaStoreUri(context, item)
                 if (mediaStoreUri != null) {
@@ -186,11 +191,15 @@ object PermanentDeleteHelper {
             } catch (_: SecurityException) {
             } catch (_: Exception) {
             }
-            if (itemDeleted) deletedCount++
+            if (itemDeleted) {
+                actuallyDeleted.add(item)
+            }
         }
 
-        com.example.data.scanner.DeepMediaScanner.invalidateMemoryCache()
-        return deletedCount
+        if (actuallyDeleted.isNotEmpty()) {
+            markItemsPermanentlyDeleted(context, actuallyDeleted)
+        }
+        return actuallyDeleted.size
     }
 
     fun emptyRecycleBinPermanently(context: Context) {

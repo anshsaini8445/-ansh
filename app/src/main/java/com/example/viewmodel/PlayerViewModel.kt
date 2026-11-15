@@ -510,7 +510,7 @@ class PlayerViewModel(application: Application) :
         MediaNotificationHelper.setControlDelegate(this)
         loadMedia()
         checkVaultPinStatus()
-        registerDoubleShakeSensor()
+        updateShakeSensorRegistration()
         registerMediaStoreObserver()
         if (_vaultLockoutSeconds.value > 0) {
             startVaultLockoutCountdown()
@@ -587,10 +587,17 @@ class PlayerViewModel(application: Application) :
     }
 
     // --- Hardware Accelerometer Double-Shake Registration & Anti-Pocket / Anti-Walking Filter ---
-    private fun registerDoubleShakeSensor() {
+    private var isShakeSensorRegistered = false
+
+    private fun updateShakeSensorRegistration() {
+        val shouldListen = _doubleShakeEnabled.value || (_vaultUnlocked.value && _panicShakeVaultLock.value)
         try {
-            if (accelerometer != null) {
+            if (shouldListen && !isShakeSensorRegistered && accelerometer != null) {
                 sensorManager?.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
+                isShakeSensorRegistered = true
+            } else if (!shouldListen && isShakeSensorRegistered) {
+                sensorManager?.unregisterListener(this)
+                isShakeSensorRegistered = false
             }
         } catch (_: Exception) {
         }
@@ -719,6 +726,7 @@ class PlayerViewModel(application: Application) :
     fun setDoubleShakeEnabled(enabled: Boolean) {
         _doubleShakeEnabled.value = enabled
         prefs.edit().putBoolean("permanent_double_shake_enabled_v2", enabled).apply()
+        updateShakeSensorRegistration()
         if (enabled) {
             triggerDoubleShakeVibration(isSingleTick = false)
         }
@@ -1518,6 +1526,7 @@ class PlayerViewModel(application: Application) :
             _vaultPinSet.value = true
             _isDecoyVault.value = false
             _vaultUnlocked.value = true
+            updateShakeSensorRegistration()
         }
     }
 
@@ -1533,6 +1542,7 @@ class PlayerViewModel(application: Application) :
             SecurityDefenseEngine.resetFailedPinAttempts(getApplication())
             _isDecoyVault.value = true
             _vaultUnlocked.value = true
+            updateShakeSensorRegistration()
             onResult(true)
             return true
         }
@@ -1545,6 +1555,7 @@ class PlayerViewModel(application: Application) :
                 _vaultLockoutSeconds.value = 0
                 _isDecoyVault.value = false
                 _vaultUnlocked.value = true
+                updateShakeSensorRegistration()
                 onResult(true)
             } else {
                 triggerDoubleShakeVibration(isSingleTick = false)
@@ -1594,6 +1605,7 @@ class PlayerViewModel(application: Application) :
         val next = !_panicShakeVaultLock.value
         _panicShakeVaultLock.value = next
         prefs.edit().putBoolean("security_panic_shake_lock", next).apply()
+        updateShakeSensorRegistration()
     }
 
     fun onAppMinimizedToBackground() {
@@ -1605,6 +1617,7 @@ class PlayerViewModel(application: Application) :
     fun lockVault() {
         _vaultUnlocked.value = false
         _isDecoyVault.value = false
+        updateShakeSensorRegistration()
     }
 
     fun toggleVaultLock(mediaItem: MediaItem) {

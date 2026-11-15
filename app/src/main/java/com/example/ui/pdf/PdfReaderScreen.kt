@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.util.LruCache
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -56,6 +57,8 @@ import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -383,20 +386,27 @@ private fun FullScreenPdfRendererView(
     onUpdateZoomPan: (Float, Offset) -> Unit,
     onCloseDoc: () -> Unit
 ) {
-    var pageBitmaps by remember(pdfItem.id) { mutableStateOf<List<Bitmap>>(emptyList()) }
     var pageCount by remember(pdfItem.id) { mutableStateOf(0) }
-    var isRendering by remember(pdfItem.id) { mutableStateOf(true) }
+    var isOpeningDoc by remember(pdfItem.id) { mutableStateOf(true) }
+    var pageSession by remember(pdfItem.id) { mutableStateOf<PdfPageSession?>(null) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(pdfItem.id) {
-        isRendering = true
-        val rendered = withContext(Dispatchers.IO) {
-            renderPdfPagesWithHardware(context, pdfItem)
+        isOpeningDoc = true
+        val session = withContext(Dispatchers.IO) {
+            PdfPageSession.open(context, pdfItem)
         }
-        pageBitmaps = rendered
-        pageCount = rendered.size
-        isRendering = false
+        pageSession = session
+        pageCount = session?.pageCount ?: 0
+        isOpeningDoc = false
+    }
+
+    DisposableEffect(pdfItem.id) {
+        onDispose {
+            pageSession?.close()
+            pageSession = null
+        }
     }
 
     val currentPageIndex by remember {
@@ -475,16 +485,16 @@ private fun FullScreenPdfRendererView(
                 }
             }
     ) {
-        if (isRendering) {
+        if (isOpeningDoc) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = HybridCyan)
                     Spacer(modifier = Modifier.height(12.dp))
-                    Text("Rendering Full-Screen HD PDF Pages...", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Opening Full-Screen HD PDF Engine...", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         } else {
-            // 100% FULL-SCREEN VERTICAL CONTINUOUS PAGE READER
+            // 100% FULL-SCREEN VERTICAL CONTINUOUS LAZY PAGE READER (All Pages, Zero OOM)
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -502,22 +512,42 @@ private fun FullScreenPdfRendererView(
                     bottom = if (isFullScreenImmersed) 4.dp else 82.dp
                 )
             ) {
-                items(pageBitmaps.size) { index ->
-                    val bmp = pageBitmaps[index]
+                items(pageCount, key = { it }) { index ->
+                    var pageBmp by remember(pdfItem.id, index) {
+                        mutableStateOf(pageSession?.getCachedBitmap(index))
+                    }
+                    LaunchedEffect(pdfItem.id, index, pageSession) {
+                        if (pageBmp == null) {
+                            pageBmp = pageSession?.renderPage(index)
+                        }
+                    }
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(min = 380.dp)
                             .padding(horizontal = if (isFullScreenImmersed) 0.dp else 6.dp)
                             .clip(RoundedCornerShape(if (isFullScreenImmersed) 0.dp else 8.dp))
-                            .background(Color.White)
+                            .background(Color.White),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "PDF Page ${index + 1}",
-                            contentScale = ContentScale.FillWidth,
-                            colorFilter = colorFilter,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        val bmp = pageBmp
+                        if (bmp != null) {
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = "PDF Page ${index + 1}",
+                                contentScale = ContentScale.FillWidth,
+                                colorFilter = colorFilter,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            CircularProgressIndicator(
+                                color = HybridCyan,
+                                modifier = Modifier
+                                    .padding(vertical = 120.dp)
+                                    .size(28.dp)
+                            )
+                        }
                         // Subtle Page Badge in Corner
                         Box(
                             modifier = Modifier
@@ -789,8 +819,8 @@ private fun ensureRealHardwarePdfManualOnDisk(context: Context): File? {
                     "2. Universal Experience Modes (Top Bar Orb):",
                     "   • Youth Pro Studio: 8K 60FPS badges, neon glass controls.",
                     "   • Senior Easy-Touch: Extra-large fonts, 1-tap play buttons.",
-                    "   • Kids Magic Mode: Playful colors, safe lock & penguin buddy.",
-                    "   • Bharat Desi Super-App: Fast ShareKaro P2P, Status Saver.",
+                    "   • Kids Magic Mode: Playful colors, safe lock & mascot buddy.",
+                    "   • Hybrid Super-App: Fast Hybrid Share P2P, Status Reels.",
                     "   • Global Minimal Cinema: Pure distraction-free theatre."
                 )
             ),
@@ -800,13 +830,13 @@ private fun ensureRealHardwarePdfManualOnDisk(context: Context): File? {
                 listOf(
                     "1. Notification & Lock-Screen Controls:",
                     "   • Control Songs & Background Videos from Android lock screen.",
-                    "   • Includes Previous, -10s Rewind, Play/Pause, +10s Fast-Forward, Next.",
+                    "   • Includes Shuffle, Previous, Play/Pause, Next & Repeat.",
                     "",
                     "2. Double-Shake (2x Wrist Shake) Track Skip:",
                     "   • Shake your phone twice to skip to the next audio track.",
                     "   • Toggle from the top bar orb or permanently in Me -> Settings.",
                     "",
-                    "3. ShareKaro Live QR & High-Speed Transfer:",
+                    "3. Hybrid Share Live QR & High-Speed Transfer:",
                     "   • Send videos & songs over local Wi-Fi Direct TCP sockets.",
                     "   • Live dynamic QR code pairing and real-time MB/s speedometer."
                 )
@@ -862,41 +892,57 @@ private fun ensureRealHardwarePdfManualOnDisk(context: Context): File? {
     }
 }
 
-private fun renderPdfPagesWithHardware(context: Context, item: DevicePdfItem): List<Bitmap> {
-    val bitmaps = mutableListOf<Bitmap>()
-    var pfd: ParcelFileDescriptor? = null
-    var renderer: PdfRenderer? = null
-    try {
-        pfd = when {
-            File(item.path).exists() -> ParcelFileDescriptor.open(File(item.path), ParcelFileDescriptor.MODE_READ_ONLY)
-            item.uri != null -> context.contentResolver.openFileDescriptor(item.uri, "r")
-            else -> null
-        }
-        if (pfd != null) {
-            renderer = PdfRenderer(pfd)
-            val total = renderer.pageCount.coerceAtMost(35)
-            for (i in 0 until total) {
-                renderer.openPage(i).use { page ->
+private class PdfPageSession private constructor(
+    private val pfd: ParcelFileDescriptor,
+    private val renderer: PdfRenderer
+) {
+    val pageCount: Int = renderer.pageCount
+    private val mutex = Mutex()
+    private val cache = LruCache<Int, Bitmap>(8)
+
+    fun getCachedBitmap(index: Int): Bitmap? = cache.get(index)
+
+    suspend fun renderPage(index: Int): Bitmap? = withContext(Dispatchers.IO) {
+        cache.get(index)?.let { return@withContext it }
+        mutex.withLock {
+            cache.get(index)?.let { return@withContext it }
+            if (index !in 0 until pageCount) return@withLock null
+            try {
+                renderer.openPage(index).use { page ->
                     val targetWidth = 1080
                     val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
                     val targetHeight = (page.height * scale).toInt().coerceAtLeast(1)
                     val bmp = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
                     bmp.eraseColor(AndroidColor.WHITE)
                     page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    bitmaps.add(bmp)
+                    cache.put(index, bmp)
+                    bmp
                 }
+            } catch (_: Exception) {
+                null
             }
         }
-    } catch (_: Exception) {
-    } finally {
-        try {
-            renderer?.close()
-        } catch (_: Exception) {
-        }
-        try {
-            pfd?.close()
-        } catch (_: Exception) {
+    }
+
+    fun close() {
+        try { cache.evictAll() } catch (_: Exception) {}
+        try { renderer.close() } catch (_: Exception) {}
+        try { pfd.close() } catch (_: Exception) {}
+    }
+
+    companion object {
+        fun open(context: Context, item: DevicePdfItem): PdfPageSession? {
+            return try {
+                val pfd = when {
+                    File(item.path).exists() -> ParcelFileDescriptor.open(File(item.path), ParcelFileDescriptor.MODE_READ_ONLY)
+                    item.uri != null -> context.contentResolver.openFileDescriptor(item.uri, "r")
+                    else -> null
+                } ?: return null
+                val renderer = PdfRenderer(pfd)
+                PdfPageSession(pfd, renderer)
+            } catch (_: Exception) {
+                null
+            }
         }
     }
-    return bitmaps
 }

@@ -659,7 +659,8 @@ private object MascotTransparentBitmapCache {
 fun Modifier.timedMediaTouchHold(
     onClick: () -> Unit,
     onHold2sPlay: () -> Unit,
-    onHold4sMenu: () -> Unit
+    onHold4sMenu: () -> Unit,
+    hasLeadingCheckbox: Boolean = false
 ): Modifier = composed {
     val haptic = LocalHapticFeedback.current
     val holdScope = rememberCoroutineScope()
@@ -667,13 +668,16 @@ fun Modifier.timedMediaTouchHold(
     val currentOnHold2s by rememberUpdatedState(onHold2sPlay)
     val currentOnHold4s by rememberUpdatedState(onHold4sMenu)
 
-    pointerInput(Unit) {
+    pointerInput(hasLeadingCheckbox) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = true, pass = PointerEventPass.Main)
             if (down.isConsumed) return@awaitEachGesture
-            // Also ignore taps on the rightmost 56.dp zone where the 3-dot IconButton sits so 3-dot never accidentally plays the video/song!
-            val rightEdgeExclusionPx = 56.dp.toPx()
-            if (size.width > 160 && down.position.x >= size.width - rightEdgeExclusionPx) {
+            // Ignore taps on the rightmost 64.dp zone (3-dot IconButton) or leading checkbox zone so taps never play the item accidentally
+            val rightEdgeExclusionPx = 64.dp.toPx()
+            if (size.width > 140 && down.position.x >= size.width - rightEdgeExclusionPx) {
+                return@awaitEachGesture
+            }
+            if (hasLeadingCheckbox && down.position.x <= 56.dp.toPx()) {
                 return@awaitEachGesture
             }
 
@@ -801,10 +805,24 @@ fun FluffyMascot3DStudioPortrait(
     ) {
         val bmp = cardBmp
         if (bmp != null) {
+            val variantTint = remember(breed) {
+                when (breed) {
+                    CompanionBreed.CYBER_NEON_LION -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x3800E5FF), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    CompanionBreed.DISCO_PARTY_BUNNY -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x30FF4081), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    CompanionBreed.BHANGRA_KING_PANDA -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x2EFFB300), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    CompanionBreed.HIPHOP_GOLD_PUPPY -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x2E00E676), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    CompanionBreed.ROCKSTAR_CHICK_DJ -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x33FF1744), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    CompanionBreed.ROYAL_GOLD_TEDDY -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x30FFD700), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    CompanionBreed.COSMIC_ASTRO_PENGUIN -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x3800B0FF), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    CompanionBreed.VELVET_BOOMBOX_BEAR -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x33B388FF), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                    else -> null
+                }
+            }
             Image(
                 bitmap = bmp,
                 contentDescription = breed.displayName,
                 contentScale = if (showStudioBackdrop) ContentScale.Crop else ContentScale.Fit,
+                colorFilter = variantTint,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
@@ -852,6 +870,7 @@ fun RealisticCompanionOverlay(
     auraEffectId: String = "NEON_DJ",
     autoWalkEnabled: Boolean = true,
     animSpeedMultiplier: Float = 1.15f,
+    beatEnergy: Float = 0.45f,
     onQuickPlayTrigger: () -> Unit,
     onNextTrack: () -> Unit = {},
     onPrevTrack: () -> Unit = {},
@@ -872,8 +891,9 @@ fun RealisticCompanionOverlay(
 
     val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+    val mascotBoxHeightPx = with(density) { (mascotSizeDp + 28.dp).toPx() }
     val mascotSizePx = with(density) { mascotSizeDp.toPx() }
-    val floorY = (screenHeightPx - mascotSizePx - with(density) { bottomClearanceDp.toPx() }).coerceAtLeast(80f)
+    val floorY = (screenHeightPx - mascotBoxHeightPx - with(density) { bottomClearanceDp.toPx() }).coerceAtLeast(80f)
 
     val breed = remember(breedName, penguinsOnlyMode) {
         val selected = CompanionBreed.entries.find {
@@ -1138,9 +1158,10 @@ fun RealisticCompanionOverlay(
                 val totalEqW = w * 0.56f
                 val startEqX = w * 0.22f
                 val barGap = totalEqW / barCount
+                val beatGain = if (isMusicPlaying) (0.65f + beatEnergy.coerceIn(0f, 1f) * 0.70f) else 0.3f
                 for (i in 0 until barCount) {
                     val eqAmp = if (isMusicPlaying) {
-                        (abs(sin(t * 3.4f + i * 0.75f)) * 0.75f + 0.25f)
+                        ((abs(sin(t * 3.4f + i * 0.75f)) * 0.70f + 0.25f) * beatGain).coerceIn(0.22f, 1.0f)
                     } else {
                         0.22f
                     }
@@ -1207,10 +1228,24 @@ fun RealisticCompanionOverlay(
             // =========================================================================
             val parts = articulatedParts
             if (parts != null) {
+                val variantTint = remember(breed) {
+                    when (breed) {
+                        CompanionBreed.CYBER_NEON_LION -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x3800E5FF), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        CompanionBreed.DISCO_PARTY_BUNNY -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x30FF4081), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        CompanionBreed.BHANGRA_KING_PANDA -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x2EFFB300), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        CompanionBreed.HIPHOP_GOLD_PUPPY -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x2E00E676), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        CompanionBreed.ROCKSTAR_CHICK_DJ -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x33FF1744), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        CompanionBreed.ROYAL_GOLD_TEDDY -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x30FFD700), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        CompanionBreed.COSMIC_ASTRO_PENGUIN -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x3800B0FF), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        CompanionBreed.VELVET_BOOMBOX_BEAR -> androidx.compose.ui.graphics.ColorFilter.tint(Color(0x33B388FF), androidx.compose.ui.graphics.BlendMode.SrcAtop)
+                        else -> null
+                    }
+                }
                 Image(
                     bitmap = parts.fullCutoutBmp,
                     contentDescription = breed.displayName,
                     contentScale = ContentScale.Fit,
+                    colorFilter = variantTint,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = 18.dp, bottom = 6.dp, start = 4.dp, end = 4.dp)
@@ -1281,85 +1316,23 @@ fun RealisticCompanionOverlay(
             }
 
             // =========================================================================
-            // C. MUSO-STYLE FOREGROUND ARTICULATED WAVING PAWS, STEPPING FEET,
-            //    CROWN & GLOWING DJ HEADPHONE RINGS OVERLAY
+            // C. ROYAL CROWN ACCENT (Clean 3D-compatible — no 2D circle limb patches)
             // =========================================================================
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val t = animTick
-                val w = size.width
-                val h = size.height
-                val isDancingNow = isMusicPlaying || happyJumpTicks > 0 || flip360Ticks > 0
-
-                // 1. Articulated Waving 3D Plush Paws (Left & Right Hands bopping to the beat!)
-                val leftHandWaveY = if (isDancingNow) sin(t * 3.8f) * (h * 0.085f) else sin(t * 1.4f) * (h * 0.022f)
-                val rightHandWaveY = if (isDancingNow) -sin(t * 3.8f) * (h * 0.085f) else cos(t * 1.4f) * (h * 0.022f)
-                val pawRadius = w * 0.072f
-
-                // Left Waving Plush Paw + Glowing DJ Wristband
-                val leftPawCenter = Offset(w * 0.14f, h * 0.56f + leftHandWaveY)
-                drawCircle(color = breed.shadowFur, radius = pawRadius * 1.08f, center = leftPawCenter)
-                drawCircle(color = breed.primaryFur, radius = pawRadius, center = leftPawCenter)
-                drawCircle(color = breed.muzzlePatch, radius = pawRadius * 0.52f, center = leftPawCenter)
-                if (isDancingNow) {
-                    drawCircle(
-                        color = breed.headphoneAccent,
-                        radius = pawRadius * 1.15f,
-                        center = leftPawCenter,
-                        style = Stroke(width = 1.6.dp.toPx())
-                    )
-                }
-
-                // Right Waving Plush Paw + Glowing DJ Wristband
-                val rightPawCenter = Offset(w * 0.86f, h * 0.56f + rightHandWaveY)
-                drawCircle(color = breed.shadowFur, radius = pawRadius * 1.08f, center = rightPawCenter)
-                drawCircle(color = breed.primaryFur, radius = pawRadius, center = rightPawCenter)
-                drawCircle(color = breed.muzzlePatch, radius = pawRadius * 0.52f, center = rightPawCenter)
-                if (isDancingNow) {
-                    drawCircle(
-                        color = auraEffect.primaryColor,
-                        radius = pawRadius * 1.15f,
-                        center = rightPawCenter,
-                        style = Stroke(width = 1.6.dp.toPx())
-                    )
-                }
-
-                // 2. Articulated Stepping Plush Feet / Sneakers on the Turntable
-                val leftFootStepY = if (isDancingNow) (-abs(sin(t * 3.8f)) * (h * 0.055f)) else 0f
-                val rightFootStepY = if (isDancingNow) (-abs(cos(t * 3.8f)) * (h * 0.055f)) else 0f
-                drawOval(
-                    color = breed.primaryFur,
-                    topLeft = Offset(w * 0.25f, h * 0.80f + leftFootStepY),
-                    size = Size(w * 0.17f, h * 0.095f)
-                )
-                drawOval(
-                    color = breed.headphoneAccent,
-                    topLeft = Offset(w * 0.25f, h * 0.80f + leftFootStepY),
-                    size = Size(w * 0.17f, h * 0.095f),
-                    style = Stroke(width = 1.4.dp.toPx())
-                )
-                drawOval(
-                    color = breed.primaryFur,
-                    topLeft = Offset(w * 0.58f, h * 0.80f + rightFootStepY),
-                    size = Size(w * 0.17f, h * 0.095f)
-                )
-                drawOval(
-                    color = breed.headphoneAccent,
-                    topLeft = Offset(w * 0.58f, h * 0.80f + rightFootStepY),
-                    size = Size(w * 0.17f, h * 0.095f),
-                    style = Stroke(width = 1.4.dp.toPx())
-                )
-
-                // 3. Royal Golden Crown for Royal/King Mascots
-                if (breed.wearsCrown) {
+            if (breed.wearsCrown) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val t = animTick
+                    val w = size.width
+                    val h = size.height
+                    val isDancingNow = isMusicPlaying || happyJumpTicks > 0 || flip360Ticks > 0
                     val crownBob = if (isDancingNow) -abs(sin(t * 3.2f)) * (h * 0.03f) else 0f
                     val crownPath = Path().apply {
-                        moveTo(w * 0.37f, h * 0.20f + crownBob)
-                        lineTo(w * 0.35f, h * 0.11f + crownBob)
-                        lineTo(w * 0.44f, h * 0.16f + crownBob)
-                        lineTo(w * 0.50f, h * 0.09f + crownBob)
-                        lineTo(w * 0.56f, h * 0.16f + crownBob)
-                        lineTo(w * 0.65f, h * 0.11f + crownBob)
-                        lineTo(w * 0.63f, h * 0.20f + crownBob)
+                        moveTo(w * 0.37f, h * 0.21f + crownBob)
+                        lineTo(w * 0.35f, h * 0.12f + crownBob)
+                        lineTo(w * 0.44f, h * 0.17f + crownBob)
+                        lineTo(w * 0.50f, h * 0.10f + crownBob)
+                        lineTo(w * 0.56f, h * 0.17f + crownBob)
+                        lineTo(w * 0.65f, h * 0.12f + crownBob)
+                        lineTo(w * 0.63f, h * 0.21f + crownBob)
                         close()
                     }
                     drawPath(crownPath, color = Color(0xFFFFD700))
@@ -1424,7 +1397,12 @@ fun RealisticCompanionOverlay(
             exit = fadeOut() + scaleOut(targetScale = 0.92f),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(horizontal = 12.dp, vertical = 96.dp)
+                .padding(
+                    start = 12.dp,
+                    end = 12.dp,
+                    top = 24.dp,
+                    bottom = bottomClearanceDp.coerceAtLeast(108.dp)
+                )
         ) {
             Column(
                 modifier = Modifier

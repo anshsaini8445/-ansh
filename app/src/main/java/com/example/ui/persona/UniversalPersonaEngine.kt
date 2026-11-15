@@ -104,7 +104,7 @@ enum class DemographicMode(
         id = "BHARAT_DESI",
         badgeEmoji = "🇮🇳",
         title = "Bharat Royal Masala",
-        subtitle = "Instant ShareKaro • Status Saver • Dolby Desi Bass Boost",
+        subtitle = "Instant Hybrid Share • Status Saver • Hybrid Desi Bass Boost",
         primaryAccent = Color(0xFFFF9100),
         secondaryAccent = Color(0xFF00E676),
         titleFontSize = 15.sp,

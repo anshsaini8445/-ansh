@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
@@ -140,10 +141,29 @@ fun VideoSectionScreen(
         viewModel.loadMedia()
     }
 
+    val selectedIds = remember { mutableStateListOf<String>() }
+    var pendingSystemBatchDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+
     val systemBatchDeleteLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) {
-        viewModel.loadMedia()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            PermanentDeleteHelper.markItemsPermanentlyDeleted(context, pendingSystemBatchDeleteItems)
+            selectedIds.clear()
+            Toast.makeText(
+                context,
+                if (isHindi) "${pendingSystemBatchDeleteItems.size} वीडियो हमेशा के लिए हटा दिए गए" else "Deleted ${pendingSystemBatchDeleteItems.size} Video(s) Permanently",
+                Toast.LENGTH_SHORT
+            ).show()
+            viewModel.loadMedia()
+        } else {
+            Toast.makeText(
+                context,
+                if (isHindi) "डिलीट रद्द किया गया — फ़ाइलें सुरक्षित हैं" else "Delete Cancelled — Files Kept",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        pendingSystemBatchDeleteItems = emptyList()
     }
 
     // Scan on launch if permission is already granted (MainActivity handles initial permission dialog)
@@ -162,7 +182,6 @@ fun VideoSectionScreen(
     }
 
     // Multi-Select Mode State & Batch Dialog States
-    val selectedIds = remember { mutableStateListOf<String>() }
     val isMultiSelectMode = selectedIds.isNotEmpty()
     var pendingDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var showMultiSelectDetailsDialog by remember { mutableStateOf(false) }
@@ -258,7 +277,8 @@ fun VideoSectionScreen(
                     }
                 )
         ) {
-            // --- 1. PROMINENT TOP BAR: App Icon + "Hybrid Player" + Clear Device Time & Battery + Theme/Photo Studio ---
+            // --- 1. PROMINENT TOP BAR (Hidden in Full-Screen Status Reels tab) ---
+            if (activeSubTab != "Status") {
             if (isMultiSelectMode) {
                 Row(
                     modifier = Modifier
@@ -492,7 +512,9 @@ fun VideoSectionScreen(
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(androidx.compose.foundation.rememberScrollState())
                 ) {
                     val tabs = listOf(
                         Triple("Video", if (isHindi) "वीडियो" else "Video", Icons.Default.SmartDisplay),
@@ -547,10 +569,10 @@ fun VideoSectionScreen(
                     }
                 }
 
-                // Multi-Select Checklist, Sort & View Toggle Icons
+                // Multi-Select Checklist, Sort & View Toggle Icons (42dp clean touch targets)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    horizontalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
                     IconButton(
                         onClick = {
@@ -560,7 +582,7 @@ fun VideoSectionScreen(
                                 selectedIds.add(sortedVideos.first().id)
                             }
                         },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Checklist,
@@ -571,7 +593,7 @@ fun VideoSectionScreen(
                     }
                     IconButton(
                         onClick = { showSortDialog = true },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.SwapVert,
@@ -582,7 +604,7 @@ fun VideoSectionScreen(
                     }
                     IconButton(
                         onClick = { viewModel.toggleVideoViewMode() },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
                             imageVector = if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
@@ -630,6 +652,7 @@ fun VideoSectionScreen(
                     )
                 }
             }
+            } // end if (activeSubTab != "Status")
 
             // --- 4. HORIZONTAL PAGER ACROSS THE 4 SUB-TABS (Swipe Left/Right or Tap Tabs!) ---
             HorizontalPager(
@@ -698,7 +721,7 @@ fun VideoSectionScreen(
                         } else if (isGridView) {
                             LazyVerticalGrid(
                                 columns = GridCells.Fixed(2),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 160.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                                 modifier = Modifier.fillMaxSize()
@@ -730,7 +753,7 @@ fun VideoSectionScreen(
                             }
                         } else {
                             LazyColumn(
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 160.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
@@ -768,7 +791,7 @@ fun VideoSectionScreen(
                             videos.groupBy { it.folderName }
                         }
                         LazyColumn(
-                            contentPadding = PaddingValues(16.dp),
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 160.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxSize()
                         ) {
@@ -895,9 +918,40 @@ fun VideoSectionScreen(
                                     textAlign = TextAlign.Center
                                 )
                             }
+                        } else if (isGridView) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(2),
+                                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 160.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                items(favoriteVideos, key = { "fav_grid_${it.id}" }) { video ->
+                                    val isSelected = video.id in selectedIds
+                                    VideoGridCard(
+                                        video = video,
+                                        isHindi = isHindi,
+                                        isSelected = isSelected,
+                                        isMultiSelectMode = isMultiSelectMode,
+                                        showBadges = hdrBadges,
+                                        progressFraction = ((historyProgressMap[video.id] ?: 0L).toFloat() / video.duration.coerceAtLeast(1L)).coerceIn(0f, 1f),
+                                        onClick = {
+                                            if (isMultiSelectMode) {
+                                                if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
+                                            } else {
+                                                onPlayVideo(video)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            if (isSelected) selectedIds.remove(video.id) else selectedIds.add(video.id)
+                                        },
+                                        onMoreClick = { actionTargetVideo = video }
+                                    )
+                                }
+                            }
                         } else {
                             LazyColumn(
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 160.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
@@ -1203,23 +1257,39 @@ fun VideoSectionScreen(
                     OutlinedButton(
                         onClick = {
                             val batchToDelete = pendingDeleteItems.toList()
-                            val sysPending = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, batchToDelete)
-                            viewModel.deleteBatchPermanently(batchToDelete)
                             pendingDeleteItems = emptyList()
-                            selectedIds.clear()
-                            if (sysPending != null) {
-                                try {
-                                    systemBatchDeleteLauncher.launch(
-                                        androidx.activity.result.IntentSenderRequest.Builder(sysPending.intentSender).build()
-                                    )
-                                } catch (_: Exception) {
-                                }
+                            val remainingItems = batchToDelete.filter { item ->
+                                !PermanentDeleteHelper.deletePermanently(context, item)
                             }
-                            Toast.makeText(
-                                context,
-                                if (isHindi) "${batchToDelete.size} वीडियो हमेशा के लिए हटा दिए गए" else "Deleted ${batchToDelete.size} Video(s) Permanently",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            if (remainingItems.size < batchToDelete.size) {
+                                viewModel.loadMedia()
+                            }
+                            if (remainingItems.isNotEmpty()) {
+                                val sysPending = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, remainingItems)
+                                if (sysPending != null) {
+                                    pendingSystemBatchDeleteItems = remainingItems
+                                    try {
+                                        systemBatchDeleteLauncher.launch(
+                                            androidx.activity.result.IntentSenderRequest.Builder(sysPending.intentSender).build()
+                                        )
+                                        return@OutlinedButton
+                                    } catch (_: Exception) {
+                                        pendingSystemBatchDeleteItems = emptyList()
+                                    }
+                                }
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "कुछ फ़ाइलें डिलीट नहीं हो सकीं" else "Some files could not be deleted directly",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                selectedIds.clear()
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "${batchToDelete.size} वीडियो हमेशा के लिए हटा दिए गए" else "Deleted ${batchToDelete.size} Video(s) Permanently",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -1265,10 +1335,10 @@ fun VideoSectionScreen(
                 ).show()
             },
             onPlayBackgroundAudio = { vid ->
-                viewModel.playMusic(vid)
+                viewModel.playVideoInBackground(vid, 0L)
                 Toast.makeText(
                     context,
-                    if (isHindi) "🎧 बैकग्राउंड ऑडियो चालू" else "🎧 Playing in Background Audio",
+                    if (isHindi) "🎧 बैकग्राउंड वीडियो ऑडियो चालू" else "🎧 Playing in Background Video Audio",
                     Toast.LENGTH_SHORT
                 ).show()
             },
@@ -1456,7 +1526,7 @@ fun VideoSectionScreen(
                                 showMultiSelectMoreDialog = false
                                 selectedIds.clear()
                                 if (firstVid != null) {
-                                    viewModel.playMusic(firstVid)
+                                    viewModel.playVideoInBackground(firstVid, 0L)
                                     Toast.makeText(
                                         context,
                                         if (isHindi) "🎧 बैकग्राउंड ऑडियो चालू: ${firstVid.cleanTitle}" else "🎧 Playing in Background Audio: ${firstVid.cleanTitle}",
@@ -1862,14 +1932,41 @@ private fun StatusReelsVerticalPagerView(
                 var softwareReelBitmap by remember(video.id, isCurrentPage) { mutableStateOf<Bitmap?>(null) }
                 var activeReelMediaPlayer by remember(video.id, isCurrentPage) { mutableStateOf<android.media.MediaPlayer?>(null) }
 
-                // Apply Mute & Speed changes live to active hardware MediaPlayer
-                LaunchedEffect(isMuted, statusPlaybackSpeed, activeReelMediaPlayer) {
+                val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner, video.id, isCurrentPage) {
+                    val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                        if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                            isPausedByTap = true
+                            try { activeReelMediaPlayer?.pause() } catch (_: Exception) {}
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose {
+                        lifecycleOwner.lifecycle.removeObserver(observer)
+                        try {
+                            activeReelMediaPlayer?.let { mp ->
+                                if (mp.isPlaying) mp.stop()
+                                mp.release()
+                            }
+                        } catch (_: Exception) {
+                        }
+                        activeReelMediaPlayer = null
+                    }
+                }
+
+                // Sync tap pause/resume, Mute & Speed changes live to active MediaPlayer (including direct FD fallback)
+                LaunchedEffect(isMuted, statusPlaybackSpeed, isPausedByTap, activeReelMediaPlayer, isCurrentPage) {
                     activeReelMediaPlayer?.let { mp ->
                         try {
                             val vol = if (isMuted) 0f else 1f
                             mp.setVolume(vol, vol)
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && mp.isPlaying) {
-                                mp.playbackParams = mp.playbackParams.setSpeed(statusPlaybackSpeed)
+                            if (!isCurrentPage || isPausedByTap) {
+                                if (mp.isPlaying) mp.pause()
+                            } else {
+                                if (!mp.isPlaying) mp.start()
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                    mp.playbackParams = mp.playbackParams.setSpeed(statusPlaybackSpeed)
+                                }
                             }
                         } catch (_: Exception) {
                         }
@@ -2299,42 +2396,80 @@ private fun StatusReelsVerticalPagerView(
                             )
                         }
 
-                        // 4. SAVE STATUS TO GALLERY (1-Tap Status Saver!)
+                        // 4. SAVE STATUS TO GALLERY (Async Dispatchers.IO + MediaStore API 29+ Compatible!)
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.clickable {
-                                try {
-                                    val moviesDir = android.os.Environment.getExternalStoragePublicDirectory(
-                                        android.os.Environment.DIRECTORY_MOVIES
-                                    )
-                                    val statusSaveDir = File(moviesDir, "HybridStatus")
-                                    if (!statusSaveDir.exists()) statusSaveDir.mkdirs()
-                                    val safeFileName = "${video.cleanTitle.replace(Regex("[^a-zA-Z0-9 _-]"), "").take(30).ifBlank { "Status" }}_${video.id.hashCode()}.mp4"
-                                    val dstFile = File(statusSaveDir, safeFileName)
-                                    if (!dstFile.exists()) {
-                                        if (video.path.startsWith("content://")) {
-                                            context.contentResolver.openInputStream(Uri.parse(video.path))?.use { input ->
-                                                dstFile.outputStream().use { output -> input.copyTo(output) }
+                                coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    val savedOk = try {
+                                        val safeFileName = "${video.cleanTitle.replace(Regex("[^a-zA-Z0-9 _-]"), "").take(30).ifBlank { "Status" }}_${video.id.hashCode()}.mp4"
+                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                                            val values = android.content.ContentValues().apply {
+                                                put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, safeFileName)
+                                                put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                                                put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "${android.os.Environment.DIRECTORY_MOVIES}/HybridStatus")
+                                                put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
                                             }
+                                            val uri = context.contentResolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                                            if (uri != null) {
+                                                context.contentResolver.openOutputStream(uri)?.use { out ->
+                                                    if (video.path.startsWith("content://")) {
+                                                        context.contentResolver.openInputStream(Uri.parse(video.path))?.use { it.copyTo(out) }
+                                                    } else {
+                                                        val src = File(video.path)
+                                                        if (src.exists()) src.inputStream().use { it.copyTo(out) }
+                                                    }
+                                                }
+                                                values.clear()
+                                                values.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+                                                context.contentResolver.update(uri, values, null, null)
+                                                true
+                                            } else false
                                         } else {
-                                            val src = File(video.path)
-                                            if (src.exists()) src.copyTo(dstFile, overwrite = true)
+                                            val moviesDir = android.os.Environment.getExternalStoragePublicDirectory(
+                                                android.os.Environment.DIRECTORY_MOVIES
+                                            )
+                                            val statusSaveDir = File(moviesDir, "HybridStatus")
+                                            if (!statusSaveDir.exists()) statusSaveDir.mkdirs()
+                                            val dstFile = File(statusSaveDir, safeFileName)
+                                            if (!dstFile.exists()) {
+                                                if (video.path.startsWith("content://")) {
+                                                    context.contentResolver.openInputStream(Uri.parse(video.path))?.use { input ->
+                                                        dstFile.outputStream().use { output -> input.copyTo(output) }
+                                                    }
+                                                } else {
+                                                    val src = File(video.path)
+                                                    if (src.exists()) src.copyTo(dstFile, overwrite = true)
+                                                }
+                                                android.media.MediaScannerConnection.scanFile(
+                                                    context,
+                                                    arrayOf(dstFile.absolutePath),
+                                                    arrayOf("video/mp4"),
+                                                    null
+                                                )
+                                            }
+                                            dstFile.exists() && dstFile.length() > 0L
                                         }
-                                        android.media.MediaScannerConnection.scanFile(
-                                            context,
-                                            arrayOf(dstFile.absolutePath),
-                                            arrayOf("video/mp4"),
-                                            null
-                                        )
+                                    } catch (_: Exception) {
+                                        false
                                     }
-                                } catch (_: Exception) {
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        if (savedOk) {
+                                            if (!isLiked) onToggleLike(video)
+                                            Toast.makeText(
+                                                context,
+                                                if (isHindi) "💾 स्टेटस गैलरी और पसंदीदा में सेव हो गया!" else "💾 Status Saved to Gallery & Favourite!",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                if (isHindi) "स्टेटस सेव नहीं हो सका" else "Unable to save status file",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
                                 }
-                                if (!isLiked) onToggleLike(video)
-                                Toast.makeText(
-                                    context,
-                                    if (isHindi) "💾 स्टेटस गैलरी और पसंदीदा में सेव हो गया!" else "💾 Status Saved to Gallery & Favourite!",
-                                    Toast.LENGTH_SHORT
-                                ).show()
                             }
                         ) {
                             Box(
@@ -3018,7 +3153,8 @@ private fun VideoDetailedRowItem(
             .timedMediaTouchHold(
                 onClick = onClick,
                 onHold2sPlay = onLongClick,
-                onHold4sMenu = onMoreClick
+                onHold4sMenu = onMoreClick,
+                hasLeadingCheckbox = isMultiSelectMode || isSelected
             )
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -3342,7 +3478,9 @@ private fun VideoGridCard(
             }
             IconButton(
                 onClick = onMoreClick,
-                modifier = Modifier.size(30.dp)
+                modifier = Modifier
+                    .size(44.dp)
+                    .testTag("video_grid_more_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.MoreVert,

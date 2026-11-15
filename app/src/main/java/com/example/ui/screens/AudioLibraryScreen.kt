@@ -145,7 +145,8 @@ fun AudioLibraryScreen(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            viewModel.deleteBatchPermanently(pendingBatchDeleteItems)
+            PermanentDeleteHelper.markItemsPermanentlyDeleted(context, pendingBatchDeleteItems)
+            viewModel.loadMedia()
             Toast.makeText(
                 context,
                 if (isHindi) "${pendingBatchDeleteItems.size} गाने हमेशा के लिए हटाए गए" else "Deleted ${pendingBatchDeleteItems.size} songs permanently",
@@ -154,6 +155,13 @@ fun AudioLibraryScreen(
             pendingBatchDeleteItems = emptyList()
             selectedTrackIds.clear()
             multiSelectMode = false
+        } else {
+            pendingBatchDeleteItems = emptyList()
+            Toast.makeText(
+                context,
+                if (isHindi) "डिलीट रद्द किया गया — फ़ाइलें सुरक्षित हैं" else "Delete Cancelled — Files Kept",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -166,14 +174,26 @@ fun AudioLibraryScreen(
                 unDeleted.add(item)
             }
         }
-        viewModel.deleteBatchPermanently(itemsToDelete)
+        if (unDeleted.size < itemsToDelete.size) {
+            viewModel.loadMedia()
+        }
         if (unDeleted.isNotEmpty()) {
             val intentSender = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, unDeleted)
             if (intentSender != null) {
                 pendingBatchDeleteItems = unDeleted
-                batchDeleteLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
-                return
+                try {
+                    batchDeleteLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+                    return
+                } catch (_: Exception) {
+                    pendingBatchDeleteItems = emptyList()
+                }
             }
+            Toast.makeText(
+                context,
+                if (isHindi) "कुछ गाने डिलीट नहीं हो सके" else "Some tracks could not be deleted directly",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
         }
         Toast.makeText(
             context,
@@ -607,7 +627,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 92.dp
+                            bottom = 160.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -650,7 +670,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 92.dp
+                            bottom = 160.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -685,7 +705,8 @@ fun AudioLibraryScreen(
                                 subtitle = if (isHindi) "कस्टम प्लेलिस्ट" else "Custom Playlist",
                                 icon = Icons.AutoMirrored.Filled.QueueMusic,
                                 accent = HybridEmerald,
-                                onClick = { selectedPlaylistId = pl.id }
+                                onClick = { selectedPlaylistId = pl.id },
+                                onDeletePlaylist = { viewModel.removePlaylist(pl.id) }
                             )
                         }
                     }
@@ -706,7 +727,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 92.dp
+                            bottom = 160.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -764,7 +785,7 @@ fun AudioLibraryScreen(
                             start = if (isTablet) 20.dp else 12.dp,
                             end = if (isTablet) 20.dp else 12.dp,
                             top = 6.dp,
-                            bottom = 92.dp
+                            bottom = 160.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -905,7 +926,7 @@ fun AudioLibraryScreen(
                 }
             }
         } else {
-            val activeTrack = nowPlaying ?: sortedMusicItems.firstOrNull()
+            val activeTrack = nowPlaying?.takeIf { !it.isVideo }
             if (activeTrack != null) {
                 Box(
                     modifier = Modifier
@@ -1648,7 +1669,8 @@ private fun AudioFolderRowCard(
     subtitle: String,
     icon: ImageVector,
     accent: Color,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDeletePlaylist: (() -> Unit)? = null
 ) {
     LiquidGlassBox(
         modifier = Modifier.fillMaxWidth(),
@@ -1697,6 +1719,19 @@ private fun AudioFolderRowCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            if (onDeletePlaylist != null) {
+                IconButton(
+                    onClick = onDeletePlaylist,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteOutline,
+                        contentDescription = "Delete Playlist",
+                        tint = HybridCoralRed,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
             Icon(
                 imageVector = Icons.Default.ChevronRight,
                 contentDescription = null,
@@ -1737,7 +1772,8 @@ private fun CleanAudioTrackRow(
                 onHold4sMenu = {
                     onLongClick()
                     onOpenMenu()
-                }
+                },
+                hasLeadingCheckbox = multiSelectMode
             )
             .testTag("audio_track_row_${track.id}"),
         cornerRadius = 16.dp,
@@ -1821,7 +1857,7 @@ private fun CleanAudioTrackRow(
             IconButton(
                 onClick = onOpenMenu,
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(44.dp)
                     .testTag("audio_3dot_${track.id}")
             ) {
                 Icon(

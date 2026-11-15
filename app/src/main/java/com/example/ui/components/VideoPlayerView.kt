@@ -58,17 +58,115 @@ import com.example.helpers.*
 import com.example.ui.theme.*
 import com.example.ui.video.VideoResolutionPreset
 import com.example.ui.video.VisualVideoControlsStrip
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 
 private const val CONTROLS_AUTO_HIDE_DELAY_MS = 10_000L
 
+private data class VideoSubtitleCue(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String
+)
+
+private fun parseSrtOrVttSubtitles(raw: String): List<VideoSubtitleCue> {
+    val cues = mutableListOf<VideoSubtitleCue>()
+    val timeRegex = Regex("""(?:(\d{1,2}):)?(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})[,.](\d{3})""")
+    fun toMs(h: String?, m: String, s: String, ms: String): Long {
+        val hh = h?.toLongOrNull() ?: 0L
+        val mm = m.toLongOrNull() ?: 0L
+        val ss = s.toLongOrNull() ?: 0L
+        val milli = ms.toLongOrNull() ?: 0L
+        return ((hh * 3600L + mm * 60L + ss) * 1000L) + milli
+    }
+    val blocks = raw.replace("\r\n", "\n").split(Regex("""\n\s*\n"""))
+    for (block in blocks) {
+        val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val timeLineIdx = lines.indexOfFirst { timeRegex.containsMatchIn(it) }
+        if (timeLineIdx < 0) continue
+        val match = timeRegex.find(lines[timeLineIdx]) ?: continue
+        val startMs = toMs(match.groupValues[1].ifEmpty { null }, match.groupValues[2], match.groupValues[3], match.groupValues[4])
+        val endMs = toMs(match.groupValues[5].ifEmpty { null }, match.groupValues[6], match.groupValues[7], match.groupValues[8])
+        val textLines = lines.drop(timeLineIdx + 1)
+            .joinToString("\n")
+            .replace(Regex("""<[^>]+>"""), "")
+            .trim()
+        if (textLines.isNotEmpty() && endMs >= startMs) {
+            cues.add(VideoSubtitleCue(startMs, endMs, textLines))
+        }
+    }
+    return cues
+}
+
+private fun saveSnapshotBitmapToGallery(
+    context: Context,
+    videoPath: String,
+    posMs: Long,
+    title: String
+): Boolean {
+    return try {
+        val retriever = android.media.MediaMetadataRetriever()
+        try {
+            when {
+                videoPath.startsWith("http://", true) || videoPath.startsWith("https://", true) ->
+                    retriever.setDataSource(videoPath, HashMap())
+                videoPath.startsWith("content://") ->
+                    retriever.setDataSource(context, Uri.parse(videoPath))
+                else ->
+                    retriever.setDataSource(videoPath)
+            }
+            val frameBmp = retriever.getFrameAtTime(posMs.coerceAtLeast(0L) * 1000L) ?: return false
+            val safeName = title.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(24).ifBlank { "HybridFrame" }
+            val fileName = "${safeName}_${System.currentTimeMillis()}.jpg"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "${android.os.Environment.DIRECTORY_PICTURES}/HybridPlayer")
+                    put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: return false
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    frameBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+                } ?: return false
+                values.clear()
+                values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                context.contentResolver.update(uri, values, null, null)
+                true
+            } else {
+                val picDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES)
+                val appDir = File(picDir, "HybridPlayer").apply { if (!exists()) mkdirs() }
+                val savedFile = File(appDir, fileName)
+                FileOutputStream(savedFile).use { out ->
+                    frameBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+                }
+                android.media.MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(savedFile.absolutePath),
+                    arrayOf("image/jpeg"),
+                    null
+                )
+                savedFile.exists() && savedFile.length() > 0L
+            }
+        } finally {
+            try { retriever.release() } catch (_: Exception) {}
+        }
+    } catch (_: Exception) {
+        false
+    }
+}
+
 @Composable
 fun VideoPlayerView(
     videoPath: String,
     initialPositionMs: Long = 0L,
+    initialSpeed: Float = 1.0f,
     onProgressUpdate: (Long) -> Unit,
     onBackClick: () -> Unit,
     accentColor: Color = HybridEmerald,
@@ -77,10 +175,12 @@ fun VideoPlayerView(
     onSelectVideo: (MediaItem) -> Unit = {},
     onBackgroundAudioPlay: () -> Unit = {},
     onBackgroundAudioPlayWithPosition: ((Long, Float) -> Unit)? = null,
-    onMinimizeToFloatingMiniPlayer: ((Long) -> Unit)? = null
+    onMinimizeToFloatingMiniPlayer: ((Long) -> Unit)? = null,
+    onLockInVault: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val hostView = LocalView.current
+    val coroutineScope = rememberCoroutineScope()
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val prefs = remember { context.getSharedPreferences("HYBRID_PLAYER_PREFS", Context.MODE_PRIVATE) }
@@ -104,7 +204,7 @@ fun VideoPlayerView(
     }
     var volumePercent by remember { mutableStateOf(100) } // 0% to 200% (Hardware LoudnessEnhancer above 100%)
     var zoomScale by remember { mutableStateOf(1.0f) } // 0.5f (50%) to 6.0f (600%)
-    var playbackSpeed by remember { mutableStateOf(1.0f) }
+    var playbackSpeed by remember(videoPath) { mutableStateOf(initialSpeed.coerceIn(0.25f, 4.0f)) }
     var isLongPressSpeedActive by remember { mutableStateOf(false) }
     var gestureHudState by remember { mutableStateOf<GestureHudState?>(null) }
     var gestureOverlayText by remember { mutableStateOf<String?>(null) }
@@ -114,9 +214,36 @@ fun VideoPlayerView(
 
     // Extra Pro Tools State
     var visualFilter by remember { mutableStateOf("Original") }
-    var selectedAudioTrack by remember { mutableStateOf("Track 1: Original Stereo / Dual Audio") }
+    var selectedAudioTrackIndex by remember(videoPath) { mutableStateOf(-1) }
     var subtitlesEnabled by remember { mutableStateOf(false) }
     var subtitleSyncOffsetMs by remember { mutableStateOf(0L) }
+    var loadedSubtitleCues by remember(videoPath) { mutableStateOf<List<VideoSubtitleCue>>(emptyList()) }
+    var loadedSubtitleFileName by remember(videoPath) { mutableStateOf<String?>(null) }
+    val subtitlePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch(Dispatchers.IO) {
+                val parsed = try {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+                        parseSrtOrVttSubtitles(reader.readText())
+                    } ?: emptyList()
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                withContext(Dispatchers.Main) {
+                    if (parsed.isNotEmpty()) {
+                        loadedSubtitleCues = parsed
+                        loadedSubtitleFileName = uri.lastPathSegment?.substringAfterLast('/') ?: "Subtitle File"
+                        subtitlesEnabled = true
+                        Toast.makeText(context, "Loaded ${parsed.size} subtitle lines", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "No valid .SRT / .VTT cues found in file", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
     var abPointA by remember { mutableStateOf<Long?>(null) }
     var abPointB by remember { mutableStateOf<Long?>(null) }
 
@@ -324,10 +451,15 @@ fun VideoPlayerView(
                             or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
                         )
                 } else {
-                    // Even when controls are visible, keep the bottom 3-button navigation road hidden in lock mode
-                    // and hide navigationBars during video playback so bottom controls are never blocked
-                    controller.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                    // Keep bottom 3-button system navigation bar hidden even while controls show
                     controller.hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+                    @Suppress("DEPRECATION")
+                    window.decorView.systemUiVisibility = (
+                        android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        )
                 }
             } catch (_: Exception) {
             }
@@ -704,9 +836,9 @@ fun VideoPlayerView(
                     totalDurationMs = dur
                     onProgressUpdate(pos)
 
-                    val sec = pos / 1000L
-                    if (sec != lastNotifSec) {
-                        lastNotifSec = sec
+                    val notifBucket = pos / 5000L
+                    if (notifBucket != lastNotifSec) {
+                        lastNotifSec = notifBucket
                         postComposeVideoNotification(true, pos)
                     }
 
@@ -1066,14 +1198,14 @@ fun VideoPlayerView(
             )
         }
 
-        // 8K Visual Enhancer Filter Overlay Tint
+        // Visual Tone Filter Overlay Tint
         val filterTint = remember(visualFilter) {
             when (visualFilter) {
-                "8K HDR" -> Color(0x14FF9800)
-                "Clear Sharp" -> Color(0x12FFFFFF)
-                "Crystal Ice Blue" -> Color(0x1E00E5FF)
                 "Warm Cinema" -> Color(0x22FFB300)
-                "AMOLED Contrast" -> Color(0x26000000)
+                "Cool Ice" -> Color(0x1E00E5FF)
+                "High Contrast" -> Color(0x26000000)
+                "Vivid Sunset" -> Color(0x1CFF5252)
+                "Night Soft" -> Color(0x36050A14)
                 else -> Color.Transparent
             }
         }
@@ -1095,22 +1227,34 @@ fun VideoPlayerView(
             )
         }
 
-        // Live Subtitle Overlay (.srt / .vtt / .ass)
+        // Live Subtitle Overlay (.srt / .vtt)
         if (subtitlesEnabled) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = if (showControls) 96.dp else 28.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xAA000000))
-                    .padding(horizontal = 14.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = "♪ [Studio CC Sync ${if (subtitleSyncOffsetMs >= 0) "+$subtitleSyncOffsetMs" else "$subtitleSyncOffsetMs"}ms] Playing $displayTitle",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+            val adjustedPos = (currentPosMs + subtitleSyncOffsetMs).coerceAtLeast(0L)
+            val activeCue = remember(loadedSubtitleCues, adjustedPos) {
+                loadedSubtitleCues.firstOrNull { adjustedPos in it.startMs..it.endMs }
+            }
+            val captionText = when {
+                loadedSubtitleCues.isEmpty() -> "No subtitle file loaded — tap Subtitles to load .SRT / .VTT"
+                activeCue != null -> activeCue.text
+                else -> null
+            }
+            if (captionText != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = if (showControls) 96.dp else 28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xBB000000))
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = captionText,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
 
@@ -1603,27 +1747,18 @@ fun VideoPlayerView(
                             }
                         },
                         onCaptureScreenshot = {
-                            val savedFile = File(context.cacheDir, "hybrid_frame_${System.currentTimeMillis()}.jpg")
-                            try {
-                                val retriever = android.media.MediaMetadataRetriever()
-                                if (videoPath.startsWith("http")) {
-                                    retriever.setDataSource(videoPath, HashMap())
-                                } else if (videoPath.startsWith("content://")) {
-                                    retriever.setDataSource(context, Uri.parse(videoPath))
-                                } else {
-                                    retriever.setDataSource(videoPath)
+                            val snapPos = currentPosMs
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val savedOk = saveSnapshotBitmapToGallery(context, videoPath, snapPos, displayTitle)
+                                withContext(Dispatchers.Main) {
+                                    gestureOverlayText = if (savedOk) "📸 Snapshot Saved" else "⚠️ Snapshot Failed"
+                                    Toast.makeText(
+                                        context,
+                                        if (savedOk) "📸 Frame saved to Pictures/HybridPlayer" else "Unable to extract video frame",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 }
-                                val frameBmp = retriever.getFrameAtTime(currentPosMs * 1000L)
-                                retriever.release()
-                                if (frameBmp != null) {
-                                    FileOutputStream(savedFile).use { out ->
-                                        frameBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
-                                    }
-                                }
-                            } catch (_: Exception) {
                             }
-                            gestureOverlayText = "📸 Snapshot Saved"
-                            Toast.makeText(context, "📸 Snapshot saved: ${savedFile.name}", Toast.LENGTH_SHORT).show()
                         },
                         isBgAudioEnabled = false,
                         onToggleBgAudio = {
@@ -1731,15 +1866,15 @@ fun VideoPlayerView(
         }
     }
 
-    // --- 8K VISUAL ENHANCER FILTERS DIALOG ---
+    // --- VISUAL COLOR TONE FILTERS DIALOG ---
     if (showFilterDialog) {
         val filters = listOf(
-            "Original", "8K HDR", "Clear Sharp", "Crystal Ice Blue", "Warm Cinema", "AMOLED Contrast"
+            "Original", "Warm Cinema", "Cool Ice", "High Contrast", "Vivid Sunset", "Night Soft"
         )
         AlertDialog(
             onDismissRequest = { showFilterDialog = false },
             containerColor = HybridCardBg,
-            title = { Text("8K Visual Enhancer Filters", color = Color.White, fontWeight = FontWeight.Bold) },
+            title = { Text("Color Tone Filters", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     filters.forEach { f ->
@@ -1771,36 +1906,58 @@ fun VideoPlayerView(
         )
     }
 
-    // --- MULTI-LANGUAGE AUDIO TRACK SWITCHER DIALOG ---
+    // --- MULTI-TRACK AUDIO SELECTOR (Inspects Real MediaPlayer TrackInfo) ---
     if (showAudioTrackDialog) {
-        val tracks = listOf(
-            "Track 1: Original Stereo / Dual Audio",
-            "Track 2: Hindi Dolby 5.1 Surround",
-            "Track 3: English Studio Master AAC"
-        )
+        val realAudioTracks = remember(mediaPlayerRef, showAudioTrackDialog) {
+            try {
+                mediaPlayerRef?.trackInfo?.mapIndexedNotNull { index, info ->
+                    if (info.trackType == android.media.MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) {
+                        val lang = info.language?.takeIf { it.isNotBlank() && it != "und" }?.uppercase(Locale.US) ?: "Default"
+                        index to "Audio Track ${index + 1} ($lang)"
+                    } else null
+                } ?: emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
         AlertDialog(
             onDismissRequest = { showAudioTrackDialog = false },
             containerColor = HybridCardBg,
-            title = { Text("Multi-Language Audio Track", color = Color.White, fontWeight = FontWeight.Bold) },
+            title = { Text("Audio Track Switcher", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    tracks.forEach { t ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (selectedAudioTrack == t) HybridEmerald.copy(alpha = 0.2f) else HybridCardAlt)
-                                .clickable {
-                                    selectedAudioTrack = t
-                                    showAudioTrackDialog = false
-                                    Toast.makeText(context, "Switched to $t", Toast.LENGTH_SHORT).show()
+                    if (realAudioTracks.size <= 1) {
+                        val label = realAudioTracks.firstOrNull()?.second ?: "Track 1: Default Audio"
+                        Text(
+                            text = "$label — This video contains a single embedded audio stream.",
+                            color = HybridTextSecondary,
+                            fontSize = 13.sp
+                        )
+                    } else {
+                        realAudioTracks.forEach { (idx, label) ->
+                            val isSelectedTrack = selectedAudioTrackIndex == idx || (selectedAudioTrackIndex == -1 && idx == realAudioTracks.first().first)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSelectedTrack) HybridEmerald.copy(alpha = 0.2f) else HybridCardAlt)
+                                    .clickable {
+                                        try {
+                                            mediaPlayerRef?.selectTrack(idx)
+                                            selectedAudioTrackIndex = idx
+                                            Toast.makeText(context, "Switched to $label", Toast.LENGTH_SHORT).show()
+                                        } catch (_: Exception) {
+                                            Toast.makeText(context, "Audio track could not be switched on this stream", Toast.LENGTH_SHORT).show()
+                                        }
+                                        showAudioTrackDialog = false
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(label, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                                if (isSelectedTrack) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = HybridEmerald)
                                 }
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(t, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                            if (selectedAudioTrack == t) {
-                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = HybridEmerald)
                             }
                         }
                     }
@@ -1814,7 +1971,7 @@ fun VideoPlayerView(
         )
     }
 
-    // --- SUBTITLE (.SRT/.VTT/.ASS) & +/-100MS SYNC DELAY ADJUSTER ---
+    // --- REAL SUBTITLE (.SRT/.VTT) PICKER & +/-100MS SYNC DELAY ADJUSTER ---
     if (showSubtitleDialog) {
         AlertDialog(
             onDismissRequest = { showSubtitleDialog = false },
@@ -1827,10 +1984,26 @@ fun VideoPlayerView(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Enable Subtitles (.srt / .vtt / .ass)", color = Color.White)
+                        Text("Show Subtitles", color = Color.White)
                         Switch(
                             checked = subtitlesEnabled,
                             onCheckedChange = { subtitlesEnabled = it }
+                        )
+                    }
+
+                    Button(
+                        onClick = { subtitlePickerLauncher.launch(arrayOf("*/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = HybridCyan),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Subtitles, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (loadedSubtitleFileName != null) "Change File ($loadedSubtitleFileName)" else "Load .SRT / .VTT File",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
@@ -2208,7 +2381,12 @@ fun VideoPlayerView(
                         },
                         Triple(Icons.Default.Lock, "Private Vault", "Lock Video") to {
                             showThreeDotSheet = false
-                            Toast.makeText(context, "🔒 Video Secured in Private Vault", Toast.LENGTH_SHORT).show()
+                            if (onLockInVault != null) {
+                                onLockInVault()
+                                Toast.makeText(context, "🔒 Video Moved to Private Vault", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Open video from main library to lock in Vault", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         Triple(Icons.Default.Share, "Turbo Share", "Send Video") to {
                             showThreeDotSheet = false
@@ -2225,26 +2403,18 @@ fun VideoPlayerView(
                         },
                         Triple(Icons.Default.CameraAlt, "Snapshot Capture", "Save Frame 📸") to {
                             showThreeDotSheet = false
-                            val savedFile = File(context.cacheDir, "hybrid_frame_${System.currentTimeMillis()}.jpg")
-                            try {
-                                val retriever = android.media.MediaMetadataRetriever()
-                                if (videoPath.startsWith("http")) {
-                                    retriever.setDataSource(videoPath, HashMap())
-                                } else if (videoPath.startsWith("content://")) {
-                                    retriever.setDataSource(context, Uri.parse(videoPath))
-                                } else {
-                                    retriever.setDataSource(videoPath)
+                            val snapPos = currentPosMs
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val savedOk = saveSnapshotBitmapToGallery(context, videoPath, snapPos, displayTitle)
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(
+                                        context,
+                                        if (savedOk) "📸 Frame saved to Pictures/HybridPlayer" else "Unable to extract video frame",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 }
-                                val frameBmp = retriever.getFrameAtTime(currentPosMs * 1000L)
-                                retriever.release()
-                                if (frameBmp != null) {
-                                    FileOutputStream(savedFile).use { out ->
-                                        frameBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
-                                    }
-                                }
-                            } catch (_: Exception) {
                             }
-                            Toast.makeText(context, "📸 Frame snapshot saved: ${savedFile.name}", Toast.LENGTH_SHORT).show()
+                            Unit
                         },
                         Triple(Icons.Default.Flip, "Mirror Flip 180°", if (isMirrorFlipped) "Flipped ON" else "Normal") to {
                             isMirrorFlipped = !isMirrorFlipped
@@ -2267,10 +2437,16 @@ fun VideoPlayerView(
                             isShuffleActive = !isShuffleActive
                             gestureOverlayText = if (isShuffleActive) "🔀 Shuffle ON" else "➡️ Order Play"
                         },
-                        Triple(Icons.Default.Memory, "Decoder Engine", if (isHardwareDecoderActive) "HW+ Accelerated" else "SW Adaptive") to {
+                        Triple(Icons.Default.Memory, "Decoder Engine", if (isHardwareDecoderActive) "Hardware Codec" else "SW Frame Mode") to {
                             isHardwareDecoderActive = !isHardwareDecoderActive
                             isSoftwareFallbackActive = !isHardwareDecoderActive
-                            gestureOverlayText = if (isHardwareDecoderActive) "⚡ HW+ Accelerated" else "⚙️ SW Adaptive"
+                            if (isSoftwareFallbackActive) {
+                                try { videoViewRef?.pause() } catch (_: Exception) {}
+                                try { mediaPlayerRef?.pause() } catch (_: Exception) {}
+                            } else {
+                                startVideoPlayback()
+                            }
+                            gestureOverlayText = if (isHardwareDecoderActive) "⚡ Hardware Codec" else "⚙️ SW Frame Mode"
                         }
                     )
 
