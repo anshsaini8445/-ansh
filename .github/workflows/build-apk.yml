@@ -20,13 +20,14 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Accept Android SDK Licenses
+      - name: Accept Android SDK Licenses & Install API 36.1 SDK
         run: |
           mkdir -p "$ANDROID_HOME/licenses"
           printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a918e30573bab4c9c91346d8abd\n" > "$ANDROID_HOME/licenses/android-sdk-license"
           printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910\n" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
           if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0" || true
           fi
 
       - name: Setup Gradle 9.3.1
@@ -45,7 +46,7 @@ jobs:
             cp .env.example .env
           fi
 
-      - name: Compute Auto-Incrementing Point Version (1.001, 1.002, ...)
+      - name: Compute Auto-Incrementing Point Version (2.001, 2.002, ...)
         id: calc_version
         run: |
           BASE_PATCH=0
@@ -54,8 +55,8 @@ jobs:
           fi
           RUN_NUM=${{ github.run_number }}
           TOTAL_PATCH=$((BASE_PATCH + RUN_NUM))
-          POINT_VER=$(printf "1.%03d" "$TOTAL_PATCH")
-          VER_CODE=$((1000 + TOTAL_PATCH))
+          POINT_VER=$(printf "2.%03d" "$TOTAL_PATCH")
+          VER_CODE=$((2000 + TOTAL_PATCH))
           echo "POINT_VER=$POINT_VER" >> "$GITHUB_ENV"
           echo "VER_CODE=$VER_CODE" >> "$GITHUB_ENV"
           echo "Generated APK Version: v$POINT_VER (versionCode=$VER_CODE)"
@@ -79,5 +80,7 @@ jobs:
         with:
           name: Hybrid-Player-APK-v${{ env.POINT_VER }}
           path: apk-output/Hybrid-Player-v${{ env.POINT_VER }}.apk
+          compression-level: 0
           if-no-files-found: error
           retention-days: 30
+

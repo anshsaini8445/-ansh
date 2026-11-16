@@ -8,22 +8,7 @@ if (versionPropsFile.exists()) {
   versionPropsFile.inputStream().use { versionProps.load(it) }
 }
 val verMajor = (versionProps.getProperty("VERSION_MAJOR") ?: "1").toIntOrNull() ?: 1
-val currentPatch = (versionProps.getProperty("VERSION_PATCH") ?: "1").toIntOrNull() ?: 1
-val isBuildTask = gradle.startParameter.taskNames.any {
-  it.contains("assemble", ignoreCase = true) ||
-    it.contains("bundle", ignoreCase = true) ||
-    it.contains("compile", ignoreCase = true)
-}
-val nextPatch = if (isBuildTask) currentPatch + 1 else currentPatch
-if (isBuildTask && versionPropsFile.canWrite()) {
-  versionProps.setProperty("VERSION_MAJOR", verMajor.toString())
-  versionProps.setProperty("VERSION_PATCH", nextPatch.toString())
-  try {
-    versionPropsFile.outputStream().use {
-      versionProps.store(it, "Auto-incremented by Hybrid Player Gradle Build")
-    }
-  } catch (_: Exception) {}
-}
+val currentPatch = (versionProps.getProperty("VERSION_PATCH") ?: "98").toIntOrNull() ?: 98
 
 val resolvedVersionCode = (project.findProperty("autoVersionCode")?.toString()?.toIntOrNull())
   ?: (2000 + currentPatch)
@@ -129,22 +114,22 @@ dependencies {
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
-  implementation(libs.converter.moshi)
+  // implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)
   // implementation(libs.firebase.appcheck.recaptcha)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
-  implementation(libs.logging.interceptor)
-  implementation(libs.moshi.kotlin)
-  implementation(libs.okhttp)
+  // implementation(libs.logging.interceptor)
+  // implementation(libs.moshi.kotlin)
+  // implementation(libs.okhttp)
   // implementation(libs.play.services.location)
-  implementation(libs.retrofit)
+  // implementation(libs.retrofit)
   implementation(libs.androidx.appcompat)
   implementation(libs.androidx.recyclerview)
   implementation(libs.google.material)
-  implementation(libs.androidx.media3.exoplayer)
-  implementation(libs.androidx.media3.ui)
-  implementation(libs.androidx.media3.common)
+  // implementation(libs.androidx.media3.exoplayer)
+  // implementation(libs.androidx.media3.ui)
+  // implementation(libs.androidx.media3.common)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
@@ -162,5 +147,5 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
-  "ksp"(libs.moshi.kotlin.codegen)
+  // "ksp"(libs.moshi.kotlin.codegen)
 }
