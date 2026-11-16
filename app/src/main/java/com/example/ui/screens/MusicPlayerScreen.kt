@@ -71,7 +71,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 private enum class CenterDisplayMode {
-    TURNTABLE, LYRICS
+    TURNTABLE, MASCOT_STAGE, LYRICS
 }
 
 /**
@@ -131,6 +131,7 @@ fun MusicPlayerScreen(
     val visualizer3DEnabled by viewModel.visualizer3DEnabled.collectAsState()
     val frequencies by viewModel.visualizerFrequencies.collectAsState()
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
+    val companionBreedName by viewModel.companionBreed.collectAsState()
 
     val isHindi = remember(selectedLanguage) {
         com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
@@ -354,7 +355,7 @@ fun MusicPlayerScreen(
                     }
                 }
 
-                // Compact Cover / Lyrics Switcher Pill
+                // Compact Cover / 3D Jumping Gudda / Lyrics Switcher Pill
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(18.dp))
@@ -368,7 +369,7 @@ fun MusicPlayerScreen(
                             .clip(RoundedCornerShape(15.dp))
                             .background(if (centerMode == CenterDisplayMode.TURNTABLE) HybridEmerald else Color.Transparent)
                             .clickable { centerMode = CenterDisplayMode.TURNTABLE }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -381,9 +382,24 @@ fun MusicPlayerScreen(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(15.dp))
+                            .background(if (centerMode == CenterDisplayMode.MASCOT_STAGE) HybridEmerald else Color.Transparent)
+                            .clickable { centerMode = CenterDisplayMode.MASCOT_STAGE }
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "🧸 3D",
+                            color = if (centerMode == CenterDisplayMode.MASCOT_STAGE) Color.Black else Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(15.dp))
                             .background(if (centerMode == CenterDisplayMode.LYRICS) HybridEmerald else Color.Transparent)
                             .clickable { centerMode = CenterDisplayMode.LYRICS }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -396,7 +412,7 @@ fun MusicPlayerScreen(
                 }
             }
 
-            // 2. Center Stage (Vinyl Turntable OR Synced Lyrics)
+            // 2. Center Stage (Vinyl Turntable OR Full-Stage 3D Jumping Gudda OR Synced Lyrics)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -420,6 +436,59 @@ fun MusicPlayerScreen(
                             visualizerEnabled = visualizer3DEnabled,
                             discSize = discSize
                         )
+                    }
+                    CenterDisplayMode.MASCOT_STAGE -> {
+                        val activeStageBreed = remember(companionBreedName) {
+                            com.example.helpers.CompanionBreed.entries.find {
+                                it.displayName.equals(companionBreedName, ignoreCase = true) ||
+                                    it.name.equals(companionBreedName, ignoreCase = true)
+                            } ?: com.example.helpers.CompanionBreed.GOLDEN_LION_DJ
+                        }
+                        val stageSize: Dp = when {
+                            isCompactSplit -> 130.dp
+                            isLandscape -> 185.dp
+                            isTablet -> 300.dp
+                            else -> 252.dp
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(stageSize)
+                                .clip(RoundedCornerShape(28.dp))
+                                .border(
+                                    1.5.dp,
+                                    activeStageBreed.headphoneAccent.copy(alpha = 0.65f),
+                                    RoundedCornerShape(28.dp)
+                                )
+                                .clickable {
+                                    val all = com.example.helpers.CompanionBreed.entries
+                                    val next = all[(activeStageBreed.ordinal + 1) % all.size]
+                                    viewModel.selectCompanionBreed(next.displayName)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            com.example.helpers.FluffyMascot3DStudioPortrait(
+                                breed = activeStageBreed,
+                                showStudioBackdrop = true,
+                                animateReels = true,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 8.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Color(0xD908101E))
+                                    .border(1.dp, activeStageBreed.headphoneAccent, RoundedCornerShape(50))
+                                    .padding(horizontal = 10.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = "${activeStageBreed.displayName} • Tap to Switch (20)",
+                                    color = activeStageBreed.headphoneAccent,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
                     }
                     CenterDisplayMode.LYRICS -> {
                         InteractiveSyncedLyricsStage(

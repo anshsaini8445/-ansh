@@ -117,10 +117,20 @@ private fun saveSnapshotBitmapToGallery(
                     retriever.setDataSource(videoPath, HashMap())
                 videoPath.startsWith("content://") ->
                     retriever.setDataSource(context, Uri.parse(videoPath))
-                else ->
-                    retriever.setDataSource(videoPath)
+                else -> {
+                    try {
+                        retriever.setDataSource(videoPath)
+                    } catch (_: Exception) {
+                        val f = File(videoPath)
+                        java.io.FileInputStream(f).use { fis ->
+                            retriever.setDataSource(fis.fd, 0L, f.length())
+                        }
+                    }
+                }
             }
-            val frameBmp = retriever.getFrameAtTime(posMs.coerceAtLeast(0L) * 1000L) ?: return false
+            val frameBmp = retriever.getFrameAtTime(posMs.coerceAtLeast(0L) * 1000L)
+                ?: retriever.getFrameAtTime(0L)
+                ?: return false
             val safeName = title.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(24).ifBlank { "HybridFrame" }
             val fileName = "${safeName}_${System.currentTimeMillis()}.jpg"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -263,6 +273,20 @@ fun VideoPlayerView(
     var nativeVideoHeight by remember { mutableStateOf(1080) }
     var isSoftwareFallbackActive by remember(videoPath) { mutableStateOf(false) }
     var softwareFallbackBitmap by remember(videoPath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    val isPartialDownloadStream = remember(videoPath) {
+        val f = if (!videoPath.startsWith("content://") && !videoPath.startsWith("http", true)) File(videoPath) else null
+        com.example.data.scanner.DeepMediaScanner.isFileNamePartialDownload(videoPath, f)
+    }
+    var partialPlayableDurationMs by remember(videoPath) { mutableStateOf(0L) }
+    var partialLiveBytes by remember(videoPath) {
+        mutableStateOf(
+            try {
+                if (!videoPath.startsWith("content://") && !videoPath.startsWith("http", true)) File(videoPath).length() else 0L
+            } catch (_: Exception) {
+                0L
+            }
+        )
+    }
     val isNetworkStream = remember(videoPath) {
         videoPath.startsWith("http://", ignoreCase = true) ||
             videoPath.startsWith("https://", ignoreCase = true) ||
@@ -624,6 +648,9 @@ fun VideoPlayerView(
     }
 
     fun getTotalVideoDurationMs(): Long {
+        if (isPartialDownloadStream && partialPlayableDurationMs >= 1000L) {
+            return partialPlayableDurationMs
+        }
         if (isSoftwareFallbackActive) return totalDurationMs.coerceAtLeast(1000L)
         return try {
             val vvDur = videoViewRef?.duration?.toLong() ?: 0L
@@ -635,7 +662,9 @@ fun VideoPlayerView(
     }
 
     fun seekVideoToMs(targetMs: Long) {
-        val clamped = targetMs.coerceIn(0L, getTotalVideoDurationMs())
+        val maxDur = getTotalVideoDurationMs()
+        val safeMax = if (isPartialDownloadStream && maxDur > 1200L) maxDur - 250L else maxDur
+        val clamped = targetMs.coerceIn(0L, safeMax.coerceAtLeast(0L))
         currentPosMs = clamped
         if (clamped > 0L) {
             latestKnownPositionMs = clamped
@@ -685,42 +714,119 @@ fun VideoPlayerView(
         isPlaying = true
     }
 
-    // Universal Software Frame-Stream Fallback for 8K/4K/2K codecs exceeding phone hardware MediaCodec limits
+    // Live Partial / Pending Download Byte & Playable Duration Watcher:
+    // Probes the actual downloaded packets on disk via MediaExtractor + FileDescriptor and extends
+    // playable duration live as Chrome / 1DM / ADM / Browser writes more bytes!
+    LaunchedEffect(videoPath, isPartialDownloadStream) {
+        if (!isNetworkStream) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                var lastSeenBytes = -1L
+                while (true) {
+                    try {
+                        val file = if (!videoPath.startsWith("content://")) File(videoPath) else null
+                        val currentBytes = file?.length() ?: 0L
+                        if (currentBytes > 0L) {
+                            partialLiveBytes = currentBytes
+                        }
+                        if (currentBytes != lastSeenBytes) {
+                            lastSeenBytes = currentBytes
+                            val probedMs = probePlayableDurationFromFd(context, videoPath)
+                            if (probedMs >= 1000L) {
+                                if (isPartialDownloadStream || totalDurationMs <= 1000L || probedMs < totalDurationMs - 3000L) {
+                                    partialPlayableDurationMs = probedMs
+                                    totalDurationMs = probedMs
+                                }
+                            } else if (isPartialDownloadStream && partialPlayableDurationMs <= 0L) {
+                                val fallbackMs = ((currentBytes / (180 * 1024f)) * 1000L).toLong().coerceAtLeast(1000L)
+                                partialPlayableDurationMs = fallbackMs
+                                if (totalDurationMs <= 1000L) totalDurationMs = fallbackMs
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                    if (!isPartialDownloadStream) break
+                    delay(1500L)
+                }
+            }
+        }
+    }
+
+    // Universal Software Frame-Stream Fallback for Partial/Incomplete Downloads & 8K/4K/2K codecs
     LaunchedEffect(isSoftwareFallbackActive, videoPath) {
         if (isSoftwareFallbackActive) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 val retriever = android.media.MediaMetadataRetriever()
+                var pfd: android.os.ParcelFileDescriptor? = null
                 try {
                     if (videoPath.startsWith("content://")) {
-                        retriever.setDataSource(context, Uri.parse(videoPath))
+                        pfd = context.contentResolver.openFileDescriptor(Uri.parse(videoPath), "r")
+                        if (pfd != null) {
+                            retriever.setDataSource(pfd.fileDescriptor)
+                        } else {
+                            retriever.setDataSource(context, Uri.parse(videoPath))
+                        }
                     } else if (isNetworkStream) {
                         retriever.setDataSource(videoPath, streamNetworkHeaders)
                     } else {
-                        val resolved = resolvePlayablePartialPath(context, videoPath)
-                        retriever.setDataSource(resolved)
+                        val rawFile = File(videoPath)
+                        if (rawFile.exists()) {
+                            pfd = android.os.ParcelFileDescriptor.open(rawFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                            retriever.setDataSource(pfd.fileDescriptor, 0L, rawFile.length().coerceAtLeast(1L))
+                        } else {
+                            retriever.setDataSource(videoPath)
+                        }
+                    }
+                    val probedPlayable = if (partialPlayableDurationMs >= 1000L) {
+                        partialPlayableDurationMs
+                    } else {
+                        probePlayableDurationFromFd(context, videoPath)
                     }
                     val durStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
-                    val dur = durStr?.toLongOrNull()?.coerceAtLeast(1000L) ?: totalDurationMs.coerceAtLeast(15_000L)
+                    val metaDur = durStr?.toLongOrNull() ?: 0L
+                    val dur = when {
+                        isPartialDownloadStream && probedPlayable >= 1000L -> probedPlayable
+                        probedPlayable in 1000L until (metaDur - 3000L) -> probedPlayable
+                        metaDur >= 1000L -> metaDur
+                        probedPlayable >= 1000L -> probedPlayable
+                        else -> totalDurationMs.coerceAtLeast(2000L)
+                    }
                     totalDurationMs = dur
                     val vw = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 1280
                     val vh = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 720
                     nativeVideoWidth = vw
                     nativeVideoHeight = vh
 
-                    // Target safe software downscale dimensions (e.g. max 854x480 for 60fps smoothness on budget phones)
                     val scaleRatio = minOf(854f / vw.coerceAtLeast(1), 480f / vh.coerceAtLeast(1), 1f)
                     val targetW = (vw * scaleRatio).toInt().coerceAtLeast(320)
                     val targetH = (vh * scaleRatio).toInt().coerceAtLeast(180)
 
+                    // Prime initial frame at 0ms immediately so even a 1-second video displays right away
+                    val firstBmp = try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            retriever.getScaledFrameAtTime(0L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, targetW, targetH)
+                                ?: retriever.getFrameAtTime(0L)
+                        } else {
+                            retriever.getFrameAtTime(0L)
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (firstBmp != null) {
+                        softwareFallbackBitmap = firstBmp
+                    }
+
+                    var consecutiveNullFrames = 0
                     var lastTickMs = System.currentTimeMillis()
                     while (isSoftwareFallbackActive) {
                         if (isPlaying) {
                             val now = System.currentTimeMillis()
                             val elapsed = ((now - lastTickMs) * playbackSpeed).toLong().coerceIn(20L, 250L)
                             lastTickMs = now
+                            val effectiveMax = if (partialPlayableDurationMs >= 1000L) partialPlayableDurationMs else totalDurationMs
                             val nextPos = currentPosMs + elapsed
-                            if (nextPos >= totalDurationMs) {
+                            if (nextPos >= effectiveMax) {
                                 currentPosMs = 0L
+                                consecutiveNullFrames = 0
                             } else {
                                 currentPosMs = nextPos
                                 latestKnownPositionMs = nextPos
@@ -729,18 +835,36 @@ fun VideoPlayerView(
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                                     retriever.getScaledFrameAtTime(
                                         currentPosMs * 1000L,
+                                        android.media.MediaMetadataRetriever.OPTION_CLOSEST,
+                                        targetW,
+                                        targetH
+                                    ) ?: retriever.getScaledFrameAtTime(
+                                        currentPosMs * 1000L,
                                         android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
                                         targetW,
                                         targetH
                                     ) ?: retriever.getFrameAtTime(currentPosMs * 1000L)
                                 } else {
-                                    retriever.getFrameAtTime(currentPosMs * 1000L)
+                                    retriever.getFrameAtTime(
+                                        currentPosMs * 1000L,
+                                        android.media.MediaMetadataRetriever.OPTION_CLOSEST
+                                    ) ?: retriever.getFrameAtTime(currentPosMs * 1000L)
                                 }
                             } catch (_: Exception) {
                                 null
                             }
                             if (frameBmp != null) {
                                 softwareFallbackBitmap = frameBmp
+                                consecutiveNullFrames = 0
+                            } else {
+                                consecutiveNullFrames++
+                                // If we reached the end of the downloaded bytes in a partial file, clamp duration and loop back to 0s
+                                if (consecutiveNullFrames >= 4 && currentPosMs >= 800L) {
+                                    partialPlayableDurationMs = currentPosMs.coerceAtLeast(1000L)
+                                    totalDurationMs = partialPlayableDurationMs
+                                    currentPosMs = 0L
+                                    consecutiveNullFrames = 0
+                                }
                             }
                             delay(65L)
                         } else {
@@ -752,6 +876,10 @@ fun VideoPlayerView(
                 } finally {
                     try {
                         retriever.release()
+                    } catch (_: Exception) {
+                    }
+                    try {
+                        pfd?.close()
                     } catch (_: Exception) {
                     }
                 }
@@ -821,9 +949,9 @@ fun VideoPlayerView(
         }
     }
 
-    // Progress & A-B Repeat Loop Tracker
+    // Progress & A-B Repeat Loop Tracker (with Seamless Partial Download Boundary Handling)
     var lastNotifSec by remember { mutableStateOf(-1L) }
-    LaunchedEffect(videoViewRef, mediaPlayerRef, isPlaying) {
+    LaunchedEffect(videoViewRef, mediaPlayerRef, isPlaying, partialPlayableDurationMs) {
         while (true) {
             try {
                 if (isVideoCurrentlyPlaying()) {
@@ -835,6 +963,13 @@ fun VideoPlayerView(
                     }
                     totalDurationMs = dur
                     onProgressUpdate(pos)
+
+                    // If playing a partial/pending download and we reach the end of the downloaded bytes,
+                    // smoothly loop back to 0:00 before the hardware decoder hits truncated EOF bytes!
+                    if (isPartialDownloadStream && partialPlayableDurationMs >= 1000L && pos >= partialPlayableDurationMs - 220L) {
+                        seekVideoToMs(0L)
+                        startVideoPlayback()
+                    }
 
                     val notifBucket = pos / 5000L
                     if (notifBucket != lastNotifSec) {
@@ -850,7 +985,7 @@ fun VideoPlayerView(
                 }
             } catch (_: Exception) {
             }
-            delay(350L)
+            delay(250L)
         }
     }
 
@@ -922,7 +1057,7 @@ fun VideoPlayerView(
                 }
             )
     ) {
-        // --- HARDWARE FULL-SCREEN VIDEO SURFACE (Supports standard & Pending/Partial .crdownload/.part movies via FileDescriptor) ---
+        // --- HARDWARE FULL-SCREEN VIDEO SURFACE (Supports standard & Pending/Partial .crdownload/.part movies via direct FileDescriptor) ---
         key(videoPath) {
             AndroidView(
                 factory = { ctx ->
@@ -937,8 +1072,6 @@ fun VideoPlayerView(
                             )
 
                             fun applySafeSurfaceBufferCap(vw: Int, vh: Int) {
-                                // Cap SurfaceHolder hardware buffer to max 1920x1080 (Full HD) so 2K/4K/8K videos
-                                // never overflow GPU / HWC GraphicBuffer memory on budget phones like Samsung M13!
                                 try {
                                     val maxDim = 1920f
                                     if (vw > 1920 || vh > 1920) {
@@ -987,11 +1120,21 @@ fun VideoPlayerView(
                                     }
                                 }
                                 mp.setOnCompletionListener {
-                                    handleVideoCompletion()
+                                    if (isPartialDownloadStream) {
+                                        seekVideoToMs(0L)
+                                        startVideoPlayback()
+                                    } else {
+                                        handleVideoCompletion()
+                                    }
                                 }
-                                totalDurationMs = mp.duration.toLong().coerceAtLeast(1000L)
+                                val reportedDur = mp.duration.toLong().coerceAtLeast(1000L)
+                                totalDurationMs = if (isPartialDownloadStream && partialPlayableDurationMs >= 1000L) {
+                                    partialPlayableDurationMs
+                                } else {
+                                    reportedDur
+                                }
                                 val resumeTarget = maxOf(initialPositionMs, latestKnownPositionMs)
-                                if (resumeTarget > 0 && resumeTarget < totalDurationMs - 2000L) {
+                                if (resumeTarget > 0 && resumeTarget < totalDurationMs - 1500L) {
                                     try {
                                         mp.seekTo(resumeTarget.toInt())
                                         currentPosMs = resumeTarget
@@ -1014,11 +1157,9 @@ fun VideoPlayerView(
                                 }
                             }
 
-                            fun startDirectFileDescriptorFallback(): Boolean {
-                                return try {
-                                    val rawMp = android.media.MediaPlayer()
-                                    if (isNetworkStream) {
-                                        rawMp.setDataSource(ctx, Uri.parse(videoPath), streamNetworkHeaders)
+                            fun attachAndPrepareRawPlayer(rawMp: android.media.MediaPlayer) {
+                                fun bindAndPrepare() {
+                                    try {
                                         applySafeSurfaceBufferCap(1920, 1080)
                                         rawMp.setDisplay(holder)
                                         rawMp.setScreenOnWhilePlaying(true)
@@ -1026,20 +1167,73 @@ fun VideoPlayerView(
                                             configurePreparedPlayer(mp)
                                         }
                                         rawMp.setOnCompletionListener {
-                                            handleVideoCompletion()
+                                            if (isPartialDownloadStream) {
+                                                seekVideoToMs(0L)
+                                                startVideoPlayback()
+                                            } else {
+                                                handleVideoCompletion()
+                                            }
                                         }
-                                        rawMp.setOnErrorListener { _, _, _ ->
+                                        rawMp.setOnErrorListener { mp, _, _ ->
                                             isStreamBuffering = false
+                                            // If we already played up to the end of the downloaded partial stream, loop back to 0:00 cleanly!
+                                            if (currentPosMs >= 900L || latestKnownPositionMs >= 900L) {
+                                                val reachedMs = maxOf(currentPosMs, latestKnownPositionMs)
+                                                if (partialPlayableDurationMs <= 0L || reachedMs < partialPlayableDurationMs) {
+                                                    partialPlayableDurationMs = reachedMs.coerceAtLeast(1000L)
+                                                    totalDurationMs = partialPlayableDurationMs
+                                                }
+                                                try {
+                                                    mp.seekTo(0)
+                                                    mp.start()
+                                                    currentPosMs = 0L
+                                                    isPlaying = true
+                                                    return@setOnErrorListener true
+                                                } catch (_: Exception) {
+                                                }
+                                            }
+                                            // Otherwise activate Software Frame-Stream Engine (plays even 1-second or unfinalized chunks)
+                                            isSoftwareFallbackActive = true
+                                            isPlaying = true
                                             true
                                         }
                                         rawMp.prepareAsync()
+                                    } catch (_: Exception) {
+                                        isSoftwareFallbackActive = true
+                                        isPlaying = true
+                                    }
+                                }
+
+                                if (holder.surface != null && holder.surface.isValid) {
+                                    bindAndPrepare()
+                                } else {
+                                    holder.addCallback(object : android.view.SurfaceHolder.Callback {
+                                        override fun surfaceCreated(sh: android.view.SurfaceHolder) {
+                                            holder.removeCallback(this)
+                                            bindAndPrepare()
+                                        }
+                                        override fun surfaceChanged(sh: android.view.SurfaceHolder, format: Int, w: Int, h: Int) {}
+                                        override fun surfaceDestroyed(sh: android.view.SurfaceHolder) {}
+                                    })
+                                }
+                            }
+
+                            fun startDirectFileDescriptorFallback(): Boolean {
+                                return try {
+                                    try {
+                                        stopPlayback()
+                                    } catch (_: Exception) {
+                                    }
+                                    val rawMp = android.media.MediaPlayer()
+                                    if (isNetworkStream) {
+                                        rawMp.setDataSource(ctx, Uri.parse(videoPath), streamNetworkHeaders)
+                                        attachAndPrepareRawPlayer(rawMp)
                                         return true
                                     }
                                     val pfd: android.os.ParcelFileDescriptor? = if (videoPath.startsWith("content://")) {
                                         ctx.contentResolver.openFileDescriptor(Uri.parse(videoPath), "r")
                                     } else {
-                                        val resolvedPath = resolvePlayablePartialPath(ctx, videoPath)
-                                        val f = File(resolvedPath)
+                                        val f = File(videoPath)
                                         if (f.exists()) {
                                             android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
                                         } else {
@@ -1047,24 +1241,14 @@ fun VideoPlayerView(
                                         }
                                     }
                                     if (pfd != null) {
-                                        rawMp.setDataSource(pfd.fileDescriptor)
+                                        val len = if (!videoPath.startsWith("content://")) File(videoPath).length() else -1L
+                                        if (len > 0L) {
+                                            rawMp.setDataSource(pfd.fileDescriptor, 0L, len)
+                                        } else {
+                                            rawMp.setDataSource(pfd.fileDescriptor)
+                                        }
                                         pfd.close()
-                                        applySafeSurfaceBufferCap(1920, 1080)
-                                        rawMp.setDisplay(holder)
-                                        rawMp.setScreenOnWhilePlaying(true)
-                                        rawMp.setOnPreparedListener { mp ->
-                                            configurePreparedPlayer(mp)
-                                        }
-                                        rawMp.setOnCompletionListener {
-                                            handleVideoCompletion()
-                                        }
-                                        rawMp.setOnErrorListener { _, _, _ ->
-                                            // Hardware MediaCodec cannot decode 8K/4K/2K stream on this chipset -> activate Software Adaptive Frame Engine
-                                            isSoftwareFallbackActive = true
-                                            isPlaying = true
-                                            true
-                                        }
-                                        rawMp.prepareAsync()
+                                        attachAndPrepareRawPlayer(rawMp)
                                         true
                                     } else {
                                         isSoftwareFallbackActive = true
@@ -1080,42 +1264,49 @@ fun VideoPlayerView(
                                 }
                             }
 
-                            try {
-                                if (isNetworkStream) {
-                                    isStreamBuffering = true
-                                    setVideoURI(Uri.parse(videoPath), streamNetworkHeaders)
-                                } else if (
-                                    videoPath.startsWith("content://") ||
-                                    videoPath.startsWith("android.resource://")
-                                ) {
-                                    setVideoURI(Uri.parse(videoPath))
-                                } else {
-                                    val file = File(videoPath)
-                                    if (file.exists()) {
-                                        val playablePath = resolvePlayablePartialPath(ctx, videoPath)
-                                        setVideoPath(playablePath)
-                                    } else {
+                            // For Pending / Partially Downloaded files (.crdownload, .part, .1dm, etc.),
+                            // open directly via raw FileDescriptor so Android never rejects the partial extension!
+                            if (isPartialDownloadStream && !isNetworkStream) {
+                                if (!startDirectFileDescriptorFallback()) {
+                                    isSoftwareFallbackActive = true
+                                    isPlaying = true
+                                }
+                            } else {
+                                try {
+                                    if (isNetworkStream) {
+                                        isStreamBuffering = true
+                                        setVideoURI(Uri.parse(videoPath), streamNetworkHeaders)
+                                    } else if (
+                                        videoPath.startsWith("content://") ||
+                                        videoPath.startsWith("android.resource://")
+                                    ) {
                                         setVideoURI(Uri.parse(videoPath))
+                                    } else {
+                                        val file = File(videoPath)
+                                        if (file.exists()) {
+                                            setVideoPath(file.absolutePath)
+                                        } else {
+                                            setVideoURI(Uri.parse(videoPath))
+                                        }
                                     }
-                                }
-                                setOnPreparedListener { mp ->
-                                    configurePreparedPlayer(mp)
-                                }
-                                setOnCompletionListener {
-                                    handleVideoCompletion()
-                                }
-                                setOnErrorListener { _, _, _ ->
-                                    // If VideoView fails on 4K/8K/2K or network stream, try direct MediaPlayer fallback
+                                    setOnPreparedListener { mp ->
+                                        configurePreparedPlayer(mp)
+                                    }
+                                    setOnCompletionListener {
+                                        handleVideoCompletion()
+                                    }
+                                    setOnErrorListener { _, _, _ ->
+                                        if (!startDirectFileDescriptorFallback() && !isNetworkStream) {
+                                            isSoftwareFallbackActive = true
+                                            isPlaying = true
+                                        }
+                                        true
+                                    }
+                                } catch (_: Exception) {
                                     if (!startDirectFileDescriptorFallback() && !isNetworkStream) {
                                         isSoftwareFallbackActive = true
                                         isPlaying = true
                                     }
-                                    true
-                                }
-                            } catch (_: Exception) {
-                                if (!startDirectFileDescriptorFallback() && !isNetworkStream) {
-                                    isSoftwareFallbackActive = true
-                                    isPlaying = true
                                 }
                             }
                         }
@@ -1166,6 +1357,33 @@ fun VideoPlayerView(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+            }
+        }
+
+        // Live Pending / Partially Downloaded Stream Badge (shows live downloaded MB & playable duration)
+        if (isPartialDownloadStream) {
+            val mbStr = remember(partialLiveBytes) {
+                if (partialLiveBytes >= 1024 * 1024L) {
+                    String.format(Locale.US, "%.1f MB", partialLiveBytes / (1024f * 1024f))
+                } else {
+                    String.format(Locale.US, "%d KB", (partialLiveBytes / 1024L).coerceAtLeast(1L))
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = if (showControls) 66.dp else 18.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0xDD101828))
+                    .border(1.2.dp, Color(0xFFFF9100), RoundedCornerShape(50))
+                    .padding(horizontal = 14.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = "⚡ Pending Stream • Playing Downloaded Portion ($mbStr • ${formatVideoTime(totalDurationMs)})",
+                    color = Color(0xFFFFD180),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
             }
         }
 
@@ -2859,44 +3077,97 @@ private fun formatVideoTime(ms: Long): String {
 }
 
 /**
- * Ensures Chrome/Browser half-downloaded files (.crdownload, .part, .download, .tmp, .partial, .1dm, .ucd)
- * can be opened by Android's hardware decoder in <1ms via zero-copy POSIX symlink (Os.symlink) without copying 355MB+.
+ * Probes the actual downloaded playable duration (in ms) of a partial / incomplete video file
+ * directly from its kernel FileDescriptor using MediaExtractor packet inspection.
+ * Works even when only 1 second of a video has been downloaded or when container headers report the full movie length.
  */
-private fun resolvePlayablePartialPath(context: Context, originalPath: String): String {
-    val file = File(originalPath)
-    if (!file.exists()) return originalPath
-    val ext = file.extension.lowercase(Locale.US)
-    val partialExts = setOf("part", "crdownload", "tmp", "download", "partial", "dl", "ucd", "1dm", "td", "idm", "adm")
-    if (ext !in partialExts && !file.name.startsWith(".pending-")) return originalPath
-
+private fun probePlayableDurationFromFd(context: Context, videoPath: String): Long {
+    val extractor = android.media.MediaExtractor()
+    var pfd: android.os.ParcelFileDescriptor? = null
     return try {
-        // Inspect container magic bytes (MKV vs MP4) so extractor picks the right demuxer immediately
-        var containerExt = "mp4"
-        try {
-            file.inputStream().use { ins ->
-                val header = ByteArray(12)
-                val read = ins.read(header)
-                if (read >= 4 &&
-                    header[0] == 0x1A.toByte() &&
-                    header[1] == 0x45.toByte() &&
-                    header[2] == 0xDF.toByte() &&
-                    header[3] == 0xA3.toByte()
-                ) {
-                    containerExt = "mkv"
+        var fileBytes = 0L
+        if (videoPath.startsWith("content://")) {
+            pfd = context.contentResolver.openFileDescriptor(Uri.parse(videoPath), "r")
+            if (pfd != null) {
+                extractor.setDataSource(pfd.fileDescriptor)
+            } else {
+                return 0L
+            }
+        } else {
+            val file = File(videoPath)
+            if (!file.exists() || file.length() < 512L) return 0L
+            fileBytes = file.length()
+            pfd = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+            extractor.setDataSource(pfd.fileDescriptor, 0L, fileBytes)
+        }
+
+        var selectedTrack = -1
+        var headerDurationUs = 0L
+        val trackCount = extractor.trackCount
+        for (i in 0 until trackCount) {
+            val format = extractor.getTrackFormat(i)
+            val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+            if (mime.startsWith("video/", ignoreCase = true)) {
+                selectedTrack = i
+                if (format.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                    headerDurationUs = format.getLong(android.media.MediaFormat.KEY_DURATION)
+                }
+                break
+            } else if (selectedTrack < 0 && mime.startsWith("audio/", ignoreCase = true)) {
+                selectedTrack = i
+                if (format.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                    headerDurationUs = format.getLong(android.media.MediaFormat.KEY_DURATION)
                 }
             }
-        } catch (_: Exception) {
         }
 
-        val symlinkFile = File(context.cacheDir, "hybrid_partial_link_${file.absolutePath.hashCode()}.$containerExt")
-        if (symlinkFile.exists()) {
-            symlinkFile.delete()
+        if (selectedTrack < 0) return 0L
+        extractor.selectTrack(selectedTrack)
+
+        // Step packets from current position or seek near the end of available sync frames
+        var maxSampleUs = 0L
+        if (headerDurationUs > 0L) {
+            // Seek to header duration; for a truncated file, MediaExtractor clamps to the last available sync sample on disk
+            extractor.seekTo(headerDurationUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            val syncTime = extractor.sampleTime
+            if (syncTime > 0L) {
+                maxSampleUs = syncTime
+            } else {
+                extractor.seekTo(0L, android.media.MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            }
         }
-        android.system.Os.symlink(file.absolutePath, symlinkFile.absolutePath)
-        symlinkFile.absolutePath
-    } catch (_: Exception) {
-        originalPath
+
+        var steps = 0
+        while (steps < 2500) {
+            val st = extractor.sampleTime
+            if (st > maxSampleUs) {
+                maxSampleUs = st
+            }
+            if (!extractor.advance()) break
+            steps++
+        }
+
+        val probedMs = (maxSampleUs / 1000L)
+        when {
+            probedMs >= 1000L -> probedMs
+            maxSampleUs > 0L -> 1000L // At least 1 second playable if valid packets exist
+            headerDurationUs >= 1_000_000L -> (headerDurationUs / 1000L)
+            fileBytes >= 1024L -> 1000L
+            else -> 0L
+        }
+    } catch (_: Throwable) {
+        0L
+    } finally {
+        try {
+            extractor.release()
+        } catch (_: Throwable) {
+        }
+        try {
+            pfd?.close()
+        } catch (_: Throwable) {
+        }
     }
 }
+
 
 

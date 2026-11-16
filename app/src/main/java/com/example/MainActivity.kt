@@ -1545,7 +1545,7 @@ class MainActivity : ComponentActivity() {
                     // Respects `simpleHideMascot` in Simple Mode and stays raised above any bottom mini-player
                     val hideMascotInSimple = simpleModeEnabled && simpleHideMascot
                     val dynamicMascotClearance = when {
-                        currentScreen == ActiveScreen.MusicPlayer -> 22.dp
+                        currentScreen == ActiveScreen.MusicPlayer -> 148.dp
                         bgVideoPlayingItem != null && !isFloatingMiniVideoActive -> 228.dp
                         nowPlaying != null && !nowPlaying!!.isVideo && selectedTab == MainBottomTab.MUSIC -> 192.dp
                         else -> 112.dp

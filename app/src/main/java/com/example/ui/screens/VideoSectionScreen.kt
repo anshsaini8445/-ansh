@@ -214,9 +214,8 @@ fun VideoSectionScreen(
             else -> compareBy<MediaItem> { it.dateAdded } // "Date"
         }
         val sortedNormal = if (sortNewToOld) base.sortedWith(comparator.reversed()) else base.sortedWith(comparator)
-        val nowMs = System.currentTimeMillis()
         val (pendingList, completeList) = sortedNormal.partition {
-            it.isPartialDownload && (nowMs - it.dateAdded) < 20 * 60 * 1000L
+            it.isPartialDownload
         }
         (pendingList + completeList).distinctBy { it.id }
     }

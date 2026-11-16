@@ -491,9 +491,9 @@ fun MeToolkitScreen(
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(42.dp)
+                                                .size(44.dp)
                                                 .clip(RoundedCornerShape(12.dp))
-                                                .background(Color.White)
+                                                .background(Color(0xFF0E1628))
                                                 .border(1.5.dp, Color(0xFFFF80AB), RoundedCornerShape(12.dp)),
                                             contentAlignment = Alignment.Center
                                         ) {
@@ -503,7 +503,7 @@ fun MeToolkitScreen(
                                             FluffyMascot3DStudioPortrait(
                                                 breed = activeBreed,
                                                 showStudioBackdrop = true,
-                                                animateReels = false,
+                                                animateReels = true,
                                                 modifier = Modifier.fillMaxSize()
                                             )
                                         }
@@ -718,7 +718,7 @@ fun MeToolkitScreen(
                                                         .fillMaxWidth()
                                                         .height(112.dp)
                                                         .clip(RoundedCornerShape(14.dp))
-                                                        .background(Color.White)
+                                                        .background(Color(0xFF0E1628))
                                                         .border(
                                                             width = if (isSavedActive) 2.5.dp else 1.dp,
                                                             color = if (isSavedActive) breed.headphoneAccent else Color.White.copy(alpha = 0.28f),
@@ -728,7 +728,7 @@ fun MeToolkitScreen(
                                                     FluffyMascot3DStudioPortrait(
                                                         breed = breed,
                                                         showStudioBackdrop = true,
-                                                        animateReels = isSavedActive,
+                                                        animateReels = true,
                                                         modifier = Modifier.fillMaxSize()
                                                     )
                                                 }
@@ -1557,7 +1557,7 @@ fun MeToolkitScreen(
                                             .fillMaxWidth()
                                             .height(156.dp)
                                             .clip(RoundedCornerShape(16.dp))
-                                            .background(Color.White)
+                                            .background(Color(0xFF0E1628))
                                             .border(
                                                 width = if (isSelected) 2.5.dp else 1.dp,
                                                 color = if (isSelected) breed.headphoneAccent else Color.White.copy(alpha = 0.22f),
@@ -1567,7 +1567,7 @@ fun MeToolkitScreen(
                                         FluffyMascot3DStudioPortrait(
                                             breed = breed,
                                             showStudioBackdrop = true,
-                                            animateReels = isSelected,
+                                            animateReels = true,
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     }

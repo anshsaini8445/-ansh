@@ -40,13 +40,21 @@ object DeepMediaScanner {
     private const val KEY_PICKED_AUDIOS = "user_picked_audio_uris_v4"
 
     val PARTIAL_DOWNLOAD_EXTENSIONS = setOf(
-        "crdownload", "part", "partial", "temp", "tmp", "download", "dl", "1dm", "ucd", "idm", "adm"
+        "crdownload", "part", "partial", "temp", "tmp", "download", "dl", "1dm", "ucd", "idm", "adm", "td", "bin"
+    )
+
+    private val NON_VIDEO_BASE_EXTENSIONS = setOf(
+        "apk", "apks", "xapk", "zip", "rar", "7z", "tar", "gz", "bz2", "iso", "img", "exe", "msi", "dmg",
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "epub", "mobi",
+        "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "ico", "heic",
+        "mp3", "wav", "flac", "aac", "m4a", "ogg", "opus", "wma", "amr",
+        "json", "xml", "html", "htm", "css", "js", "ttf", "otf", "woff", "db", "sqlite", "log"
     )
 
     val VIDEO_EXTENSIONS = setOf(
         "mp4", "mkv", "webm", "avi", "mov", "flv", "ts", "m4v", "3gp", "3gpp", "wmv",
         "hevc", "h265", "av1", "divx", "vob", "ogv", "m2ts", "mts", "rmvb", "mpeg", "mpg"
-    ) + PARTIAL_DOWNLOAD_EXTENSIONS
+    )
 
     val AUDIO_EXTENSIONS = setOf(
         "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "wma", "amr", "alac", "aiff"
@@ -163,12 +171,22 @@ object DeepMediaScanner {
                         if (extracted == null) {
                             val retriever = MediaMetadataRetriever()
                             try {
-                                retriever.setDataSource(file.absolutePath)
+                                try {
+                                    retriever.setDataSource(file.absolutePath)
+                                } catch (_: Throwable) {
+                                    java.io.FileInputStream(file).use { fis ->
+                                        retriever.setDataSource(fis.fd, 0L, file.length())
+                                    }
+                                }
                                 if (isVideo) {
                                     extracted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                                         retriever.getScaledFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 240, 136)
+                                            ?: retriever.getScaledFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 240, 136)
+                                            ?: retriever.getFrameAtTime(0L)
                                     } else {
                                         retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                            ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                            ?: retriever.getFrameAtTime(0L)
                                     }
                                 } else {
                                     val pic = retriever.embeddedPicture
@@ -181,6 +199,20 @@ object DeepMediaScanner {
                                     }
                                 }
                             } catch (_: Throwable) {
+                                // Final fallback via raw FileDescriptor if setDataSource(path) accepted path but failed during extract
+                                if (isVideo && extracted == null) {
+                                    val fdRetriever = MediaMetadataRetriever()
+                                    try {
+                                        java.io.FileInputStream(file).use { fis ->
+                                            fdRetriever.setDataSource(fis.fd, 0L, file.length())
+                                        }
+                                        extracted = fdRetriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                                            ?: fdRetriever.getFrameAtTime(0L)
+                                    } catch (_: Throwable) {
+                                    } finally {
+                                        try { fdRetriever.release() } catch (_: Throwable) {}
+                                    }
+                                }
                             } finally {
                                 try {
                                     retriever.release()
@@ -267,12 +299,11 @@ object DeepMediaScanner {
                 }
             }
         }
-        val nowMs = System.currentTimeMillis()
         val fastList = discoveredMap.values
             .distinctBy { it.path }
             .distinctBy { it.id }
             .sortedWith(
-                compareByDescending<MediaItem> { it.isPartialDownload && (nowMs - it.dateAdded) < 20 * 60 * 1000L }
+                compareByDescending<MediaItem> { it.isPartialDownload }
                     .thenByDescending { it.dateAdded }
             )
         if (fastList.isNotEmpty()) {
@@ -287,7 +318,7 @@ object DeepMediaScanner {
      * 2. MediaStore.Files query for pending/partial browser downloads (.crdownload, .part, IS_PENDING)
      * 3. Direct File System scan across Download, DCIM, Camera, Movies, WhatsApp, Statuses, Telegram
      * 4. User-Picked Document URIs
-     * Sorts Pending/Partial downloads at the VERY TOP (like XPlayer), followed by newest videos.
+     * Sorts Pending/Partial downloads at the VERY TOP, followed by newest videos.
      */
     suspend fun scanAndSyncMedia(context: Context, isVideo: Boolean): List<MediaItem> = withContext(Dispatchers.IO) {
         appContextRef = context.applicationContext
@@ -307,7 +338,8 @@ object DeepMediaScanner {
             val pendingFiles = queryPendingAndPartialVideoFiles(context)
             for (item in pendingFiles) {
                 if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
-                if (!discoveredMap.containsKey(item.path)) {
+                val existing = discoveredMap[item.path]
+                if (existing == null || !existing.isPartialDownload) {
                     discoveredMap[item.path] = item
                 }
             }
@@ -317,7 +349,8 @@ object DeepMediaScanner {
         val directFiles = scanRealDeviceDirectories(context, isVideo)
         for (item in directFiles) {
             if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
-            if (!discoveredMap.containsKey(item.path)) {
+            val existing = discoveredMap[item.path]
+            if (existing == null || (item.isPartialDownload && !existing.isPartialDownload)) {
                 discoveredMap[item.path] = item
             }
         }
@@ -331,13 +364,12 @@ object DeepMediaScanner {
             }
         }
 
-        // Sort: Active Pending/Partial downloads (<20 mins old) at the top, then by dateAdded descending
-        val nowMs = System.currentTimeMillis()
+        // Sort: All Pending/Partial downloads at the top (newest first), then by dateAdded descending
         val finalList = discoveredMap.values
             .distinctBy { it.path }
             .distinctBy { it.id }
             .sortedWith(
-                compareByDescending<MediaItem> { it.isPartialDownload && (nowMs - it.dateAdded) < 20 * 60 * 1000L }
+                compareByDescending<MediaItem> { it.isPartialDownload }
                     .thenByDescending { it.dateAdded }
             )
 
@@ -369,33 +401,85 @@ object DeepMediaScanner {
         prefs.edit().putStringSet(key, existing).apply()
     }
 
-    private fun isFileNamePartialDownload(nameOrPath: String): Boolean {
+    private fun isLikelyNonVideoMagicHeader(file: File): Boolean {
+        return try {
+            if (!file.exists() || !file.canRead() || file.length() < 8L) return false
+            val header = ByteArray(12)
+            val read = java.io.FileInputStream(file).use { it.read(header) }
+            if (read < 4) return false
+            // PK\x03\x04 (ZIP / APK / DOCX / JAR)
+            if (header[0] == 0x50.toByte() && header[1] == 0x4B.toByte() && header[2] == 0x03.toByte() && header[3] == 0x04.toByte()) return true
+            // %PDF
+            if (header[0] == 0x25.toByte() && header[1] == 0x50.toByte() && header[2] == 0x44.toByte() && header[3] == 0x46.toByte()) return true
+            // \x89PNG
+            if (header[0] == 0x89.toByte() && header[1] == 0x50.toByte() && header[2] == 0x4E.toByte() && header[3] == 0x47.toByte()) return true
+            // \xFF\xD8\xFF (JPEG)
+            if (header[0] == 0xFF.toByte() && header[1] == 0xD8.toByte() && header[2] == 0xFF.toByte()) return true
+            // \x7FELF (Binary)
+            if (header[0] == 0x7F.toByte() && header[1] == 0x45.toByte() && header[2] == 0x4C.toByte() && header[3] == 0x46.toByte()) return true
+            // Rar!
+            if (header[0] == 0x52.toByte() && header[1] == 0x61.toByte() && header[2] == 0x72.toByte() && header[3] == 0x21.toByte()) return true
+            // ID3 (MP3 audio)
+            if (header[0] == 0x49.toByte() && header[1] == 0x44.toByte() && header[2] == 0x33.toByte()) return true
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isFileNamePartialDownload(nameOrPath: String, file: File? = null): Boolean {
         val fileName = nameOrPath.substringAfterLast('/').lowercase(Locale.US)
+        if (fileName.isBlank()) return false
         val ext = fileName.substringAfterLast('.', "")
         val isPartialSuffix = ext in PARTIAL_DOWNLOAD_EXTENSIONS ||
             fileName.endsWith(".crdownload") ||
             fileName.endsWith(".part") ||
             fileName.endsWith(".partial") ||
-            fileName.startsWith(".pending-")
+            fileName.endsWith(".download") ||
+            fileName.endsWith(".1dm") ||
+            fileName.endsWith(".adm") ||
+            fileName.endsWith(".idm") ||
+            fileName.endsWith(".ucd") ||
+            fileName.startsWith(".pending-") ||
+            fileName.startsWith("unconfirmed ")
         if (!isPartialSuffix) return false
 
-        // Ensure the underlying file being downloaded is actually a video file
+        // Strip partial download suffixes and prefixes to inspect base extension if present
         val stripped = fileName
             .removePrefix(".pending-")
             .replace(Regex("^\\d+-"), "")
-            .replace(Regex("\\.(crdownload|part|partial|download|tmp|temp|1dm|ucd|dl)$"), "")
-        val baseExt = stripped.substringAfterLast('.', "")
-        return baseExt in VIDEO_EXTENSIONS
+            .replace(Regex("\\.(crdownload|part|partial|download|tmp|temp|1dm|ucd|idm|adm|td|dl|bin)$"), "")
+            .replace(Regex("\\s*\\(\\d+\\)$"), "")
+
+        if (stripped.contains('.')) {
+            val baseExt = stripped.substringAfterLast('.', "")
+            if (baseExt in NON_VIDEO_BASE_EXTENSIONS) return false
+            if (baseExt in VIDEO_EXTENSIONS) return true
+        }
+
+        // For single-extension partial files (e.g. "movie.crdownload", "Unconfirmed 12345.crdownload", "videoplayback.part"):
+        // Reject only if magic bytes belong to a non-video archive/image/PDF/MP3
+        if (file != null && isLikelyNonVideoMagicHeader(file)) {
+            return false
+        }
+        return true
     }
 
     private fun cleanPartialFileName(rawName: String): String {
         var cleaned = rawName
             .removePrefix(".pending-")
-            .replace(Regex("(?i)\\.(crdownload|part|partial|download|tmp|temp|1dm|ucd|dl)$"), "")
+            .replace(Regex("^\\d+-"), "")
+            .replace(Regex("(?i)\\.(crdownload|part|partial|download|tmp|temp|1dm|ucd|idm|adm|td|dl|bin)$"), "")
             .substringBeforeLast('.')
             .trim()
         if (cleaned.isBlank()) cleaned = rawName
         return cleaned
+    }
+
+    private fun estimatePartialDurationMs(sizeBytes: Long): Long {
+        if (sizeBytes <= 0L) return 1000L
+        // Approximate ~200 KB/sec for typical mobile video stream, minimum 1000ms (1 second)
+        return ((sizeBytes / (200 * 1024f)) * 1000L).toLong().coerceIn(1000L, 7_200_000L)
     }
 
     private fun estimateResolutionLabel(width: Int, height: Int, sizeBytes: Long): String {
@@ -594,8 +678,25 @@ object DeepMediaScanner {
                         }
 
                         val displayName = (if (displayCol >= 0) c.getString(displayCol) else null) ?: ""
+                        val duration = if (durCol >= 0) c.getLong(durCol).coerceAtLeast(0L) else 0L
+                        val size = if (sizeCol >= 0) c.getLong(sizeCol).coerceAtLeast(0L) else (dataFile?.length() ?: 0L)
+                        if (size <= 0L && dataFile != null && !dataFile.exists()) continue
+
                         val isPendingFlag = (if (pendingCol >= 0) c.getInt(pendingCol) else 0) == 1
-                        val isPartial = isVideo && (isPendingFlag || isFileNamePartialDownload(displayName) || isFileNamePartialDownload(rawDataPath))
+                        val isUnfinalizedDownloadVideo = isVideo && duration == 0L && (
+                            bucketName.contains("Download", ignoreCase = true) ||
+                                bucketName.contains("1DM", ignoreCase = true) ||
+                                bucketName.contains("ADM", ignoreCase = true) ||
+                                rawDataPath.contains("/Download", ignoreCase = true) ||
+                                rawDataPath.contains("/1DM", ignoreCase = true) ||
+                                rawDataPath.contains("/ADM", ignoreCase = true)
+                            )
+                        val isPartial = isVideo && (
+                            isPendingFlag ||
+                                isUnfinalizedDownloadVideo ||
+                                isFileNamePartialDownload(displayName, dataFile) ||
+                                isFileNamePartialDownload(rawDataPath, dataFile)
+                            )
 
                         val rawTitle = if (isPartial) {
                             cleanPartialFileName(displayName.ifBlank { dataFile?.name ?: "Pending Video" })
@@ -607,10 +708,6 @@ object DeepMediaScanner {
                                 }
                         }
 
-                        val duration = if (durCol >= 0) c.getLong(durCol).coerceAtLeast(0L) else 0L
-                        val size = if (sizeCol >= 0) c.getLong(sizeCol).coerceAtLeast(0L) else (dataFile?.length() ?: 0L)
-                        if (size <= 0L && dataFile != null && !dataFile.exists()) continue
-
                         // Skip tiny audio sound effects (< 5 seconds or < 24KB)
                         if (!isVideo && ((duration in 1..4999L) || size < 24_000L)) continue
 
@@ -618,7 +715,13 @@ object DeepMediaScanner {
                         val height = if (heightCol >= 0) c.getInt(heightCol) else 0
 
                         val dateSec = if (dateCol >= 0) c.getLong(dateCol) else 0L
-                        val dateAddedMs = if (dateSec > 0L) dateSec * 1000L else (dataFile?.lastModified() ?: System.currentTimeMillis())
+                        val dateAddedMs = if (dataFile != null && dataFile.exists() && isPartial) {
+                            dataFile.lastModified()
+                        } else if (dateSec > 0L) {
+                            dateSec * 1000L
+                        } else {
+                            dataFile?.lastModified() ?: System.currentTimeMillis()
+                        }
 
                         val folderName = bucketName.takeIf { it.isNotBlank() }
                             ?: dataFile?.parentFile?.name
@@ -626,13 +729,14 @@ object DeepMediaScanner {
 
                         val extSource = displayName.ifBlank { rawDataPath }
                         val ext = extSource.substringAfterLast('.', if (isVideo) "MP4" else "MP3").uppercase(Locale.US)
+                        val effectiveDuration = if (duration > 0L) duration else if (isPartial) estimatePartialDurationMs(size) else 1000L
 
                         list.add(
                             MediaItem(
                                 id = "${if (isVideo) "vid" else "aud"}_$numericId",
                                 title = rawTitle,
                                 artist = if (isPartial) "Pending Download" else folderName,
-                                duration = duration.coerceAtLeast(1000L),
+                                duration = effectiveDuration.coerceAtLeast(1000L),
                                 size = size.coerceAtLeast(512L),
                                 path = playablePath,
                                 isVideo = isVideo,
@@ -653,18 +757,21 @@ object DeepMediaScanner {
     }
 
     /**
-     * Queries MediaStore.Files for partially downloaded Chrome / browser video files
-     * (.crdownload, .part, .partial, .download) in Download/ that aren't indexed in MediaStore.Video yet.
-     */
-    /**
-     * Queries MediaStore.Files ONLY for genuinely active, recently modified (<20 min) partial video downloads
-     * (.mp4.crdownload, .mkv.part, etc.) that have not yet finished downloading.
+     * Queries MediaStore.Files for all partially downloaded or pending browser/downloader video files
+     * (.crdownload, .part, .partial, .download, .1dm, .adm, .idm, .ucd, .tmp, IS_PENDING=1) even if only 1 second (512B+) is downloaded.
      */
     private fun queryPendingAndPartialVideoFiles(context: Context): List<MediaItem> {
         val list = mutableListOf<MediaItem>()
-        val nowMs = System.currentTimeMillis()
         try {
-            val filesUri = MediaStore.Files.getContentUri("external")
+            val filesUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    MediaStore.setIncludePending(MediaStore.Files.getContentUri("external"))
+                } catch (_: Exception) {
+                    MediaStore.Files.getContentUri("external")
+                }
+            } else {
+                MediaStore.Files.getContentUri("external")
+            }
             val projection = arrayOf(
                 MediaStore.Files.FileColumns._ID,
                 MediaStore.Files.FileColumns.DISPLAY_NAME,
@@ -675,7 +782,13 @@ object DeepMediaScanner {
             )
             val selection = "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.crdownload' OR " +
                 "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.part' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.partial'"
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.partial' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.download' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.1dm' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.adm' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.idm' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.ucd' OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '.pending-%'"
 
             context.contentResolver.query(
                 filesUri,
@@ -696,15 +809,19 @@ object DeepMediaScanner {
                     val name = if (nameCol >= 0) c.getString(nameCol) ?: "" else ""
                     val rawPath = if (dataCol >= 0) c.getString(dataCol) ?: "" else ""
                     val mime = if (mimeCol >= 0) c.getString(mimeCol) ?: "" else ""
-                    val size = if (sizeCol >= 0) c.getLong(sizeCol) else 0L
-                    if (size < 64 * 1024L) continue
-
-                    val isVideoPartial = mime.startsWith("video/", ignoreCase = true) ||
-                        isFileNamePartialDownload(name.ifBlank { rawPath })
-                    if (!isVideoPartial) continue
-
                     val file = if (rawPath.isNotBlank()) File(rawPath) else null
                     if (file != null && !file.exists()) continue
+
+                    val size = maxOf(
+                        if (sizeCol >= 0) c.getLong(sizeCol) else 0L,
+                        file?.length() ?: 0L
+                    )
+                    // Even 1 second of partial video (512 bytes+) is playable
+                    if (size < 512L) continue
+
+                    val isVideoPartial = mime.startsWith("video/", ignoreCase = true) ||
+                        isFileNamePartialDownload(name.ifBlank { rawPath }, file)
+                    if (!isVideoPartial) continue
 
                     val dateSec = if (dateCol >= 0) c.getLong(dateCol) else 0L
                     val dateMs = if (file != null && file.exists()) {
@@ -712,11 +829,8 @@ object DeepMediaScanner {
                     } else if (dateSec > 0L) {
                         dateSec * 1000L
                     } else {
-                        0L
+                        System.currentTimeMillis()
                     }
-
-                    // Skip stale/abandoned temp files older than 20 minutes
-                    if (dateMs <= 0L || (nowMs - dateMs) > 20 * 60 * 1000L) continue
 
                     val contentUri = ContentUris.withAppendedId(filesUri, id)
                     val playablePath = if (file != null && file.exists() && file.canRead()) {
@@ -730,7 +844,7 @@ object DeepMediaScanner {
                             id = "pending_file_$id",
                             title = cleanPartialFileName(name.ifBlank { file?.name ?: "Downloading Video" }),
                             artist = "Pending Download",
-                            duration = 1000L,
+                            duration = estimatePartialDurationMs(size),
                             size = size,
                             path = playablePath,
                             isVideo = true,
@@ -760,6 +874,12 @@ object DeepMediaScanner {
             val externalRoot = Environment.getExternalStorageDirectory()
             if (externalRoot != null && externalRoot.exists()) {
                 targetDirs.add(File(externalRoot, "Download"))
+                targetDirs.add(File(externalRoot, "Downloads"))
+                targetDirs.add(File(externalRoot, "Download/1DM"))
+                targetDirs.add(File(externalRoot, "Download/ADM"))
+                targetDirs.add(File(externalRoot, "1DM"))
+                targetDirs.add(File(externalRoot, "ADM"))
+                targetDirs.add(File(externalRoot, "UCDownloads"))
                 targetDirs.add(File(externalRoot, "Movies"))
                 targetDirs.add(File(externalRoot, "DCIM"))
                 targetDirs.add(File(externalRoot, "DCIM/Camera"))
@@ -822,10 +942,7 @@ object DeepMediaScanner {
                 }
             } else if (file.isFile && file.length() >= if (isVideo) 512L else 24_000L) {
                 val ext = file.extension.lowercase(Locale.US)
-                val isRecentPartial = isVideo &&
-                    isFileNamePartialDownload(file.name) &&
-                    (System.currentTimeMillis() - file.lastModified()) < 20 * 60 * 1000L
-                val isPartial = isRecentPartial
+                val isPartial = isVideo && isFileNamePartialDownload(file.name, file)
                 if (ext in validExtensions || isPartial) {
                     val folderLabel = if (dir.name == ".Statuses" || dir.absolutePath.contains(".Statuses")) {
                         "Status"
@@ -834,6 +951,7 @@ object DeepMediaScanner {
                     }
                     // Estimate duration lightweightly or set to <=100s for Status clips
                     val estimatedDuration = when {
+                        isPartial -> estimatePartialDurationMs(file.length())
                         folderLabel == "Status" -> 30_000L
                         file.length() < 8_000_000L -> 45_000L
                         else -> 120_000L
