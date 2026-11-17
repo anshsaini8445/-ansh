@@ -1571,6 +1571,16 @@ class MainActivity : ComponentActivity() {
                                     music.firstOrNull()?.let { viewModel.playMusic(it) }
                                 }
                             },
+                            onDoubleTapPauseMusic = {
+                                if (nowPlaying != null) {
+                                    viewModel.togglePlayPause()
+                                } else {
+                                    music.firstOrNull()?.let { viewModel.playMusic(it) }
+                                }
+                            },
+                            onPlaySongFromMascotHover = { hoveredTrack ->
+                                viewModel.playMusic(hoveredTrack)
+                            },
                             onNextTrack = {
                                 if (nowPlaying != null) {
                                     viewModel.playNext()

@@ -239,18 +239,21 @@ fun PdfReaderScreen(
                     }
                 }
 
-                // Compact Search & Filter Bar
+                // Compact Search & Filter Bar with Bolkar Voice Search & Google TTS Dhwani
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search PDF books, notes, bills...", color = HybridTextSecondary, fontSize = 13.sp) },
+                    placeholder = { Text("Type or speak to search PDFs...", color = HybridTextSecondary, fontSize = 12.5.sp) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = HybridCyan) },
                     trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.White)
-                            }
-                        }
+                        com.example.helpers.VoiceAndTtsSearchBarActions(
+                            currentQuery = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            matchingCount = filteredPdfs.size,
+                            topMatchTitle = filteredPdfs.firstOrNull()?.title,
+                            suggestedVoiceTerms = pdfFiles.take(6).map { it.title.substringBeforeLast('.') },
+                            accentColor = HybridCyan
+                        )
                     },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),

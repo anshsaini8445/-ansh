@@ -327,29 +327,45 @@ fun SmartSearchScreen(
                     )
                 }
 
+                val voiceSuggestions = remember(basePool, recentSearches) {
+                    (recentSearches + basePool.take(10).map { it.cleanTitle.take(22) })
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .distinct()
+                        .take(8)
+                }
+
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
                     placeholder = {
                         Text(
                             text = when (categoryFilter) {
-                                SearchCategoryFilter.VIDEOS -> if (isHindi) "वीडियो खोजें..." else "Search videos..."
-                                SearchCategoryFilter.AUDIO -> if (isHindi) "ऑडियो गाने खोजें..." else "Search audio songs..."
-                                SearchCategoryFilter.ALL -> if (isHindi) "वीडियो या ऑडियो गाने खोजें..." else "Search videos or audio songs..."
+                                SearchCategoryFilter.VIDEOS -> if (isHindi) "बोलकर या लिखकर वीडियो खोजें..." else "Type or speak to search videos..."
+                                SearchCategoryFilter.AUDIO -> if (isHindi) "बोलकर या लिखकर गाने खोजें..." else "Type or speak to search songs..."
+                                SearchCategoryFilter.ALL -> if (isHindi) "बोलकर या लिखकर वीडियो/गाने खोजें..." else "Type or speak to search media..."
                             },
                             color = HybridTextSecondary,
-                            fontSize = 13.sp
+                            fontSize = 12.5.sp
                         )
                     },
                     leadingIcon = {
                         Icon(Icons.Default.Search, contentDescription = null, tint = HybridEmerald)
                     },
                     trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.White)
-                            }
-                        }
+                        com.example.helpers.VoiceAndTtsSearchBarActions(
+                            currentQuery = query,
+                            onQueryChange = { query = it },
+                            onSearchConfirmed = { spoken ->
+                                viewModel.addRecentSearch(spoken)
+                                focusManager.clearFocus()
+                            },
+                            isHindi = isHindi,
+                            matchingCount = results.size,
+                            topMatchTitle = results.firstOrNull()?.cleanTitle,
+                            suggestedVoiceTerms = voiceSuggestions,
+                            accentColor = HybridCyan
+                        )
                     },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),

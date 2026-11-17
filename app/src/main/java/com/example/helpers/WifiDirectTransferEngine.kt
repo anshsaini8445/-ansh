@@ -1,13 +1,21 @@
 package com.example.helpers
 
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.media.MediaScannerConnection
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Environment
 import android.provider.OpenableColumns
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.data.model.MediaItem
 import kotlinx.coroutines.Dispatchers
@@ -84,9 +92,28 @@ object WifiDirectTransferEngine {
     /**
      * Discovers the device's real local Wi-Fi / Hotspot / P2P IPv4 address across all network interfaces.
      */
-    fun getLocalWifiIpAddress(): String {
+    fun getLocalWifiIpAddress(context: Context? = null): String {
         val candidates = mutableListOf<Pair<Int, String>>()
         try {
+            // 1. Check LinkProperties from ConnectivityManager on Android 10+
+            if (context != null) {
+                runCatching {
+                    val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                    val activeNet = cm?.activeNetwork
+                    val linkProps = if (activeNet != null) cm.getLinkProperties(activeNet) else null
+                    linkProps?.linkAddresses?.forEach { linkAddr ->
+                        val addr = linkAddr.address
+                        if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                            val ip = addr.hostAddress.orEmpty()
+                            if (ip.isNotBlank() && ip != "127.0.0.1" && !ip.startsWith("169.254.") && !ip.startsWith("10.0.2.")) {
+                                candidates.add(92 to ip)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Scan all NetworkInterfaces (Hotspot ap0/swlan0, Wi-Fi Direct p2p0, Wi-Fi wlan0)
             val interfaces = NetworkInterface.getNetworkInterfaces()
             if (interfaces != null) {
                 for (intf in interfaces) {
@@ -98,11 +125,10 @@ object WifiDirectTransferEngine {
                             val ip = addr.hostAddress ?: continue
                             if (ip == "127.0.0.1" || ip.startsWith("169.254.")) continue
                             val priority = when {
-                                // Android Hotspot / Wi-Fi Direct interfaces get highest priority
                                 name.startsWith("ap") || name.startsWith("swlan") || name.startsWith("p2p") -> 100
-                                ip.startsWith("192.168.43.") || ip.startsWith("192.168.49.") -> 95
+                                ip.startsWith("192.168.43.") || ip.startsWith("192.168.49.") -> 98
                                 name.startsWith("wlan") && ip.startsWith("192.168.") -> 90
-                                ip.startsWith("192.168.") -> 80
+                                ip.startsWith("192.168.") -> 85
                                 name.startsWith("wlan") && (ip.startsWith("10.") || ip.startsWith("172.")) -> 75
                                 ip.startsWith("10.") || ip.startsWith("172.") -> 60
                                 else -> 30
@@ -115,6 +141,149 @@ object WifiDirectTransferEngine {
         } catch (_: Exception) {
         }
         return candidates.maxByOrNull { it.first }?.second ?: "192.168.43.1"
+    }
+
+    /**
+     * Checks whether all required Bluetooth permissions are granted on this Android version.
+     */
+    fun hasBluetoothPermissions(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    fun getRequiredBluetoothPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        }
+    }
+
+    /**
+     * Checks whether the device's physical Bluetooth Adapter is turned ON.
+     */
+    fun isBluetoothRadioEnabled(context: Context): Boolean {
+        return try {
+            val bm = context.applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            val adapter = bm?.adapter ?: BluetoothAdapter.getDefaultAdapter()
+            adapter?.isEnabled == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Checks whether Location permissions (required by Android for Wi-Fi Direct, Hotspot peer discovery & Bluetooth scan) are granted.
+     */
+    fun hasLocationPermissions(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun getRequiredLocationPermissions(): Array<String> {
+        return arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+    }
+
+    /**
+     * Checks whether the device's Location / GPS toggle is turned ON in system settings.
+     */
+    fun isLocationServiceEnabled(context: Context): Boolean {
+        return try {
+            val lm = context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            (lm?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true) ||
+                (lm?.isProviderEnabled(LocationManager.NETWORK_PROVIDER) == true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Checks whether Nearby Wi-Fi Devices permission (Android 13+) and Location permission are granted.
+     */
+    fun hasWifiPermissions(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+        } else {
+            hasLocationPermissions(context)
+        }
+    }
+
+    fun getRequiredWifiPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.NEARBY_WIFI_DEVICES,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        }
+    }
+
+    /**
+     * Checks whether Wi-Fi or Mobile Hotspot is currently active.
+     */
+    fun isWifiOrHotspotEnabled(context: Context): Boolean {
+        return try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val wifiOn = wm?.isWifiEnabled == true
+            val currentIp = getLocalWifiIpAddress(context)
+            val hotspotActive = currentIp.startsWith("192.168.43.") || currentIp.startsWith("192.168.49.")
+            wifiOn || hotspotActive
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    /**
+     * Returns all missing runtime permissions needed for Hybrid Share (Bluetooth + Wi-Fi + Location + Camera).
+     */
+    fun getMissingHybridSharePermissions(context: Context): Array<String> {
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.CAMERA)
+        }
+        return needed.distinct().toTypedArray()
     }
 
     /**
@@ -910,13 +1079,87 @@ object WifiDirectTransferEngine {
             }
             context.startActivity(tetherIntent)
         } catch (_: Exception) {
-            try {
-                val wifiIntent = Intent(Settings.ACTION_WIFI_SETTINGS).apply {
+            openWifiPanelOrSettings(context)
+        }
+    }
+
+    fun openWifiPanelOrSettings(context: Context) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val panelIntent = Intent(Settings.Panel.ACTION_WIFI).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                context.startActivity(wifiIntent)
-            } catch (_: Exception) {
+                context.startActivity(panelIntent)
+                return
             }
+        } catch (_: Exception) {
+        }
+        try {
+            val wifiIntent = Intent(Settings.ACTION_WIFI_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(wifiIntent)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun openLocationSettings(context: Context) {
+        try {
+            val locIntent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(locIntent)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun openBluetoothSettings(context: Context) {
+        try {
+            val btIntent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(btIntent)
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Directly shares selected files over Bluetooth (`com.android.bluetooth`) or system Bluetooth/Quick Share.
+     */
+    fun shareFilesViaBluetooth(context: Context, items: List<MediaItem>) {
+        if (items.isEmpty()) return
+        try {
+            val uris = ArrayList<Uri>()
+            for (item in items) {
+                val uri = resolveShareableUri(context, item)
+                if (uri != null) uris.add(uri)
+            }
+            if (uris.isEmpty()) return
+
+            val mimeType = if (items.all { it.isVideo }) "video/*" else if (items.none { it.isVideo }) "audio/*" else "*/*"
+            val btIntent = if (uris.size == 1) {
+                Intent(Intent.ACTION_SEND).apply {
+                    type = mimeType
+                    setPackage("com.android.bluetooth")
+                    putExtra(Intent.EXTRA_STREAM, uris.first())
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else {
+                Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = mimeType
+                    setPackage("com.android.bluetooth")
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            try {
+                context.startActivity(btIntent)
+            } catch (_: Exception) {
+                // Fallback to system share sheet if OEM uses a custom Bluetooth package name
+                shareRealFilesViaSystem(context, items)
+            }
+        } catch (_: Exception) {
+            shareRealFilesViaSystem(context, items)
         }
     }
 

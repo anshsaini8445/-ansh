@@ -469,7 +469,8 @@ fun MusicPlayerScreen(
                             com.example.helpers.FluffyMascot3DStudioPortrait(
                                 breed = activeStageBreed,
                                 showStudioBackdrop = true,
-                                animateReels = true,
+                                animateReels = isPlaying,
+                                isMusicPlaying = isPlaying,
                                 modifier = Modifier.fillMaxSize()
                             )
                             Box(

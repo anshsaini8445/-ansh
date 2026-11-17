@@ -49,8 +49,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import com.example.R
 import com.example.data.model.MediaItem
+import com.example.helpers.MascotSongDropTargetRegistry
 import com.example.helpers.PermanentDeleteHelper
 import com.example.helpers.ScenicBackdropPresets
 import com.example.helpers.WifiDirectTransferEngine
@@ -61,6 +66,7 @@ import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.menus.MediaSevenActionDialog
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 private enum class AudioSubTab {
@@ -277,6 +283,26 @@ fun AudioLibraryScreen(
     }
 
     val isCompactSplit = configuration.screenHeightDp < 440
+    val audioGridState = rememberLazyGridState()
+    val coroutineScope = rememberCoroutineScope()
+
+    DisposableEffect(audioGridState) {
+        MascotSongDropTargetRegistry.registerAutoScrollHandler { deltaY ->
+            coroutineScope.launch {
+                try {
+                    audioGridState.scrollBy(deltaY)
+                } catch (_: Exception) {}
+            }
+        }
+        MascotSongDropTargetRegistry.registerPlaySongHandler { hoveredTrack ->
+            viewModel.playMusic(hoveredTrack)
+        }
+        onDispose {
+            MascotSongDropTargetRegistry.registerAutoScrollHandler(null)
+            MascotSongDropTargetRegistry.registerPlaySongHandler(null)
+            MascotSongDropTargetRegistry.clearAllSongRows()
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -777,6 +803,7 @@ fun AudioLibraryScreen(
 
                 else -> {
                     LazyVerticalGrid(
+                        state = audioGridState,
                         columns = GridCells.Fixed(gridColumns),
                         modifier = Modifier
                             .weight(1f)
@@ -1755,14 +1782,27 @@ private fun CleanAudioTrackRow(
     onLongClick: () -> Unit = {},
     onOpenMenu: () -> Unit
 ) {
+    val isMascotHovered = MascotSongDropTargetRegistry.hoveredTrackId == track.id
+    val hoverHoldPct = if (isMascotHovered) (MascotSongDropTargetRegistry.holdProgress * 100).toInt() else 0
     val accent = when {
+        isMascotHovered -> HybridGold
         isSelected -> HybridCoralRed
         isCurrent -> HybridEmerald
         else -> Color.White
     }
+    DisposableEffect(track.id) {
+        onDispose {
+            MascotSongDropTargetRegistry.unregisterSongRow(track.id)
+        }
+    }
     LiquidGlassBox(
         modifier = Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { coords ->
+                if (coords.isAttached) {
+                    MascotSongDropTargetRegistry.registerSongRow(track, coords.boundsInRoot())
+                }
+            }
             .timedMediaTouchHold(
                 onClick = onPlay,
                 onHold2sPlay = {
@@ -1778,8 +1818,8 @@ private fun CleanAudioTrackRow(
             .testTag("audio_track_row_${track.id}"),
         cornerRadius = 16.dp,
         tintColor = accent,
-        glassAlpha = if (isCurrent || isSelected) 0.28f else 0.14f,
-        isActive = isSelected
+        glassAlpha = if (isMascotHovered) 0.36f else if (isCurrent || isSelected) 0.28f else 0.14f,
+        isActive = isSelected || isMascotHovered
     ) {
         Row(
             modifier = Modifier
@@ -1846,8 +1886,13 @@ private fun CleanAudioTrackRow(
                     }
                 }
                 Text(
-                    text = "$artistLabel • ${track.formattedDuration} • ${track.format}",
-                    color = HybridTextSecondary,
+                    text = if (isMascotHovered) {
+                        "🐾 Hold $hoverHoldPct% to Auto-Play • ${track.formattedDuration}"
+                    } else {
+                        "$artistLabel • ${track.formattedDuration} • ${track.format}"
+                    },
+                    color = if (isMascotHovered) HybridGold else HybridTextSecondary,
+                    fontWeight = if (isMascotHovered) FontWeight.ExtraBold else FontWeight.Normal,
                     fontSize = 11.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
