@@ -309,348 +309,444 @@ fun MusicPlayerScreen(
             }
         }
 
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
+                .safeDrawingPadding()
                 .padding(
                     horizontal = if (isTablet) 28.dp else 16.dp,
                     vertical = if (isLandscape) 6.dp else 10.dp
-                ),
-            verticalArrangement = Arrangement.SpaceBetween
+                )
         ) {
-            // 1. Clean Top Bar: ONLY Back Button (←), "Now Playing (x/y)", and Compact Cover/Lyrics Switch
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            val containerMaxHeight = maxHeight
+            val useTwoPaneLandscape = maxWidth > containerMaxHeight && containerMaxHeight < 560.dp && maxWidth >= 500.dp
+            val isCompactSplit = containerMaxHeight < 480.dp
+
+            val topBarSection: @Composable () -> Unit = {
+                // 1. Clean Top Bar: ONLY Back Button (←), "Now Playing (x/y)", and Compact Cover/Lyrics Switch
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    LiquidGlassIconOrb(
-                        icon = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tintColor = Color.White,
-                        size = 40.dp,
-                        iconSize = 20.dp,
-                        testTag = "music_player_back_btn",
-                        onClick = onBack
-                    )
-                    Column {
-                        Text(
-                            text = if (isHindi) "अभी चल रहा है" else "Now Playing",
-                            color = Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp
-                        )
-                        Text(
-                            text = "(${(currentTrackIndex + 1).coerceAtMost(activeQueue.size.coerceAtLeast(1))}/${activeQueue.size})",
-                            color = HybridTextSecondary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-
-                // Compact Cover / 3D Jumping Gudda / Lyrics Switcher Pill
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(Color.White.copy(alpha = 0.08f))
-                        .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(18.dp))
-                        .padding(3.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(15.dp))
-                            .background(if (centerMode == CenterDisplayMode.TURNTABLE) HybridEmerald else Color.Transparent)
-                            .clickable { centerMode = CenterDisplayMode.TURNTABLE }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Album,
-                            contentDescription = "Album Disc",
-                            tint = if (centerMode == CenterDisplayMode.TURNTABLE) Color.Black else Color.White,
-                            modifier = Modifier.size(17.dp)
+                        LiquidGlassIconOrb(
+                            icon = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tintColor = Color.White,
+                            size = 40.dp,
+                            iconSize = 20.dp,
+                            testTag = "music_player_back_btn",
+                            onClick = onBack
                         )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(15.dp))
-                            .background(if (centerMode == CenterDisplayMode.MASCOT_STAGE) HybridEmerald else Color.Transparent)
-                            .clickable { centerMode = CenterDisplayMode.MASCOT_STAGE }
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "🧸 3D",
-                            color = if (centerMode == CenterDisplayMode.MASCOT_STAGE) Color.Black else Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 11.sp
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(15.dp))
-                            .background(if (centerMode == CenterDisplayMode.LYRICS) HybridEmerald else Color.Transparent)
-                            .clickable { centerMode = CenterDisplayMode.LYRICS }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lyrics,
-                            contentDescription = "Synced Lyrics",
-                            tint = if (centerMode == CenterDisplayMode.LYRICS) Color.Black else Color.White,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
-                }
-            }
-
-            // 2. Center Stage (Vinyl Turntable OR Full-Stage 3D Jumping Gudda OR Synced Lyrics)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                val isCompactSplit = configuration.screenHeightDp < 480
-                when (centerMode) {
-                    CenterDisplayMode.TURNTABLE -> {
-                        val discSize: Dp = when {
-                            isCompactSplit -> 112.dp
-                            isLandscape -> 170.dp
-                            isTablet -> 290.dp
-                            else -> 240.dp
+                        Column {
+                            Text(
+                                text = if (isHindi) "अभी चल रहा है" else "Now Playing",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "(${(currentTrackIndex + 1).coerceAtMost(activeQueue.size.coerceAtLeast(1))}/${activeQueue.size})",
+                                color = HybridTextSecondary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
                         }
-                        VinylTurntableCenterpiece(
-                            track = currentTrack,
-                            theme = themeSpec,
-                            rotationDegrees = if (isPlaying) discRotation else 0f,
-                            frequencies = frequencies,
-                            visualizerEnabled = visualizer3DEnabled,
-                            discSize = discSize
-                        )
                     }
-                    CenterDisplayMode.MASCOT_STAGE -> {
-                        val activeStageBreed = remember(companionBreedName) {
-                            com.example.helpers.CompanionBreed.entries.find {
-                                it.displayName.equals(companionBreedName, ignoreCase = true) ||
-                                    it.name.equals(companionBreedName, ignoreCase = true)
-                            } ?: com.example.helpers.CompanionBreed.GOLDEN_LION_DJ
-                        }
-                        val stageSize: Dp = when {
-                            isCompactSplit -> 130.dp
-                            isLandscape -> 185.dp
-                            isTablet -> 300.dp
-                            else -> 252.dp
+
+                    // Compact Cover / 3D Jumping Gudda / Lyrics Switcher Pill
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(18.dp))
+                            .padding(3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(15.dp))
+                                .background(if (centerMode == CenterDisplayMode.TURNTABLE) HybridEmerald else Color.Transparent)
+                                .clickable { centerMode = CenterDisplayMode.TURNTABLE }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Album,
+                                contentDescription = "Album Disc",
+                                tint = if (centerMode == CenterDisplayMode.TURNTABLE) Color.Black else Color.White,
+                                modifier = Modifier.size(17.dp)
+                            )
                         }
                         Box(
                             modifier = Modifier
-                                .size(stageSize)
-                                .clip(RoundedCornerShape(28.dp))
-                                .border(
-                                    1.5.dp,
-                                    activeStageBreed.headphoneAccent.copy(alpha = 0.65f),
-                                    RoundedCornerShape(28.dp)
-                                )
-                                .clickable {
-                                    val all = com.example.helpers.CompanionBreed.entries
-                                    val next = all[(activeStageBreed.ordinal + 1) % all.size]
-                                    viewModel.selectCompanionBreed(next.displayName)
-                                },
+                                .clip(RoundedCornerShape(15.dp))
+                                .background(if (centerMode == CenterDisplayMode.MASCOT_STAGE) HybridEmerald else Color.Transparent)
+                                .clickable { centerMode = CenterDisplayMode.MASCOT_STAGE }
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            com.example.helpers.FluffyMascot3DStudioPortrait(
-                                breed = activeStageBreed,
-                                showStudioBackdrop = true,
-                                animateReels = isPlaying,
-                                isMusicPlaying = isPlaying,
-                                modifier = Modifier.fillMaxSize()
+                            Text(
+                                text = "🧸 3D",
+                                color = if (centerMode == CenterDisplayMode.MASCOT_STAGE) Color.Black else Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 11.sp
                             )
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopCenter)
-                                    .padding(top = 8.dp)
-                                    .clip(RoundedCornerShape(50))
-                                    .background(Color(0xD908101E))
-                                    .border(1.dp, activeStageBreed.headphoneAccent, RoundedCornerShape(50))
-                                    .padding(horizontal = 10.dp, vertical = 3.dp)
-                            ) {
-                                Text(
-                                    text = "${activeStageBreed.displayName} • Tap to Switch (20)",
-                                    color = activeStageBreed.headphoneAccent,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 10.sp
-                                )
-                            }
                         }
-                    }
-                    CenterDisplayMode.LYRICS -> {
-                        InteractiveSyncedLyricsStage(
-                            lyrics = syncedLyrics,
-                            positionMs = playbackPosition,
-                            accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else accentColor,
-                            onSeekToLine = { timestampMs -> viewModel.seekTo(timestampMs) },
-                            onOpenEditLyrics = { showEditLyricsDialog = true }
-                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(15.dp))
+                                .background(if (centerMode == CenterDisplayMode.LYRICS) HybridEmerald else Color.Transparent)
+                                .clickable { centerMode = CenterDisplayMode.LYRICS }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lyrics,
+                                contentDescription = "Synced Lyrics",
+                                tint = if (centerMode == CenterDisplayMode.LYRICS) Color.Black else Color.White,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
                     }
                 }
             }
 
-            // 3. Bottom Control Deck (Title, 5 Thumb-Friendly Action Orbs, Seekbar, Transport Row, Up Next Queue Bar)
-            val isCompactSplitDeck = configuration.screenHeightDp < 480
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(if (isCompactSplitDeck) 4.dp else if (isLandscape) 6.dp else 10.dp)
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = currentTrack?.cleanTitle ?: (if (isHindi) "कोई गाना नहीं चुना गया" else "No Track Selected"),
-                        color = Color.White,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = if (isCompactSplitDeck) 15.sp else if (isLandscape) 17.sp else 20.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    val artistInfo = buildString {
-                        append(currentTrack?.artist?.ifBlank { "Local Artist" } ?: "Hybrid Studio")
-                        currentTrack?.folderName?.takeIf { it.isNotBlank() }?.let {
-                            append(" • $it")
-                        }
-                        currentTrack?.format?.takeIf { it.isNotBlank() }?.let {
-                            append(" • $it")
-                        }
-                        if (abPointAMs != null) {
-                            append(" • A-B")
-                        }
-                    }
-                    Text(
-                        text = artistInfo,
-                        color = HybridTextSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    // Live Millisecond / Tenth-Second Sleep Timer Pill OR 5s DJ Crossfade Pill
-                    if (sleepTimerRemainingMs > 0L || isDjCrossfadingNow) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (sleepTimerRemainingMs > 0L) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .background(Color(0x33FFD54F))
-                                        .border(1.dp, HybridGold, RoundedCornerShape(50))
-                                        .clickable { showSleepTimerSheet = true }
-                                        .padding(horizontal = 10.dp, vertical = 3.dp)
-                                ) {
-                                    Text(
-                                        text = "⏱️ ${formatLiveSleepTimerMs(sleepTimerRemainingMs)}",
-                                        color = HybridGold,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 11.sp
-                                    )
-                                }
+            val centerStageSection: @Composable (Modifier) -> Unit = { stageModifier ->
+                Box(
+                    modifier = stageModifier,
+                    contentAlignment = Alignment.Center
+                ) {
+                    when (centerMode) {
+                        CenterDisplayMode.TURNTABLE -> {
+                            val discSize: Dp = when {
+                                useTwoPaneLandscape -> (containerMaxHeight - 88.dp).coerceIn(140.dp, 220.dp)
+                                isCompactSplit -> 112.dp
+                                isLandscape -> 170.dp
+                                isTablet -> 290.dp
+                                else -> 240.dp
                             }
-                            if (isDjCrossfadingNow) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .background(Color(0x3300E5FF))
-                                        .border(1.dp, HybridCyan, RoundedCornerShape(50))
-                                        .padding(horizontal = 10.dp, vertical = 3.dp)
-                                ) {
-                                    Text(
-                                        text = if (isHindi) "🎧 5s DJ क्रॉसफ़ेड मिक्स..." else "🎧 5s DJ Crossfade Mix...",
-                                        color = HybridCyan,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 11.sp
-                                    )
-                                }
+                            VinylTurntableCenterpiece(
+                                track = currentTrack,
+                                theme = themeSpec,
+                                rotationDegrees = if (isPlaying) discRotation else 0f,
+                                frequencies = frequencies,
+                                visualizerEnabled = visualizer3DEnabled,
+                                discSize = discSize
+                            )
+                        }
+                        CenterDisplayMode.MASCOT_STAGE -> {
+                            val activeStageBreed = remember(companionBreedName) {
+                                com.example.helpers.CompanionBreed.entries.find {
+                                    it.displayName.equals(companionBreedName, ignoreCase = true) ||
+                                        it.name.equals(companionBreedName, ignoreCase = true)
+                                } ?: com.example.helpers.CompanionBreed.GOLDEN_LION_DJ
                             }
+                            val stageSize: Dp = when {
+                                useTwoPaneLandscape -> (containerMaxHeight - 84.dp).coerceIn(145.dp, 230.dp)
+                                isCompactSplit -> 130.dp
+                                isLandscape -> 185.dp
+                                isTablet -> 300.dp
+                                else -> 252.dp
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(stageSize)
+                                    .clickable {
+                                        val all = com.example.helpers.CompanionBreed.entries
+                                        val next = all[(activeStageBreed.ordinal + 1) % all.size]
+                                        viewModel.selectCompanionBreed(next.displayName)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                com.example.helpers.FluffyMascot3DStudioPortrait(
+                                    breed = activeStageBreed,
+                                    showStudioBackdrop = false,
+                                    animateReels = isPlaying,
+                                    isMusicPlaying = isPlaying,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                        CenterDisplayMode.LYRICS -> {
+                            InteractiveSyncedLyricsStage(
+                                lyrics = syncedLyrics,
+                                positionMs = playbackPosition,
+                                accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else accentColor,
+                                onSeekToLine = { timestampMs -> viewModel.seekTo(timestampMs) },
+                                onOpenEditLyrics = { showEditLyricsDialog = true }
+                            )
                         }
                     }
                 }
+            }
 
-                // 5 Thumb-Friendly Middle Action Orbs (Right above Seekbar):
-                // 1. Favourite (❤️ + 7-Heart Burst) | 2. Equalizer (🎚️) | 3. Sleep Timer (⏱️ Live Countdown) | 4. 2x Shake (📳) | 5. 3-Dot Menu (⋮)
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // 1. Favourite (❤️) with 7-Heart 2-Second Burst Animation
-                        Box(contentAlignment = Alignment.Center) {
-                            LiquidGlassIconOrb(
-                                icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                contentDescription = "Favourite",
-                                tintColor = if (isFavorite) Color(0xFFFF4081) else Color.White,
-                                size = 46.dp,
-                                iconSize = 21.dp,
-                                isActive = isFavorite,
-                                testTag = "music_fav_btn",
-                                onClick = {
-                                    heartBurstTrigger++
-                                    currentTrack?.let {
-                                        viewModel.toggleFavorite(it)
-                                        Toast.makeText(
-                                            context,
-                                            if (!isFavorite) {
-                                                if (isHindi) "पसंदीदा में सेव किया गया ❤️" else "Saved to Favourites ❤️"
-                                            } else {
-                                                if (isHindi) "पसंदीदा से हटाया गया" else "Removed from Favourites"
-                                            },
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            )
-                            SevenHeartBurstEffect(trigger = heartBurstTrigger)
+            val bottomControlDeckSection: @Composable (Modifier) -> Unit = { deckModifier ->
+                val isCompactSplitDeck = isCompactSplit || useTwoPaneLandscape
+                Column(
+                    modifier = deckModifier,
+                    verticalArrangement = Arrangement.spacedBy(if (isCompactSplitDeck) 6.dp else 10.dp)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = currentTrack?.cleanTitle ?: (if (isHindi) "कोई गाना नहीं चुना गया" else "No Track Selected"),
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = if (isCompactSplitDeck) 16.sp else 20.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        val artistInfo = buildString {
+                            append(currentTrack?.artist?.ifBlank { "Local Artist" } ?: "Hybrid Studio")
+                            currentTrack?.folderName?.takeIf { it.isNotBlank() }?.let {
+                                append(" • $it")
+                            }
+                            currentTrack?.format?.takeIf { it.isNotBlank() }?.let {
+                                append(" • $it")
+                            }
+                            if (abPointAMs != null) {
+                                append(" • A-B")
+                            }
                         }
-
-                        // 2. Colorful Equalizer Orb (🎚️)
-                        ColorfulEqualizerOrb(
-                            onClick = onOpenEqualizer,
-                            size = 46.dp
+                        Text(
+                            text = artistInfo,
+                            color = HybridTextSecondary,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
 
-                        // 3. Sleep Timer Orb (⏱️ — Live MM:SS.d Countdown)
-                        Box(contentAlignment = Alignment.TopEnd) {
-                            LiquidGlassIconOrb(
-                                icon = Icons.Default.Timer,
-                                contentDescription = "Sleep Timer",
-                                tintColor = if (sleepTimerRemainingMs > 0L) HybridGold else Color.White,
-                                size = 46.dp,
-                                iconSize = 21.dp,
-                                isActive = sleepTimerRemainingMs > 0L,
-                                testTag = "music_sleep_timer_btn",
-                                onClick = { showSleepTimerSheet = true }
+                        // Live Millisecond / Tenth-Second Sleep Timer Pill OR 5s DJ Crossfade Pill
+                        if (sleepTimerRemainingMs > 0L || isDjCrossfadingNow) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (sleepTimerRemainingMs > 0L) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(Color(0x33FFD54F))
+                                            .border(1.dp, HybridGold, RoundedCornerShape(50))
+                                            .clickable { showSleepTimerSheet = true }
+                                            .padding(horizontal = 10.dp, vertical = 3.dp)
+                                    ) {
+                                        Text(
+                                            text = "⏱️ ${formatLiveSleepTimerMs(sleepTimerRemainingMs)}",
+                                            color = HybridGold,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                                if (isDjCrossfadingNow) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(Color(0x3300E5FF))
+                                            .border(1.dp, HybridCyan, RoundedCornerShape(50))
+                                            .padding(horizontal = 10.dp, vertical = 3.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isHindi) "🎧 5s DJ क्रॉसफ़ेड मिक्स..." else "🎧 5s DJ Crossfade Mix...",
+                                            color = HybridCyan,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 5 Thumb-Friendly Middle Action Orbs (Right above Seekbar):
+                    // 1. Favourite (❤️ + 7-Heart Burst) | 2. Equalizer (🎚️) | 3. Sleep Timer (⏱️ Live Countdown) | 4. 2x Shake (📳) | 5. 3-Dot Menu (⋮)
+                    val orbSize = if (useTwoPaneLandscape) 40.dp else 46.dp
+                    val orbIconSize = if (useTwoPaneLandscape) 19.dp else 21.dp
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // 1. Favourite (❤️) with 7-Heart 2-Second Burst Animation
+                            Box(contentAlignment = Alignment.Center) {
+                                LiquidGlassIconOrb(
+                                    icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = "Favourite",
+                                    tintColor = if (isFavorite) Color(0xFFFF4081) else Color.White,
+                                    size = orbSize,
+                                    iconSize = orbIconSize,
+                                    isActive = isFavorite,
+                                    testTag = "music_fav_btn",
+                                    onClick = {
+                                        heartBurstTrigger++
+                                        currentTrack?.let {
+                                            viewModel.toggleFavorite(it)
+                                            Toast.makeText(
+                                                context,
+                                                if (!isFavorite) {
+                                                    if (isHindi) "पसंदीदा में सेव किया गया ❤️" else "Saved to Favourites ❤️"
+                                                } else {
+                                                    if (isHindi) "पसंदीदा से हटाया गया" else "Removed from Favourites"
+                                                },
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                )
+                                SevenHeartBurstEffect(trigger = heartBurstTrigger)
+                            }
+
+                            // 2. Colorful Equalizer Orb (🎚️)
+                            ColorfulEqualizerOrb(
+                                onClick = onOpenEqualizer,
+                                size = orbSize
                             )
-                            if (sleepTimerRemainingMs > 0L) {
-                                Box(
-                                    modifier = Modifier
-                                        .offset(x = 6.dp, y = (-4).dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(HybridGold)
-                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+
+                            // 3. Sleep Timer Orb (⏱️ — Live MM:SS.d Countdown)
+                            Box(contentAlignment = Alignment.TopEnd) {
+                                LiquidGlassIconOrb(
+                                    icon = Icons.Default.Timer,
+                                    contentDescription = "Sleep Timer",
+                                    tintColor = if (sleepTimerRemainingMs > 0L) HybridGold else Color.White,
+                                    size = orbSize,
+                                    iconSize = orbIconSize,
+                                    isActive = sleepTimerRemainingMs > 0L,
+                                    testTag = "music_sleep_timer_btn",
+                                    onClick = { showSleepTimerSheet = true }
+                                )
+                                if (sleepTimerRemainingMs > 0L) {
+                                    Box(
+                                        modifier = Modifier
+                                            .offset(x = 6.dp, y = (-4).dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(HybridGold)
+                                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                                    ) {
+                                        Text(
+                                            text = formatLiveSleepTimerMs(sleepTimerRemainingMs),
+                                            color = Color.Black,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 8.sp
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 4. Single 2x Shake Vibration Orb (📳)
+                            DoubleShakeVibrationOrb(
+                                isEnabled = doubleShakeEnabled,
+                                onClick = { showShakeConfigSheet = true },
+                                size = orbSize
+                            )
+
+                            // 5. 3-Dot Menu Orb (⋮)
+                            LiquidGlassIconOrb(
+                                icon = Icons.Default.MoreVert,
+                                contentDescription = "More Options",
+                                tintColor = Color.White,
+                                size = orbSize,
+                                iconSize = orbIconSize,
+                                testTag = "music_3dot_menu_btn",
+                                onClick = { showMoreOptionsSheet = true }
+                            )
+                        }
+                    }
+
+                    // Precision Seekbar + Timestamps
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        VisualPrecisionSeekBar(
+                            progressFraction = progressFraction,
+                            onSeekFractionChanged = { frac: Float ->
+                                viewModel.seekTo((frac * durationMs.toFloat()).toLong())
+                            },
+                            accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else accentColor,
+                            secondaryAccent = if (visualizer3DEnabled) themeSpec.secondaryColor else HybridCyan,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = formatDurationMs(playbackPosition),
+                                color = HybridTextSecondary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = formatDurationMs(durationMs),
+                                color = HybridTextSecondary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    // Bottom Transport Row:
+                    // Left: Shuffle (🔀) vs Straight Line-by-Line Order (➡️ 1→2) | Center: Prev, Play/Pause, Next | Right: Repeat
+                    val playBtnSize = if (useTwoPaneLandscape) 56.dp else 68.dp
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Leftmost ("Ulte Haath"): Distinct Shuffle vs Straight Line-by-Line Sequential Button
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isShuffleMode) HybridEmerald.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.10f)
+                                )
+                                .border(
+                                    1.2.dp,
+                                    if (isShuffleMode) HybridEmerald else HybridCyan.copy(alpha = 0.55f),
+                                    CircleShape
+                                )
+                                .clickable {
+                                    viewModel.toggleShuffleMode()
+                                    val msg = if (!isShuffleMode) {
+                                        if (isHindi) "🔀 रैंडम शफ़ल चालू (Shuffle Mode)" else "🔀 Shuffle Mode ON (Random)"
+                                    } else {
+                                        if (isHindi) "➡️ सीधा क्रम चालू (1→2 Line-by-Line)" else "➡️ Straight Line-by-Line Order (1→2)"
+                                    }
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
+                                .testTag("music_shuffle_btn"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isShuffleMode) {
+                                Icon(
+                                    imageVector = Icons.Default.Shuffle,
+                                    contentDescription = "Shuffle ON",
+                                    tint = HybridEmerald,
+                                    modifier = Modifier.size(23.dp)
+                                )
+                            } else {
+                                // Straight Line-by-Line Sequential Icon + "1→2" Badge
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
                                 ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.TrendingFlat,
+                                        contentDescription = "Straight Line Order",
+                                        tint = HybridCyan,
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                     Text(
-                                        text = formatLiveSleepTimerMs(sleepTimerRemainingMs),
-                                        color = Color.Black,
+                                        text = "1→2",
+                                        color = Color.White,
                                         fontWeight = FontWeight.Black,
                                         fontSize = 8.sp
                                     )
@@ -658,260 +754,193 @@ fun MusicPlayerScreen(
                             }
                         }
 
-                        // 4. Single 2x Shake Vibration Orb (📳)
-                        DoubleShakeVibrationOrb(
-                            isEnabled = doubleShakeEnabled,
-                            onClick = { showShakeConfigSheet = true },
-                            size = 46.dp
-                        )
-
-                        // 5. 3-Dot Menu Orb (⋮)
-                        LiquidGlassIconOrb(
-                            icon = Icons.Default.MoreVert,
-                            contentDescription = "More Options",
-                            tintColor = Color.White,
-                            size = 46.dp,
-                            iconSize = 22.dp,
-                            testTag = "music_3dot_menu_btn",
-                            onClick = { showMoreOptionsSheet = true }
-                        )
-                    }
-                }
-
-                // Precision Seekbar + Timestamps
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    VisualPrecisionSeekBar(
-                        progressFraction = progressFraction,
-                        onSeekFractionChanged = { frac: Float ->
-                            viewModel.seekTo((frac * durationMs.toFloat()).toLong())
-                        },
-                        accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else accentColor,
-                        secondaryAccent = if (visualizer3DEnabled) themeSpec.secondaryColor else HybridCyan,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = formatDurationMs(playbackPosition),
-                            color = HybridTextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = formatDurationMs(durationMs),
-                            color = HybridTextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-
-                // Bottom Transport Row:
-                // Left: Shuffle (🔀) vs Straight Line-by-Line Order (➡️ 1→2) | Center: Prev, Play/Pause, Next | Right: Repeat
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Leftmost ("Ulte Haath"): Distinct Shuffle vs Straight Line-by-Line Sequential Button
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (isShuffleMode) HybridEmerald.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.10f)
-                            )
-                            .border(
-                                1.2.dp,
-                                if (isShuffleMode) HybridEmerald else HybridCyan.copy(alpha = 0.55f),
-                                CircleShape
-                            )
-                            .clickable {
-                                viewModel.toggleShuffleMode()
-                                val msg = if (!isShuffleMode) {
-                                    if (isHindi) "🔀 रैंडम शफ़ल चालू (Shuffle Mode)" else "🔀 Shuffle Mode ON (Random)"
-                                } else {
-                                    if (isHindi) "➡️ सीधा क्रम चालू (1→2 Line-by-Line)" else "➡️ Straight Line-by-Line Order (1→2)"
-                                }
-                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                            }
-                            .testTag("music_shuffle_btn"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (isShuffleMode) {
+                        // Previous Track
+                        IconButton(
+                            onClick = { viewModel.playPrevious() },
+                            modifier = Modifier
+                                .size(52.dp)
+                                .testTag("music_prev_btn")
+                        ) {
                             Icon(
-                                imageVector = Icons.Default.Shuffle,
-                                contentDescription = "Shuffle ON",
-                                tint = HybridEmerald,
-                                modifier = Modifier.size(23.dp)
+                                imageVector = Icons.Default.SkipPrevious,
+                                contentDescription = "Previous",
+                                tint = Color.White,
+                                modifier = Modifier.size(34.dp)
                             )
-                        } else {
-                            // Straight Line-by-Line Sequential Icon + "1→2" Badge
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.TrendingFlat,
-                                    contentDescription = "Straight Line Order",
-                                    tint = HybridCyan,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Text(
-                                    text = "1→2",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 8.sp
-                                )
-                            }
                         }
-                    }
 
-                    // Previous Track
-                    IconButton(
-                        onClick = { viewModel.playPrevious() },
-                        modifier = Modifier
-                            .size(52.dp)
-                            .testTag("music_prev_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SkipPrevious,
-                            contentDescription = "Previous",
-                            tint = Color.White,
-                            modifier = Modifier.size(34.dp)
-                        )
-                    }
-
-                    // Play / Pause Master Circle
-                    Box(
-                        modifier = Modifier
-                            .size(68.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (visualizer3DEnabled) themeSpec.primaryColor else accentColor
-                            )
-                            .clickable {
-                                if (nowPlaying == null && currentTrack != null) {
-                                    viewModel.playMusic(currentTrack)
-                                } else {
-                                    viewModel.togglePlayPause()
+                        // Play / Pause Master Circle
+                        Box(
+                            modifier = Modifier
+                                .size(playBtnSize)
+                                .clip(CircleShape)
+                                .background(
+                                    if (visualizer3DEnabled) themeSpec.primaryColor else accentColor
+                                )
+                                .clickable {
+                                    if (nowPlaying == null && currentTrack != null) {
+                                        viewModel.playMusic(currentTrack)
+                                    } else {
+                                        viewModel.togglePlayPause()
+                                    }
                                 }
-                            }
-                            .testTag("music_play_pause_btn"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "Pause" else "Play",
-                            tint = Color.Black,
-                            modifier = Modifier.size(36.dp)
-                        )
-                    }
-
-                    // Next Track
-                    IconButton(
-                        onClick = { viewModel.playNext() },
-                        modifier = Modifier
-                            .size(52.dp)
-                            .testTag("music_next_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SkipNext,
-                            contentDescription = "Next",
-                            tint = Color.White,
-                            modifier = Modifier.size(34.dp)
-                        )
-                    }
-
-                    // Rightmost ("Seedhe Haath"): Repeat Mode Cycle Button (Order -> Repeat All -> Repeat One)
-                    IconButton(
-                        onClick = {
-                            viewModel.cycleRepeatMode()
-                            val nextMode = (repeatMode + 1) % 3
-                            val msg = when (nextMode) {
-                                2 -> if (isHindi) "एक गाना रिपीट (Repeat 1)" else "Repeat One Song 🔂"
-                                1 -> if (isHindi) "सभी गाने रिपीट (Repeat All)" else "Repeat All Songs 🔁"
-                                else -> if (isHindi) "क्रम से चलाएं (Order List)" else "Play in Order ▶"
-                            }
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (repeatMode > 0) HybridCyan.copy(alpha = 0.22f) else Color.Transparent
+                                .testTag("music_play_pause_btn"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                tint = Color.Black,
+                                modifier = Modifier.size(if (useTwoPaneLandscape) 30.dp else 36.dp)
                             )
-                            .testTag("music_repeat_btn")
-                    ) {
-                        Icon(
-                            imageVector = when (repeatMode) {
-                                2 -> Icons.Default.RepeatOne
-                                else -> Icons.Default.Repeat
-                            },
-                            contentDescription = "Repeat Mode",
-                            tint = when (repeatMode) {
-                                2 -> HybridGold
-                                1 -> HybridCyan
-                                else -> Color.White.copy(alpha = 0.7f)
-                            },
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
+                        }
 
-                // Up Next Queue Bar with Real Song Photo Thumbnail
-                LiquidGlassBox(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("music_up_next_bar"),
-                    cornerRadius = 18.dp,
-                    tintColor = HybridEmerald,
-                    glassAlpha = 0.18f,
-                    onClick = { showUpNextQueueSheet = true }
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (nextTrackInQueue != null) {
-                            GuaranteedAlbumArt(
-                                mediaPath = nextTrackInQueue.path,
-                                title = nextTrackInQueue.cleanTitle,
-                                isVideo = nextTrackInQueue.isVideo,
-                                modifier = Modifier.size(32.dp),
-                                cornerRadius = 8.dp,
-                                accentColor = HybridEmerald
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                        } else {
+                        // Next Track
+                        IconButton(
+                            onClick = { viewModel.playNext() },
+                            modifier = Modifier
+                                .size(52.dp)
+                                .testTag("music_next_btn")
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.SkipNext,
-                                contentDescription = null,
-                                tint = HybridEmerald,
-                                modifier = Modifier.size(18.dp)
+                                contentDescription = "Next",
+                                tint = Color.White,
+                                modifier = Modifier.size(34.dp)
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
                         }
-                        Text(
-                            text = nextTrackInQueue?.cleanTitle ?: (if (isHindi) "अगला गाना" else "Up Next Queue"),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                            contentDescription = "Open Queue",
-                            tint = HybridEmerald,
-                            modifier = Modifier.size(20.dp)
+
+                        // Rightmost ("Seedhe Haath"): Repeat Mode Cycle Button (Order -> Repeat All -> Repeat One)
+                        IconButton(
+                            onClick = {
+                                viewModel.cycleRepeatMode()
+                                val nextMode = (repeatMode + 1) % 3
+                                val msg = when (nextMode) {
+                                    2 -> if (isHindi) "एक गाना रिपीट (Repeat 1)" else "Repeat One Song 🔂"
+                                    1 -> if (isHindi) "सभी गाने रिपीट (Repeat All)" else "Repeat All Songs 🔁"
+                                    else -> if (isHindi) "क्रम से चलाएं (Order List)" else "Play in Order ▶"
+                                }
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (repeatMode > 0) HybridCyan.copy(alpha = 0.22f) else Color.Transparent
+                                )
+                                .testTag("music_repeat_btn")
+                        ) {
+                            Icon(
+                                imageVector = when (repeatMode) {
+                                    2 -> Icons.Default.RepeatOne
+                                    else -> Icons.Default.Repeat
+                                },
+                                contentDescription = "Repeat Mode",
+                                tint = when (repeatMode) {
+                                    2 -> HybridGold
+                                    1 -> HybridCyan
+                                    else -> Color.White.copy(alpha = 0.7f)
+                                },
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    // Up Next Queue Bar with Real Song Photo Thumbnail
+                    LiquidGlassBox(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("music_up_next_bar"),
+                        cornerRadius = 18.dp,
+                        tintColor = HybridEmerald,
+                        glassAlpha = 0.18f,
+                        onClick = { showUpNextQueueSheet = true }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (nextTrackInQueue != null) {
+                                GuaranteedAlbumArt(
+                                    mediaPath = nextTrackInQueue.path,
+                                    title = nextTrackInQueue.cleanTitle,
+                                    isVideo = nextTrackInQueue.isVideo,
+                                    modifier = Modifier.size(32.dp),
+                                    cornerRadius = 8.dp,
+                                    accentColor = HybridEmerald
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.SkipNext,
+                                    contentDescription = null,
+                                    tint = HybridEmerald,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text(
+                                text = nextTrackInQueue?.cleanTitle ?: (if (isHindi) "अगला गाना" else "Up Next Queue"),
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = "Open Queue",
+                                tint = HybridEmerald,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (useTwoPaneLandscape) {
+                // Full Horizontal Studio Layout: Left Stage (Top Bar + Disc/3D/Lyrics) | Right Deck (All Controls without clipping)
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(0.46f)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        topBarSection()
+                        centerStageSection(
+                            Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
                         )
                     }
+                    bottomControlDeckSection(
+                        Modifier
+                            .weight(0.54f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState())
+                    )
+                }
+            } else {
+                // Standard Portrait & Tablet Vertical Studio Layout
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    topBarSection()
+                    centerStageSection(
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    )
+                    bottomControlDeckSection(Modifier.fillMaxWidth())
                 }
             }
         }
@@ -2170,7 +2199,7 @@ private fun InteractiveSyncedLyricsStage(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(vertical = 16.dp)
             ) {
-                itemsIndexed(lyrics) { index, line ->
+                itemsIndexed(lyrics, key = { idx, line -> "lrc_${idx}_${line.timeMs}" }) { index, line ->
                     val isCurrent = index == activeIdx
                     Text(
                         text = line.text,

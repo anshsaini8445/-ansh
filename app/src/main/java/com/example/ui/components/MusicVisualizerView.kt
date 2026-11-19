@@ -139,7 +139,7 @@ fun InteractiveLyricsView(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(vertical = 40.dp)
     ) {
-        itemsIndexed(lyrics) { idx, line ->
+        itemsIndexed(lyrics, key = { idx, line -> "vis_lrc_${idx}_${line.timestampMs}" }) { idx, line ->
             val isActive = idx == currentLineIndex
             
             val textColor by animateColorAsState(

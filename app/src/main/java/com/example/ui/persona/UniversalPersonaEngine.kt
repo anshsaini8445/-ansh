@@ -33,7 +33,7 @@ import com.example.ui.theme.*
  *  1. YOUTH_PRO ("Youth Cyber-Glass ⚡") — High-speed 120Hz Neon Liquid Glass, 3D visualizers, Pro Studio controls.
  *  2. SENIOR_EASY ("Senior Comfort 👴") — Extra-large readable fonts (+3sp), big 52dp 1-tap Play buttons, high-contrast clarity.
  *  3. KIDS_MAGIC ("Kids Safe Magic 👶") — Playful colorful cards, animated Penguin/Puppy companion, Kid-Lock protection.
- *  4. BHARAT_DESI ("Bharat Royal 🇮🇳") — Saffron-Emerald-Gold studio vibe, instant ShareKaro & Status Saver bar, Desi Bass boost.
+ *  4. BHARAT_DESI ("Bharat Royal 🇮🇳") — Saffron-Emerald-Gold studio vibe, instant Hybrid Share & Status Saver bar, Desi Bass boost.
  *  5. GLOBAL_MINIMAL ("Global Spatial 🌍") — Ultra-clean American/European spatial cinema layout, distraction-free grid.
  */
 enum class DemographicMode(
@@ -196,7 +196,7 @@ fun UniversalPersonaSelectorDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                items(DemographicMode.entries) { mode ->
+                items(DemographicMode.entries, key = { it.id }) { mode ->
                     val selected = mode == activeMode
                     LiquidGlassBox(
                         modifier = Modifier.fillMaxWidth(),

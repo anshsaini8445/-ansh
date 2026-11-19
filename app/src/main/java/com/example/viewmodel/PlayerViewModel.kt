@@ -7,6 +7,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.PlaybackParams
@@ -17,6 +19,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -45,8 +48,21 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.sqrt
+
+/**
+ * Process-scoped ViewModelStoreOwner for Hybrid Player's audio engine.
+ * Keeps active music and background video-audio playback, MediaPlayer, audio effects,
+ * sleep timer, DJ crossfade, and notification controls running seamlessly even when
+ * the user swipes Hybrid Player out of Android Recent Apps.
+ * Zero Activity or View references are ever stored here.
+ */
+object HybridProcessViewModelStore : androidx.lifecycle.ViewModelStoreOwner {
+    override val viewModelStore: androidx.lifecycle.ViewModelStore = androidx.lifecycle.ViewModelStore()
+}
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlayerViewModel(application: Application) :
@@ -136,12 +152,98 @@ class PlayerViewModel(application: Application) :
 
     // --- Audio Player Engine & Zero-Blink Background Audio ---
     private var mediaPlayer: MediaPlayer? = null
+    @Volatile
+    private var isMediaPlayerPrepared: Boolean = false
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var hardwareEqualizer: Equalizer? = null
     private var hardwareBassBoost: BassBoost? = null
     private var progressJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var lockoutTimerJob: Job? = null
+    private var mediaObserverDebounceJob: Job? = null
+    private var lastAppliedEffectiveSpeed: Float = -1f
+    private var lastAppliedEffectivePitch: Float = -1f
+    private var lastSavedVideoProgressId: String = ""
+    private var lastSavedVideoProgressWallMs: Long = 0L
+
+    // --- System Audio Focus Management (Pauses on Calls / WhatsApp Voice Notes, Ducks on Prompts) ---
+    @Volatile
+    private var resumeOnAudioFocusGain: Boolean = false
+    private var audioFocusRequest: AudioFocusRequest? = null
+
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                resumeOnAudioFocusGain = false
+                pauseMusicInternal(abandonFocus = false)
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (_isPlaying.value || mediaPlayer?.isPlaying == true) {
+                    resumeOnAudioFocusGain = true
+                    pauseMusicInternal(abandonFocus = false)
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                applyChannelVolumeMultiplier(0.25f)
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                applyChannelVolumeMultiplier(1.0f)
+                if (resumeOnAudioFocusGain) {
+                    resumeOnAudioFocusGain = false
+                    resumeMusicInternal()
+                }
+            }
+        }
+    }
+
+    private fun requestSystemAudioFocus(): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val req = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAcceptsDelayedFocusGain(false)
+                    .setWillPauseWhenDucked(false)
+                    .setOnAudioFocusChangeListener(audioFocusChangeListener, Handler(Looper.getMainLooper()))
+                    .build().also { audioFocusRequest = it }
+                audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    audioFocusChangeListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun abandonSystemAudioFocus() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(audioFocusChangeListener)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        try { loudnessEnhancer?.release() } catch (_: Exception) {}
+        try { hardwareEqualizer?.release() } catch (_: Exception) {}
+        try { hardwareBassBoost?.release() } catch (_: Exception) {}
+        loudnessEnhancer = null
+        hardwareEqualizer = null
+        hardwareBassBoost = null
+    }
 
     private val _nowPlaying = MutableStateFlow<MediaItem?>(null)
     val nowPlaying: StateFlow<MediaItem?> = _nowPlaying.asStateFlow()
@@ -384,9 +486,7 @@ class PlayerViewModel(application: Application) :
     val active3DMusicTheme: StateFlow<String> = _active3DMusicTheme.asStateFlow()
 
     private val _customWallpaperUri = MutableStateFlow<String?>(
-        prefs.getString("saved_custom_wallpaper_path", null)?.takeIf { path ->
-            if (path.startsWith("/")) File(path).exists() else true
-        }
+        prefs.getString("saved_custom_wallpaper_path", null)
     )
     val customWallpaperUri: StateFlow<String?> = _customWallpaperUri.asStateFlow()
 
@@ -502,11 +602,16 @@ class PlayerViewModel(application: Application) :
     private val mediaStoreObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) {
             super.onChange(selfChange)
-            loadMedia()
+            mediaObserverDebounceJob?.cancel()
+            mediaObserverDebounceJob = viewModelScope.launch {
+                delay(450L)
+                loadMedia()
+            }
         }
     }
 
     init {
+        MediaNotificationHelper.setPersistentAudioDelegate(this)
         MediaNotificationHelper.setControlDelegate(this)
         loadMedia()
         checkVaultPinStatus()
@@ -515,8 +620,17 @@ class PlayerViewModel(application: Application) :
         if (_vaultLockoutSeconds.value > 0) {
             startVaultLockoutCountdown()
         }
-        _musicItems.value.firstOrNull()?.let { firstTrack ->
-            _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), firstTrack)
+        // Validate saved local wallpaper path & initial track lyrics off the Main Thread
+        viewModelScope.launch(Dispatchers.IO) {
+            val savedWall = _customWallpaperUri.value
+            if (savedWall != null && savedWall.startsWith("/") && !File(savedWall).exists()) {
+                _customWallpaperUri.value = null
+            }
+            val firstTrack = _musicItems.value.firstOrNull()
+            if (firstTrack != null) {
+                val loaded = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), firstTrack)
+                _syncedLyrics.value = loaded
+            }
         }
     }
 
@@ -841,25 +955,33 @@ class PlayerViewModel(application: Application) :
         prefs.edit().remove("real_recent_searches").apply()
     }
 
-    // --- Recycle Bin & Permanent Delete ---
+    // --- Recycle Bin & Permanent Delete (All File I/O Offloaded to Dispatchers.IO) ---
     fun moveToRecycleBin(item: MediaItem) {
-        PermanentDeleteHelper.moveToRecycleBin(getApplication(), item)
-        loadMedia()
+        viewModelScope.launch(Dispatchers.IO) {
+            PermanentDeleteHelper.moveToRecycleBin(getApplication(), item)
+            withContext(Dispatchers.Main) { loadMedia() }
+        }
     }
 
     fun moveBatchToRecycleBin(items: List<MediaItem>) {
-        PermanentDeleteHelper.moveBatchToRecycleBin(getApplication(), items)
-        loadMedia()
+        viewModelScope.launch(Dispatchers.IO) {
+            PermanentDeleteHelper.moveBatchToRecycleBin(getApplication(), items)
+            withContext(Dispatchers.Main) { loadMedia() }
+        }
     }
 
     fun deletePermanently(item: MediaItem) {
-        PermanentDeleteHelper.deletePermanently(getApplication(), item)
-        loadMedia()
+        viewModelScope.launch(Dispatchers.IO) {
+            PermanentDeleteHelper.deletePermanently(getApplication(), item)
+            withContext(Dispatchers.Main) { loadMedia() }
+        }
     }
 
     fun deleteBatchPermanently(items: List<MediaItem>) {
-        PermanentDeleteHelper.deleteBatchPermanently(getApplication(), items)
-        loadMedia()
+        viewModelScope.launch(Dispatchers.IO) {
+            PermanentDeleteHelper.deleteBatchPermanently(getApplication(), items)
+            withContext(Dispatchers.Main) { loadMedia() }
+        }
     }
 
     private fun checkVaultPinStatus() {
@@ -905,16 +1027,16 @@ class PlayerViewModel(application: Application) :
         }
         unplayedShuffleIds.remove(item.id)
 
+        releaseAudioEffects()
+        isMediaPlayerPrepared = false
+        lastAppliedEffectiveSpeed = -1f
+        lastAppliedEffectivePitch = -1f
+        resumeOnAudioFocusGain = false
         try {
-            loudnessEnhancer?.release()
-            hardwareEqualizer?.release()
-            hardwareBassBoost?.release()
+            mediaPlayer?.release()
         } catch (_: Exception) {
         }
-        loudnessEnhancer = null
-        hardwareEqualizer = null
-        hardwareBassBoost = null
-        mediaPlayer?.release()
+        mediaPlayer = null
         _abPointAMs.value = null
         _abPointBMs.value = null
         if (initialSpeed != null) {
@@ -925,14 +1047,28 @@ class PlayerViewModel(application: Application) :
             _playbackPosition.value = initialSeekMs
         }
         prefs.edit().putString("last_played_music_id", item.id).apply()
-        _syncedLyrics.value = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), item)
+        viewModelScope.launch(Dispatchers.IO) {
+            val loadedLyrics = SyncedLyricsEngine.loadLyricsForTrack(getApplication(), item)
+            if (_nowPlaying.value?.id == item.id) {
+                _syncedLyrics.value = loadedLyrics
+            }
+        }
 
         // Start foreground service ONLY when audio playback is explicitly requested
+        MediaNotificationHelper.setPersistentAudioDelegate(this@PlayerViewModel)
         MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
         AudioService.startServiceSafely(getApplication())
 
         mediaPlayer = MediaPlayer().apply {
             try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                }
                 if (
                     item.path.startsWith("content://") ||
                     item.path.startsWith("http://") ||
@@ -941,15 +1077,25 @@ class PlayerViewModel(application: Application) :
                 ) {
                     setDataSource(getApplication(), Uri.parse(item.path))
                 } else {
-                    val file = java.io.File(item.path)
-                    if (file.exists()) {
+                    try {
                         setDataSource(item.path)
-                    } else {
+                    } catch (_: Exception) {
                         setDataSource(getApplication(), Uri.parse(item.path))
                     }
                 }
-                prepareAsync()
+                setOnErrorListener { _, _, _ ->
+                    isMediaPlayerPrepared = false
+                    _isPlaying.value = false
+                    _isDjCrossfadingNow.value = false
+                    progressJob?.cancel()
+                    abandonSystemAudioFocus()
+                    syncMediaNotification()
+                    true
+                }
                 setOnPreparedListener { mp ->
+                    if (mediaPlayer !== mp) return@setOnPreparedListener
+                    isMediaPlayerPrepared = true
+                    requestSystemAudioFocus()
                     if (_djCrossfadeEnabled.value && initialSeekMs <= 0L) {
                         applyChannelVolumeMultiplier(0.24f)
                     } else {
@@ -968,7 +1114,7 @@ class PlayerViewModel(application: Application) :
                     _isDjCrossfadingNow.value = false
                     MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
                     AudioService.startServiceSafely(getApplication())
-                    applySpeedAndPitch()
+                    applySpeedAndPitch(forceApply = true)
                     applyLoudnessBoost()
                     applyHardwareEqualizerAndBass()
                     syncMediaNotification()
@@ -977,10 +1123,13 @@ class PlayerViewModel(application: Application) :
                     if (initialSeekMs < 0L) {
                         viewModelScope.launch {
                             val progress = repository.getProgress(item.id)
-                            if (progress > 0 && progress < item.duration - 6000) {
-                                mp.seekTo(progress.toInt())
-                                _playbackPosition.value = progress
-                                syncMediaNotification()
+                            if (mediaPlayer === mp && isMediaPlayerPrepared && progress > 0 && progress < item.duration - 6000) {
+                                try {
+                                    mp.seekTo(progress.toInt())
+                                    _playbackPosition.value = progress
+                                    syncMediaNotification()
+                                } catch (_: Exception) {
+                                }
                             }
                         }
                     }
@@ -992,8 +1141,11 @@ class PlayerViewModel(application: Application) :
                     progressJob?.cancel()
                     playNext(fromAutoCompletion = true)
                 }
+                prepareAsync()
             } catch (e: Exception) {
                 e.printStackTrace()
+                isMediaPlayerPrepared = false
+                _isPlaying.value = false
                 _nowPlaying.value = item
                 MediaNotificationHelper.setControlDelegate(this@PlayerViewModel)
                 syncMediaNotification()
@@ -1071,33 +1223,73 @@ class PlayerViewModel(application: Application) :
         syncMediaNotification()
     }
 
-    fun togglePlayPause() {
+    private fun pauseMusicInternal(abandonFocus: Boolean = true) {
+        val mp = mediaPlayer ?: return
+        if (!isMediaPlayerPrepared) return
+        try {
+            if (mp.isPlaying || _isPlaying.value) {
+                val pausedPos = mp.currentPosition.toLong().coerceAtLeast(0L)
+                if (mp.isPlaying) mp.pause()
+                _isPlaying.value = false
+                _playbackPosition.value = pausedPos
+                progressJob?.cancel()
+                if (abandonFocus) {
+                    abandonSystemAudioFocus()
+                }
+                _nowPlaying.value?.let { currentItem ->
+                    prefs.edit()
+                        .putString("last_played_music_id", currentItem.id)
+                        .putLong("last_played_music_pos_ms", pausedPos)
+                        .apply()
+                    viewModelScope.launch {
+                        repository.saveProgress(currentItem.id, pausedPos)
+                    }
+                }
+                syncMediaNotification()
+            }
+        } catch (_: Exception) {
+            _isPlaying.value = false
+        }
+    }
+
+    private fun resumeMusicInternal() {
         val mp = mediaPlayer
         if (mp != null) {
+            if (!isMediaPlayerPrepared) return
             try {
-                if (mp.isPlaying) {
-                    val pausedPos = mp.currentPosition.toLong().coerceAtLeast(0L)
-                    mp.pause()
-                    _isPlaying.value = false
-                    _playbackPosition.value = pausedPos
-                    progressJob?.cancel()
-                    _nowPlaying.value?.let { currentItem ->
-                        prefs.edit()
-                            .putString("last_played_music_id", currentItem.id)
-                            .putLong("last_played_music_pos_ms", pausedPos)
-                            .apply()
-                        viewModelScope.launch {
-                            repository.saveProgress(currentItem.id, pausedPos)
-                        }
-                    }
-                } else {
+                if (!mp.isPlaying) {
+                    requestSystemAudioFocus()
+                    applyChannelVolumeMultiplier(1.0f)
                     mp.start()
                     _isPlaying.value = true
                     MediaNotificationHelper.setControlDelegate(this)
                     AudioService.startServiceSafely(getApplication())
+                    applySpeedAndPitch(forceApply = true)
                     startProgressTracker()
+                    syncMediaNotification()
                 }
-                syncMediaNotification()
+            } catch (_: Exception) {
+            }
+        } else {
+            val current = _nowPlaying.value ?: _musicItems.value.firstOrNull()
+            if (current != null) {
+                playMusic(current)
+            }
+        }
+    }
+
+    fun togglePlayPause() {
+        val mp = mediaPlayer
+        if (mp != null) {
+            if (!isMediaPlayerPrepared) return
+            try {
+                if (mp.isPlaying) {
+                    resumeOnAudioFocusGain = false
+                    pauseMusicInternal(abandonFocus = true)
+                } else {
+                    resumeOnAudioFocusGain = false
+                    resumeMusicInternal()
+                }
             } catch (_: Exception) {
             }
         } else {
@@ -1110,13 +1302,16 @@ class PlayerViewModel(application: Application) :
 
     fun seekTo(positionMs: Long) {
         val dur = _nowPlaying.value?.duration?.takeIf { it > 0L }
-            ?: (mediaPlayer?.duration?.toLong()?.coerceAtLeast(1L) ?: 180_000L)
+            ?: (if (isMediaPlayerPrepared) mediaPlayer?.duration?.toLong()?.coerceAtLeast(1L) else null)
+            ?: 180_000L
         val clamped = positionMs.coerceIn(0L, dur)
         _playbackPosition.value = clamped
-        mediaPlayer?.let { mp ->
-            try {
-                mp.seekTo(clamped.toInt())
-            } catch (_: Exception) {
+        if (isMediaPlayerPrepared) {
+            mediaPlayer?.let { mp ->
+                try {
+                    mp.seekTo(clamped.toInt())
+                } catch (_: Exception) {
+                }
             }
         }
         syncMediaNotification()
@@ -1129,27 +1324,37 @@ class PlayerViewModel(application: Application) :
 
     fun setPlaybackSpeed(speed: Float) {
         _playbackSpeed.value = speed.coerceIn(0.25f, 4.0f)
-        applySpeedAndPitch()
+        applySpeedAndPitch(forceApply = true)
     }
 
     fun applyPitchPreset(name: String, speed: Float, pitch: Float) {
         _activePitchPreset.value = name
         _playbackSpeed.value = speed
         _playbackPitch.value = pitch
-        applySpeedAndPitch()
+        applySpeedAndPitch(forceApply = true)
     }
 
-    private fun applySpeedAndPitch(tempSpeedMultiplier: Float = 1.0f) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+    private fun applySpeedAndPitch(tempSpeedMultiplier: Float = 1.0f, forceApply: Boolean = false) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isMediaPlayerPrepared) {
             mediaPlayer?.let { mp ->
                 if (mp.isPlaying) {
                     try {
                         val effectiveSpeed = (_playbackSpeed.value * tempSpeedMultiplier).coerceIn(0.25f, 4.0f)
+                        val effectivePitch = _playbackPitch.value
+                        if (
+                            !forceApply &&
+                            abs(effectiveSpeed - lastAppliedEffectiveSpeed) < 0.015f &&
+                            abs(effectivePitch - lastAppliedEffectivePitch) < 0.015f
+                        ) {
+                            return
+                        }
                         val params = PlaybackParams().apply {
                             this.speed = effectiveSpeed
-                            this.pitch = _playbackPitch.value
+                            this.pitch = effectivePitch
                         }
                         mp.playbackParams = params
+                        lastAppliedEffectiveSpeed = effectiveSpeed
+                        lastAppliedEffectivePitch = effectivePitch
                     } catch (_: Exception) {
                     }
                 }
@@ -1394,6 +1599,16 @@ class PlayerViewModel(application: Application) :
         togglePlayPause()
     }
 
+    override fun onNotificationPlay() {
+        resumeOnAudioFocusGain = false
+        resumeMusicInternal()
+    }
+
+    override fun onNotificationPause() {
+        resumeOnAudioFocusGain = false
+        pauseMusicInternal(abandonFocus = true)
+    }
+
     override fun onNotificationRewind10s() {
         seekTo((_playbackPosition.value - 10_000L).coerceAtLeast(0L))
     }
@@ -1424,6 +1639,10 @@ class PlayerViewModel(application: Application) :
     }
 
     override fun onNotificationStop() {
+        resumeOnAudioFocusGain = false
+        isMediaPlayerPrepared = false
+        releaseAudioEffects()
+        abandonSystemAudioFocus()
         try {
             if (mediaPlayer?.isPlaying == true) {
                 mediaPlayer?.pause()
@@ -1442,6 +1661,14 @@ class PlayerViewModel(application: Application) :
 
     fun dismissBackgroundVideoAudio() {
         onNotificationStop()
+    }
+
+    fun isActivelyPlayingAudio(): Boolean {
+        return _isPlaying.value || (isMediaPlayerPrepared && try {
+            mediaPlayer?.isPlaying == true
+        } catch (_: Exception) {
+            false
+        })
     }
 
     private fun ClosedFloatingPointRange<Float>.random(): Float {
@@ -1530,13 +1757,13 @@ class PlayerViewModel(application: Application) :
         }
     }
 
-    fun verifyVaultPin(pin: String, onResult: (Boolean) -> Unit = {}): Boolean {
+    fun verifyVaultPin(pin: String, onResult: (Boolean) -> Unit = {}) {
         val lockout = SecurityDefenseEngine.getLockoutRemainingSeconds(getApplication())
         if (lockout > 0) {
             _vaultLockoutSeconds.value = lockout
             startVaultLockoutCountdown()
             onResult(false)
-            return false
+            return
         }
         if (FakeVaultHelper.isDecoyPin(pin)) {
             SecurityDefenseEngine.resetFailedPinAttempts(getApplication())
@@ -1544,7 +1771,7 @@ class PlayerViewModel(application: Application) :
             _vaultUnlocked.value = true
             updateShakeSensorRegistration()
             onResult(true)
-            return true
+            return
         }
         val sha256Hash = SecurityDefenseEngine.hashPinSha256(pin)
         val legacyHash = pin.hashCode().toString()
@@ -1569,7 +1796,6 @@ class PlayerViewModel(application: Application) :
                 onResult(false)
             }
         }
-        return true
     }
 
     private fun startVaultLockoutCountdown() {
@@ -1690,9 +1916,11 @@ class PlayerViewModel(application: Application) :
         if (uriString.isNullOrBlank()) {
             val previous = _customWallpaperUri.value
             if (previous != null && previous.startsWith("/")) {
-                try {
-                    File(previous).delete()
-                } catch (_: Exception) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        File(previous).delete()
+                    } catch (_: Exception) {
+                    }
                 }
             }
             _customWallpaperUri.value = null
@@ -1851,8 +2079,16 @@ class PlayerViewModel(application: Application) :
         _hdrCcBadges.value = !_hdrCcBadges.value
     }
 
-    fun saveVideoProgress(mediaId: String, positionMs: Long) {
+    fun saveVideoProgress(mediaId: String, positionMs: Long, forceFlush: Boolean = false) {
         val safePos = positionMs.coerceAtLeast(0L)
+        val nowMs = SystemClock.elapsedRealtime()
+        val isSameVideo = mediaId == lastSavedVideoProgressId
+        if (!forceFlush && isSameVideo && safePos > 0L && (nowMs - lastSavedVideoProgressWallMs) < 5000L) {
+            return
+        }
+        lastSavedVideoProgressId = mediaId
+        lastSavedVideoProgressWallMs = nowMs
+
         if (safePos > 0L) {
             prefs.edit()
                 .putString("last_watched_video_id", mediaId)
@@ -1895,6 +2131,8 @@ class PlayerViewModel(application: Application) :
         progressJob?.cancel()
         sleepTimerJob?.cancel()
         lockoutTimerJob?.cancel()
+        mediaObserverDebounceJob?.cancel()
+        abandonSystemAudioFocus()
         try {
             getApplication<Application>().contentResolver.unregisterContentObserver(mediaStoreObserver)
         } catch (_: Exception) {
@@ -1903,12 +2141,11 @@ class PlayerViewModel(application: Application) :
             sensorManager?.unregisterListener(this)
         } catch (_: Exception) {
         }
+        releaseAudioEffects()
+        isMediaPlayerPrepared = false
         try {
-            loudnessEnhancer?.release()
-            hardwareEqualizer?.release()
-            hardwareBassBoost?.release()
+            mediaPlayer?.release()
         } catch (_: Exception) {
         }
-        mediaPlayer?.release()
     }
 }

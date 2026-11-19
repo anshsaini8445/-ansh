@@ -3,6 +3,8 @@ package com.example.ui.components
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Build
 import android.util.LruCache
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
@@ -39,6 +41,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -82,6 +85,7 @@ fun GuaranteedAlbumArt(
     cornerRadius: Dp = 12.dp,
     accentColor: Color = Color(0xFF00E676)
 ) {
+    val context = LocalContext.current
     var imageBitmap by remember(mediaPath) { mutableStateOf(AlbumArtBitmapCache.get(mediaPath)) }
 
     LaunchedEffect(mediaPath, isVideo) {
@@ -93,14 +97,21 @@ fun GuaranteedAlbumArt(
 
                 AlbumArtBitmapCache.extractionSemaphore.withPermit {
                     AlbumArtBitmapCache.get(mediaPath)?.let { return@withPermit it }
-                    val file = File(mediaPath)
-                    if (!file.exists()) {
-                        AlbumArtBitmapCache.markEmpty(mediaPath)
-                        return@withPermit null
+                    val isContentUri = mediaPath.startsWith("content://")
+                    if (!isContentUri) {
+                        val file = File(mediaPath)
+                        if (!file.exists()) {
+                            AlbumArtBitmapCache.markEmpty(mediaPath)
+                            return@withPermit null
+                        }
                     }
                     val retriever = MediaMetadataRetriever()
                     try {
-                        retriever.setDataSource(mediaPath)
+                        if (isContentUri) {
+                            retriever.setDataSource(context, Uri.parse(mediaPath))
+                        } else {
+                            retriever.setDataSource(mediaPath)
+                        }
                         val embedded = retriever.embeddedPicture
                         val rawBmp = if (embedded != null && embedded.isNotEmpty()) {
                             val opts = BitmapFactory.Options().apply {
@@ -109,7 +120,16 @@ fun GuaranteedAlbumArt(
                             }
                             BitmapFactory.decodeByteArray(embedded, 0, embedded.size, opts)
                         } else if (isVideo) {
-                            retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                retriever.getScaledFrameAtTime(
+                                    1_000_000L,
+                                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                    256,
+                                    256
+                                ) ?: retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            } else {
+                                retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            }
                         } else {
                             null
                         }

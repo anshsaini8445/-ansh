@@ -89,7 +89,7 @@ fun HistoryScreen(
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(historyItems) { (item, savedPosMs) ->
+                    items(historyItems, key = { (item, _) -> item.id }) { (item, savedPosMs) ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()

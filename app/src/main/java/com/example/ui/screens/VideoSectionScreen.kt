@@ -37,6 +37,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -53,8 +54,10 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.scanner.DeepMediaScanner
+import com.example.helpers.MascotSongDropTargetRegistry
 import com.example.helpers.PermanentDeleteHelper
 import com.example.helpers.WifiDirectTransferEngine
+import com.example.helpers.mascotSongDropTarget
 import com.example.helpers.timedMediaTouchHold
 import com.example.ui.components.SimpleModeUiState
 import com.example.ui.menus.MediaSevenActionDialog
@@ -235,6 +238,23 @@ fun VideoSectionScreen(
                 historyListState.scrollToItem(0)
             } catch (_: Exception) {
             }
+        }
+    }
+
+    // Register Mascot 2-second hold-to-play handler for Video rows as well
+    DisposableEffect(activeSubTab) {
+        if (activeSubTab != "Status") {
+            MascotSongDropTargetRegistry.registerPlaySongHandler { hoveredItem ->
+                if (hoveredItem.isVideo) {
+                    onPlayVideo(hoveredItem)
+                } else {
+                    viewModel.playMusic(hoveredItem)
+                }
+            }
+        }
+        onDispose {
+            MascotSongDropTargetRegistry.registerPlaySongHandler(null)
+            MascotSongDropTargetRegistry.clearAllSongRows()
         }
     }
 
@@ -1257,37 +1277,41 @@ fun VideoSectionScreen(
                         onClick = {
                             val batchToDelete = pendingDeleteItems.toList()
                             pendingDeleteItems = emptyList()
-                            val remainingItems = batchToDelete.filter { item ->
-                                !PermanentDeleteHelper.deletePermanently(context, item)
-                            }
-                            if (remainingItems.size < batchToDelete.size) {
-                                viewModel.loadMedia()
-                            }
-                            if (remainingItems.isNotEmpty()) {
-                                val sysPending = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, remainingItems)
-                                if (sysPending != null) {
-                                    pendingSystemBatchDeleteItems = remainingItems
-                                    try {
-                                        systemBatchDeleteLauncher.launch(
-                                            androidx.activity.result.IntentSenderRequest.Builder(sysPending.intentSender).build()
-                                        )
-                                        return@OutlinedButton
-                                    } catch (_: Exception) {
-                                        pendingSystemBatchDeleteItems = emptyList()
+                            coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                val remainingItems = batchToDelete.filter { item ->
+                                    !PermanentDeleteHelper.deletePermanently(context, item)
+                                }
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    if (remainingItems.size < batchToDelete.size) {
+                                        viewModel.loadMedia()
+                                    }
+                                    if (remainingItems.isNotEmpty()) {
+                                        val sysPending = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, remainingItems)
+                                        if (sysPending != null) {
+                                            pendingSystemBatchDeleteItems = remainingItems
+                                            try {
+                                                systemBatchDeleteLauncher.launch(
+                                                    androidx.activity.result.IntentSenderRequest.Builder(sysPending.intentSender).build()
+                                                )
+                                                return@withContext
+                                            } catch (_: Exception) {
+                                                pendingSystemBatchDeleteItems = emptyList()
+                                            }
+                                        }
+                                        Toast.makeText(
+                                            context,
+                                            if (isHindi) "कुछ फ़ाइलें डिलीट नहीं हो सकीं" else "Some files could not be deleted directly",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        selectedIds.clear()
+                                        Toast.makeText(
+                                            context,
+                                            if (isHindi) "${batchToDelete.size} वीडियो हमेशा के लिए हटा दिए गए" else "Deleted ${batchToDelete.size} Video(s) Permanently",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     }
                                 }
-                                Toast.makeText(
-                                    context,
-                                    if (isHindi) "कुछ फ़ाइलें डिलीट नहीं हो सकीं" else "Some files could not be deleted directly",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                selectedIds.clear()
-                                Toast.makeText(
-                                    context,
-                                    if (isHindi) "${batchToDelete.size} वीडियो हमेशा के लिए हटा दिए गए" else "Deleted ${batchToDelete.size} Video(s) Permanently",
-                                    Toast.LENGTH_SHORT
-                                ).show()
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -1789,6 +1813,22 @@ private fun StatusReelsVerticalPagerView(
     var isStatusGridWallMode by remember { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
     var statusPlaybackSpeed by remember { mutableFloatStateOf(1.0f) }
+    var statusSourceFilter by remember { mutableStateOf("ALL") } // "ALL", "WA", "WA_BIZ"
+
+    val filteredReelVideos = remember(reelVideos, statusSourceFilter) {
+        when (statusSourceFilter) {
+            "WA" -> reelVideos.filter {
+                val p = "${it.path} ${it.folderName}".lowercase(Locale.ROOT)
+                p.contains("whatsapp") && !p.contains("business") && !p.contains("w4b")
+            }
+            "WA_BIZ" -> reelVideos.filter {
+                val p = "${it.path} ${it.folderName}".lowercase(Locale.ROOT)
+                p.contains("business") || p.contains("w4b")
+            }
+            else -> reelVideos
+        }
+    }
+    val displayReels = if (filteredReelVideos.isNotEmpty()) filteredReelVideos else reelVideos
 
     if (reelVideos.isEmpty()) {
         Box(
@@ -1821,9 +1861,15 @@ private fun StatusReelsVerticalPagerView(
     }
 
     val pagerState = rememberPagerState(
-        initialPage = initialIndex.coerceIn(0, (reelVideos.size - 1).coerceAtLeast(0)),
-        pageCount = { reelVideos.size }
+        initialPage = initialIndex.coerceIn(0, (displayReels.size - 1).coerceAtLeast(0)),
+        pageCount = { displayReels.size }
     )
+
+    LaunchedEffect(statusSourceFilter, displayReels.size) {
+        if (pagerState.currentPage >= displayReels.size && displayReels.isNotEmpty()) {
+            pagerState.scrollToPage(0)
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -1834,12 +1880,12 @@ private fun StatusReelsVerticalPagerView(
             // --- STATUS GRID WALL VIEW ---
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(top = 64.dp, start = 12.dp, end = 12.dp, bottom = 24.dp),
+                contentPadding = PaddingValues(top = 104.dp, start = 12.dp, end = 12.dp, bottom = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                itemsIndexed(reelVideos, key = { _, it -> "status_grid_${it.id}" }) { idx, video ->
+                itemsIndexed(displayReels, key = { _, it -> "status_grid_${it.id}" }) { idx, video ->
                     val isLiked = favorites.any { it.id == video.id }
                     Box(
                         modifier = Modifier
@@ -1921,7 +1967,7 @@ private fun StatusReelsVerticalPagerView(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize()
             ) { page ->
-                val video = reelVideos[page]
+                val video = displayReels.getOrNull(page) ?: return@VerticalPager
                 val isCurrentPage = pagerState.currentPage == page
                 val isLiked = favorites.any { it.id == video.id }
                 var isPausedByTap by remember(video.id, isCurrentPage) { mutableStateOf(false) }
@@ -1930,6 +1976,16 @@ private fun StatusReelsVerticalPagerView(
                 var isSoftwareReelFallback by remember(video.id, isCurrentPage) { mutableStateOf(false) }
                 var softwareReelBitmap by remember(video.id, isCurrentPage) { mutableStateOf<Bitmap?>(null) }
                 var activeReelMediaPlayer by remember(video.id, isCurrentPage) { mutableStateOf<android.media.MediaPlayer?>(null) }
+                var fallbackReelMediaPlayer by remember(video.id, isCurrentPage) { mutableStateOf<android.media.MediaPlayer?>(null) }
+                var vinylRotationDeg by remember(video.id) { mutableFloatStateOf(0f) }
+
+                // Spin Vinyl Disc smoothly ONLY when active & playing (0% idle CPU when paused)
+                LaunchedEffect(isCurrentPage, isPausedByTap) {
+                    while (isCurrentPage && !isPausedByTap) {
+                        vinylRotationDeg = (vinylRotationDeg + 3.2f) % 360f
+                        kotlinx.coroutines.delay(24L)
+                    }
+                }
 
                 val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner, video.id, isCurrentPage) {
@@ -1942,14 +1998,25 @@ private fun StatusReelsVerticalPagerView(
                     lifecycleOwner.lifecycle.addObserver(observer)
                     onDispose {
                         lifecycleOwner.lifecycle.removeObserver(observer)
+                        val activeMp = activeReelMediaPlayer
+                        val rawMp = fallbackReelMediaPlayer
                         try {
-                            activeReelMediaPlayer?.let { mp ->
+                            activeMp?.let { mp ->
                                 if (mp.isPlaying) mp.stop()
                                 mp.release()
                             }
                         } catch (_: Exception) {
                         }
+                        if (rawMp != null && rawMp !== activeMp) {
+                            try {
+                                if (rawMp.isPlaying) rawMp.stop()
+                                rawMp.release()
+                            } catch (_: Exception) {
+                            }
+                        }
                         activeReelMediaPlayer = null
+                        fallbackReelMediaPlayer = null
+                        softwareReelBitmap = null
                     }
                 }
 
@@ -2091,108 +2158,154 @@ private fun StatusReelsVerticalPagerView(
                         }
                 ) {
                     if (isCurrentPage) {
+                        val reelConfig = androidx.compose.ui.platform.LocalConfiguration.current
+                        val reelOrientationKey = reelConfig.orientation * 100000 + reelConfig.screenWidthDp * 100 + reelConfig.screenHeightDp
                         AndroidView(
                             factory = { ctx ->
-                                VideoView(ctx).apply {
-                                    fun capReelSurfaceBuffer(vw: Int, vh: Int) {
-                                        try {
-                                            val maxDim = 1280f
-                                            if (vw > 1280 || vh > 1280) {
-                                                val ratio = minOf(maxDim / vw.coerceAtLeast(1), maxDim / vh.coerceAtLeast(1))
-                                                val safeW = ((vw * ratio).toInt() / 2) * 2
-                                                val safeH = ((vh * ratio).toInt() / 2) * 2
-                                                if (safeW >= 240 && safeH >= 240) {
-                                                    holder.setFixedSize(safeW, safeH)
-                                                }
-                                            }
-                                        } catch (_: Exception) {
-                                        }
-                                    }
-
-                                    fun configureReelMp(mp: android.media.MediaPlayer) {
-                                        isSoftwareReelFallback = false
-                                        activeReelMediaPlayer = mp
-                                        try {
-                                            mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
-                                        } catch (_: Exception) {
-                                        }
-                                        capReelSurfaceBuffer(mp.videoWidth, mp.videoHeight)
-                                        mp.isLooping = true
-                                        val vol = if (isMuted) 0f else 1f
-                                        mp.setVolume(vol, vol)
-                                        reelTotalDurMs = mp.duration.toLong().coerceAtLeast(1000L)
-                                        if (!isPausedByTap) {
-                                            mp.start()
-                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && statusPlaybackSpeed != 1.0f) {
-                                                try {
-                                                    mp.playbackParams = mp.playbackParams.setSpeed(statusPlaybackSpeed)
-                                                } catch (_: Exception) {
-                                                }
+                                object : android.widget.FrameLayout(ctx) {
+                                    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                                        super.onSizeChanged(w, h, oldw, oldh)
+                                        if (w > 0 && h > 0 && (w != oldw || h != oldh)) {
+                                            val child = getChildAt(0) as? VideoView
+                                            child?.requestLayout()
+                                            post {
+                                                child?.requestLayout()
+                                                requestLayout()
                                             }
                                         }
                                     }
-
-                                    fun startReelFdFallback(): Boolean {
-                                        return try {
-                                            val rawMp = android.media.MediaPlayer()
-                                            val pfd = if (video.path.startsWith("content://")) {
-                                                ctx.contentResolver.openFileDescriptor(Uri.parse(video.path), "r")
-                                            } else {
-                                                val f = File(video.path)
-                                                if (f.exists()) {
-                                                    android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-                                                } else null
+                                }.apply {
+                                    setBackgroundColor(android.graphics.Color.BLACK)
+                                    val reelVv = VideoView(ctx).apply {
+                                        layoutParams = android.widget.FrameLayout.LayoutParams(
+                                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                            android.view.Gravity.CENTER
+                                        )
+                                        fun capReelSurfaceBuffer(vw: Int, vh: Int) {
+                                            try {
+                                                val maxDim = 1280f
+                                                if (vw > 1280 || vh > 1280) {
+                                                    val ratio = minOf(maxDim / vw.coerceAtLeast(1), maxDim / vh.coerceAtLeast(1))
+                                                    val safeW = ((vw * ratio).toInt() / 2) * 2
+                                                    val safeH = ((vh * ratio).toInt() / 2) * 2
+                                                    if (safeW >= 240 && safeH >= 240) {
+                                                        holder.setFixedSize(safeW, safeH)
+                                                    }
+                                                } else {
+                                                    holder.setSizeFromLayout()
+                                                }
+                                            } catch (_: Exception) {
                                             }
-                                            if (pfd != null) {
-                                                rawMp.setDataSource(pfd.fileDescriptor)
-                                                pfd.close()
-                                                capReelSurfaceBuffer(1280, 720)
-                                                rawMp.setDisplay(holder)
-                                                rawMp.setOnPreparedListener { mp -> configureReelMp(mp) }
-                                                rawMp.setOnErrorListener { _, _, _ ->
-                                                    isSoftwareReelFallback = true
+                                        }
+
+                                        fun configureReelMp(mp: android.media.MediaPlayer) {
+                                            isSoftwareReelFallback = false
+                                            activeReelMediaPlayer = mp
+                                            try {
+                                                mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                                            } catch (_: Exception) {
+                                            }
+                                            capReelSurfaceBuffer(mp.videoWidth, mp.videoHeight)
+                                            mp.isLooping = true
+                                            val vol = if (isMuted) 0f else 1f
+                                            mp.setVolume(vol, vol)
+                                            reelTotalDurMs = mp.duration.toLong().coerceAtLeast(1000L)
+                                            if (!isPausedByTap) {
+                                                mp.start()
+                                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && statusPlaybackSpeed != 1.0f) {
+                                                    try {
+                                                        mp.playbackParams = mp.playbackParams.setSpeed(statusPlaybackSpeed)
+                                                    } catch (_: Exception) {
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        fun startReelFdFallback(): Boolean {
+                                            var rawMp: android.media.MediaPlayer? = null
+                                            return try {
+                                                fallbackReelMediaPlayer?.let { prev ->
+                                                    runCatching { prev.stop(); prev.release() }
+                                                }
+                                                rawMp = android.media.MediaPlayer()
+                                                fallbackReelMediaPlayer = rawMp
+                                                val pfd = if (video.path.startsWith("content://")) {
+                                                    ctx.contentResolver.openFileDescriptor(Uri.parse(video.path), "r")
+                                                } else {
+                                                    runCatching {
+                                                        android.os.ParcelFileDescriptor.open(
+                                                            File(video.path),
+                                                            android.os.ParcelFileDescriptor.MODE_READ_ONLY
+                                                        )
+                                                    }.getOrNull()
+                                                }
+                                                if (pfd != null) {
+                                                    try {
+                                                        rawMp.setDataSource(pfd.fileDescriptor)
+                                                    } finally {
+                                                        runCatching { pfd.close() }
+                                                    }
+                                                    capReelSurfaceBuffer(1280, 720)
+                                                    rawMp.setDisplay(holder)
+                                                    rawMp.setOnPreparedListener { mp -> configureReelMp(mp) }
+                                                    rawMp.setOnErrorListener { failedMp, _, _ ->
+                                                        runCatching { failedMp.release() }
+                                                        if (fallbackReelMediaPlayer === failedMp) fallbackReelMediaPlayer = null
+                                                        isSoftwareReelFallback = true
+                                                        true
+                                                    }
+                                                    rawMp.prepareAsync()
                                                     true
+                                                } else {
+                                                    runCatching { rawMp.release() }
+                                                    fallbackReelMediaPlayer = null
+                                                    isSoftwareReelFallback = true
+                                                    false
                                                 }
-                                                rawMp.prepareAsync()
-                                                true
-                                            } else {
+                                            } catch (_: Exception) {
+                                                runCatching { rawMp?.release() }
+                                                fallbackReelMediaPlayer = null
                                                 isSoftwareReelFallback = true
                                                 false
                                             }
-                                        } catch (_: Exception) {
-                                            isSoftwareReelFallback = true
-                                            false
                                         }
-                                    }
 
-                                    try {
-                                        if (
-                                            video.path.startsWith("content://") ||
-                                            video.path.startsWith("http://") ||
-                                            video.path.startsWith("https://") ||
-                                            video.path.startsWith("android.resource://")
-                                        ) {
-                                            setVideoURI(Uri.parse(video.path))
-                                        } else {
-                                            val file = File(video.path)
-                                            if (file.exists()) setVideoPath(file.absolutePath) else setVideoURI(Uri.parse(video.path))
-                                        }
-                                        setOnPreparedListener { mp -> configureReelMp(mp) }
-                                        setOnErrorListener { _, _, _ ->
+                                        try {
+                                            if (
+                                                video.path.startsWith("content://") ||
+                                                video.path.startsWith("http://") ||
+                                                video.path.startsWith("https://") ||
+                                                video.path.startsWith("android.resource://")
+                                            ) {
+                                                setVideoURI(Uri.parse(video.path))
+                                            } else {
+                                                setVideoPath(video.path)
+                                            }
+                                            setOnPreparedListener { mp -> configureReelMp(mp) }
+                                            setOnErrorListener { _, _, _ ->
+                                                if (!startReelFdFallback()) {
+                                                    isSoftwareReelFallback = true
+                                                }
+                                                true
+                                            }
+                                        } catch (_: Exception) {
                                             if (!startReelFdFallback()) {
                                                 isSoftwareReelFallback = true
                                             }
-                                            true
-                                        }
-                                    } catch (_: Exception) {
-                                        if (!startReelFdFallback()) {
-                                            isSoftwareReelFallback = true
                                         }
                                     }
+                                    addView(reelVv)
                                 }
                             },
-                            update = { view ->
-                                if (!isSoftwareReelFallback) {
+                            update = { container ->
+                                val view = container.getChildAt(0) as? VideoView
+                                if (view != null && !isSoftwareReelFallback) {
+                                    // Trigger relayout when orientation changes (reelOrientationKey read ensures recomposition triggers update)
+                                    if (container.tag != reelOrientationKey) {
+                                        container.tag = reelOrientationKey
+                                        view.requestLayout()
+                                    }
                                     try {
                                         if (isPausedByTap && view.isPlaying) {
                                             view.pause()
@@ -2263,7 +2376,7 @@ private fun StatusReelsVerticalPagerView(
                         }
                     }
 
-                    // Instagram Reels-Style Double-Tap Glowing Heart Burst Animation!
+                    // Hybrid Reels-Style Double-Tap Glowing Heart Burst Animation!
                     androidx.compose.animation.AnimatedVisibility(
                         visible = showDoubleTapHeartBurst,
                         enter = androidx.compose.animation.scaleIn(initialScale = 0.4f) + androidx.compose.animation.fadeIn(),
@@ -2495,7 +2608,7 @@ private fun StatusReelsVerticalPagerView(
                             )
                         }
 
-                        // 5. SHARE
+                        // 5. SHARE & REPOST
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.clickable { onShareVideo(video) }
@@ -2521,6 +2634,42 @@ private fun StatusReelsVerticalPagerView(
                                 color = Color.White,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // 5B. REPOST TO STATUS / FEED
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable {
+                                onShareVideo(video)
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "🔁 रीपोस्ट के लिए तैयार" else "🔁 Ready to Repost",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x88000000))
+                                    .border(1.dp, Color(0xFFFFD54F).copy(alpha = 0.75f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Repeat,
+                                    contentDescription = if (isHindi) "रीपोस्ट" else "Repost",
+                                    tint = Color(0xFFFFD54F),
+                                    modifier = Modifier.size(21.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (isHindi) "रीपोस्ट" else "Repost",
+                                color = Color(0xFFFFD54F),
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.ExtraBold
                             )
                         }
 
@@ -2581,10 +2730,11 @@ private fun StatusReelsVerticalPagerView(
                             )
                         }
 
-                        // 7. SPINNING REELS VINYL AUDIO DISC
+                        // 7. SPINNING REELS VINYL AUDIO DISC (Live smooth rotation while playing)
                         Box(
                             modifier = Modifier
                                 .size(44.dp)
+                                .graphicsLayer { rotationZ = vinylRotationDeg }
                                 .clip(CircleShape)
                                 .background(
                                     Brush.sweepGradient(
@@ -2654,7 +2804,7 @@ private fun StatusReelsVerticalPagerView(
                                 )
                             }
                             Text(
-                                text = "${page + 1} / ${reelVideos.size}",
+                                text = "${page + 1} / ${displayReels.size}",
                                 color = Color.White.copy(alpha = 0.88f),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.ExtraBold
@@ -2670,7 +2820,7 @@ private fun StatusReelsVerticalPagerView(
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(5.dp))
-                        // Glowing Original Audio Marquee Pill (Instagram Reels Style)
+                        // Glowing Original Audio Marquee Pill (Hybrid Reels Style)
                         Row(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
@@ -2687,12 +2837,12 @@ private fun StatusReelsVerticalPagerView(
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
-                                text = "🎵 Original Audio • ${video.folderName} • ${video.formattedSize}",
+                                text = "🎵 Original Audio • ${video.folderName} • ${video.formattedSize}   •   ",
                                 color = Color.White.copy(alpha = 0.92f),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                modifier = Modifier.basicMarquee()
                             )
                         }
                     }
@@ -2721,66 +2871,123 @@ private fun StatusReelsVerticalPagerView(
             }
         }
 
-        // Top Bar over Status Reels / Grid: Back Button + Mode Switcher (Reels Swipe vs Grid Wall)
-        Row(
+        // Top Bar over Status Reels / Grid: Back Button + Mode Switcher + WhatsApp / Business Filter Pills
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
                 .padding(top = 12.dp, start = 12.dp, end = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0xAA000000))
-                    .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(20.dp))
-                    .clickable { onClose() }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = if (isHindi) "वापस" else "Back",
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = if (isHindi) "स्टेटस (${reelVideos.size})" else "Status (${reelVideos.size})",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color(0xAA000000))
+                        .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(20.dp))
+                        .clickable { onClose() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = if (isHindi) "वापस" else "Back",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isHindi) "स्टेटस (${displayReels.size})" else "Status (${displayReels.size})",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+
+                // Switcher between Vertical Reels Swipe and Status Grid Wall
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color(0xAA000000))
+                        .border(1.dp, HybridEmerald.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                        .clickable { isStatusGridWallMode = !isStatusGridWallMode }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (isStatusGridWallMode) Icons.Default.SlowMotionVideo else Icons.Default.GridView,
+                        contentDescription = null,
+                        tint = HybridEmerald,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isStatusGridWallMode) {
+                            if (isHindi) "रील्स स्वाइप" else "Reels View"
+                        } else {
+                            if (isHindi) "ग्रिड व्यू" else "Grid Wall"
+                        },
+                        color = HybridEmerald,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 12.sp
+                    )
+                }
             }
 
-            // Switcher between Vertical Reels Swipe and Status Grid Wall
+            // WhatsApp / Business / All Quick Filter Chips
             Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0xAA000000))
-                    .border(1.dp, HybridEmerald.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
-                    .clickable { isStatusGridWallMode = !isStatusGridWallMode }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = if (isStatusGridWallMode) Icons.Default.SlowMotionVideo else Icons.Default.GridView,
-                    contentDescription = null,
-                    tint = HybridEmerald,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = if (isStatusGridWallMode) {
-                        if (isHindi) "रील्स स्वाइप" else "Reels View"
-                    } else {
-                        if (isHindi) "ग्रिड व्यू" else "Grid Wall"
-                    },
-                    color = HybridEmerald,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 12.sp
-                )
+                listOf(
+                    "ALL" to (if (isHindi) "सभी (${reelVideos.size})" else "All (${reelVideos.size})"),
+                    "WA" to "WhatsApp",
+                    "WA_BIZ" to "Business"
+                ).forEach { (key, label) ->
+                    val isSelected = statusSourceFilter == key
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(
+                                if (isSelected) HybridEmerald.copy(alpha = 0.88f)
+                                else Color(0x99000000)
+                            )
+                            .border(
+                                1.dp,
+                                if (isSelected) HybridEmerald else Color.White.copy(alpha = 0.28f),
+                                RoundedCornerShape(50)
+                            )
+                            .clickable {
+                                statusSourceFilter = key
+                                if (key != "ALL") {
+                                    val count = reelVideos.count {
+                                        val p = "${it.path} ${it.folderName}".lowercase(Locale.ROOT)
+                                        if (key == "WA") p.contains("whatsapp") && !p.contains("business") && !p.contains("w4b")
+                                        else p.contains("business") || p.contains("w4b")
+                                    }
+                                    if (count == 0) {
+                                        Toast.makeText(
+                                            context,
+                                            if (isHindi) "$label स्टेटस नहीं मिले — सभी दिखा रहे हैं" else "No $label statuses found — showing All",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 11.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (isSelected) Color.Black else Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
             }
         }
     }
@@ -3148,6 +3355,7 @@ private fun VideoDetailedRowItem(
                 },
                 shape = RoundedCornerShape(cornerRad)
             )
+            .mascotSongDropTarget(video)
             // 2-Second Hold selects the video and enters Multi-Select Mode; 4-Second Hold opens 3-Dot Menu
             .timedMediaTouchHold(
                 onClick = onClick,
@@ -3352,6 +3560,7 @@ private fun VideoGridCard(
                 },
                 RoundedCornerShape(if (simpleFlat) 12.dp else 14.dp)
             )
+            .mascotSongDropTarget(video)
             // 2-Second Hold selects the video and enters Multi-Select Mode; 4-Second Hold opens 3-Dot Menu
             .timedMediaTouchHold(
                 onClick = onClick,

@@ -67,7 +67,12 @@ enum class MainBottomTab(val label: String) {
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: PlayerViewModel by viewModels()
+    private val viewModel: PlayerViewModel by lazy {
+        androidx.lifecycle.ViewModelProvider(
+            com.example.viewmodel.HybridProcessViewModelStore,
+            androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.getInstance(application)
+        )[PlayerViewModel::class.java]
+    }
     private var shouldAutoEnterPipOnLeave: Boolean = false
 
     private val permissionsLauncher = registerForActivityResult(
@@ -80,6 +85,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         try {
             enableEdgeToEdge()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode =
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                            android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                        } else {
+                            android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                        }
+                }
+            }
             androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
                 isAppearanceLightStatusBars = false
                 isAppearanceLightNavigationBars = false
@@ -147,6 +162,8 @@ class MainActivity : ComponentActivity() {
                 var activeVideoProgress by remember { mutableStateOf(0L) }
                 var activeVideoSpeed by remember { mutableStateOf(1.0f) }
                 var isFloatingMiniVideoActive by remember { mutableStateOf(false) }
+                var isFullVideoActivelyPlaying by remember { mutableStateOf(false) }
+                var isMiniVideoActivelyPlaying by remember { mutableStateOf(false) }
                 var showBgVideoFullScreen by remember { mutableStateOf(false) }
 
                 LaunchedEffect(currentScreen, isFloatingMiniVideoActive, activeVideoItem) {
@@ -193,6 +210,8 @@ class MainActivity : ComponentActivity() {
                         if (popped == ActiveScreen.VideoPlayer) {
                             activeVideoItem = null
                             isFloatingMiniVideoActive = false
+                            isFullVideoActivelyPlaying = false
+                            isMiniVideoActivelyPlaying = false
                             activeVideoSpeed = 1.0f
                         }
                         navigationStack.removeAt(navigationStack.lastIndex)
@@ -244,7 +263,7 @@ class MainActivity : ComponentActivity() {
                             ActiveScreen.MainTabs -> {
                                 Scaffold(
                                     containerColor = Color.Transparent,
-                                    contentWindowInsets = WindowInsets.systemBars,
+                                    contentWindowInsets = WindowInsets.safeDrawing,
                                     bottomBar = {
                                         if (!isPipMicroWindow) {
                                             Box(
@@ -482,6 +501,7 @@ class MainActivity : ComponentActivity() {
                                             activeVideoItem = null
                                             activeVideoSpeed = 1.0f
                                             isFloatingMiniVideoActive = false
+                                            isFullVideoActivelyPlaying = false
                                             navigationStack.removeAt(navigationStack.lastIndex)
                                         },
                                         accentColor = accentColor,
@@ -495,6 +515,7 @@ class MainActivity : ComponentActivity() {
                                             viewModel.playVideoInBackground(video, activeVideoProgress, 1.0f)
                                             activeVideoItem = null
                                             isFloatingMiniVideoActive = false
+                                            isFullVideoActivelyPlaying = false
                                             showBgVideoFullScreen = true
                                             navigationStack.removeAt(navigationStack.lastIndex)
                                         },
@@ -503,12 +524,14 @@ class MainActivity : ComponentActivity() {
                                             viewModel.playVideoInBackground(video, currentPosMs, currentSpeed)
                                             activeVideoItem = null
                                             isFloatingMiniVideoActive = false
+                                            isFullVideoActivelyPlaying = false
                                             showBgVideoFullScreen = true
                                             navigationStack.removeAt(navigationStack.lastIndex)
                                         },
                                         onMinimizeToFloatingMiniPlayer = { currentPosMs ->
                                             activeVideoProgress = currentPosMs
                                             viewModel.saveVideoProgress(video.id, currentPosMs)
+                                            isFullVideoActivelyPlaying = false
                                             isFloatingMiniVideoActive = true
                                             if (navigationStack.size > 1) {
                                                 navigationStack.removeAt(navigationStack.lastIndex)
@@ -519,7 +542,11 @@ class MainActivity : ComponentActivity() {
                                             activeVideoItem = null
                                             activeVideoSpeed = 1.0f
                                             isFloatingMiniVideoActive = false
+                                            isFullVideoActivelyPlaying = false
                                             navigationStack.removeAt(navigationStack.lastIndex)
+                                        },
+                                        onPlayingStateChanged = { isPlayingNow ->
+                                            isFullVideoActivelyPlaying = isPlayingNow
                                         }
                                     )
                                 }
@@ -675,6 +702,7 @@ class MainActivity : ComponentActivity() {
                                 onExpandToFullScreen = { latestPosMs ->
                                     activeVideoProgress = latestPosMs
                                     isFloatingMiniVideoActive = false
+                                    isMiniVideoActivelyPlaying = false
                                     if (navigationStack.lastOrNull() != ActiveScreen.VideoPlayer) {
                                         navigationStack.add(ActiveScreen.VideoPlayer)
                                     }
@@ -682,6 +710,7 @@ class MainActivity : ComponentActivity() {
                                 onEnterSystemPip = { latestPosMs ->
                                     activeVideoProgress = latestPosMs
                                     isFloatingMiniVideoActive = false
+                                    isMiniVideoActivelyPlaying = false
                                     if (navigationStack.lastOrNull() != ActiveScreen.VideoPlayer) {
                                         navigationStack.add(ActiveScreen.VideoPlayer)
                                     }
@@ -690,7 +719,11 @@ class MainActivity : ComponentActivity() {
                                 onCloseMiniPlayer = { latestPosMs ->
                                     viewModel.saveVideoProgress(floatingVid.id, latestPosMs)
                                     isFloatingMiniVideoActive = false
+                                    isMiniVideoActivelyPlaying = false
                                     activeVideoItem = null
+                                },
+                                onPlayingStateChanged = { isMiniPlayingNow ->
+                                    isMiniVideoActivelyPlaying = isMiniPlayingNow
                                 }
                             )
                         }
@@ -1546,16 +1579,25 @@ class MainActivity : ComponentActivity() {
                     val hideMascotInSimple = simpleModeEnabled && simpleHideMascot
                     val dynamicMascotClearance = when {
                         currentScreen == ActiveScreen.MusicPlayer -> 148.dp
+                        currentScreen == ActiveScreen.VideoPlayer -> 116.dp
                         bgVideoPlayingItem != null && !isFloatingMiniVideoActive -> 228.dp
                         nowPlaying != null && !nowPlaying!!.isVideo && selectedTab == MainBottomTab.MUSIC -> 192.dp
                         else -> 112.dp
                     }
-                    if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer) && !isPipMicroWindow && !hideMascotInSimple) {
+                    val isAnyAudioOrVideoPlaying = isMusicPlaying ||
+                        (isFloatingMiniVideoActive && isMiniVideoActivelyPlaying) ||
+                        (currentScreen == ActiveScreen.VideoPlayer && activeVideoItem != null && isFullVideoActivelyPlaying)
+                    val activeCompanionMediaTitle = when {
+                        currentScreen == ActiveScreen.VideoPlayer && activeVideoItem != null -> activeVideoItem?.cleanTitle ?: ""
+                        isFloatingMiniVideoActive && activeVideoItem != null -> activeVideoItem?.cleanTitle ?: ""
+                        else -> nowPlaying?.cleanTitle ?: ""
+                    }
+                    if ((currentScreen == ActiveScreen.MainTabs || currentScreen == ActiveScreen.MusicPlayer || currentScreen == ActiveScreen.VideoPlayer) && !isPipMicroWindow && !hideMascotInSimple) {
                         RealisticCompanionOverlay(
                             enabled = companionEnabled && !hideMascotInSimple,
                             breedName = companionBreed,
-                            isMusicPlaying = isMusicPlaying,
-                            nowPlayingTitle = nowPlaying?.cleanTitle ?: "",
+                            isMusicPlaying = isAnyAudioOrVideoPlaying,
+                            nowPlayingTitle = activeCompanionMediaTitle,
                             penguinsOnlyMode = penguinsOnlyMode,
                             mascotSizeDp = companionSizeDp.dp,
                             bottomClearanceDp = dynamicMascotClearance,
@@ -1565,21 +1607,37 @@ class MainActivity : ComponentActivity() {
                             animSpeedMultiplier = companionAnimSpeed,
                             beatEnergy = liveBeatEnergy,
                             onQuickPlayTrigger = {
-                                if (nowPlaying != null) {
+                                if (currentScreen == ActiveScreen.VideoPlayer) {
+                                    MediaNotificationHelper.getControlDelegate()?.onNotificationPlayPause()
+                                } else if (nowPlaying != null) {
                                     viewModel.togglePlayPause()
                                 } else {
                                     music.firstOrNull()?.let { viewModel.playMusic(it) }
                                 }
                             },
                             onDoubleTapPauseMusic = {
-                                if (nowPlaying != null) {
+                                if (currentScreen == ActiveScreen.VideoPlayer) {
+                                    MediaNotificationHelper.getControlDelegate()?.onNotificationPlayPause()
+                                } else if (nowPlaying != null) {
                                     viewModel.togglePlayPause()
                                 } else {
                                     music.firstOrNull()?.let { viewModel.playMusic(it) }
                                 }
                             },
                             onPlaySongFromMascotHover = { hoveredTrack ->
-                                viewModel.playMusic(hoveredTrack)
+                                if (hoveredTrack.isVideo) {
+                                    isFloatingMiniVideoActive = false
+                                    activeVideoItem = hoveredTrack
+                                    activeVideoProgress = 0L
+                                    coroutineScope.launch {
+                                        activeVideoProgress = viewModel.getVideoProgress(hoveredTrack.id)
+                                        if (navigationStack.lastOrNull() != ActiveScreen.VideoPlayer) {
+                                            navigationStack.add(ActiveScreen.VideoPlayer)
+                                        }
+                                    }
+                                } else {
+                                    viewModel.playMusic(hoveredTrack)
+                                }
                             },
                             onNextTrack = {
                                 if (nowPlaying != null) {
@@ -1648,6 +1706,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        try {
+            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = false
+                isAppearanceLightNavigationBars = false
+            }
+            window.decorView.requestApplyInsets()
+        } catch (_: Throwable) {
+        }
+    }
+
     override fun onStop() {
         super.onStop()
         viewModel.onAppMinimizedToBackground()
@@ -1687,17 +1757,31 @@ private fun BoxScope.HybridFloatingMiniVideoWindow(
     onProgressUpdate: (Long) -> Unit,
     onExpandToFullScreen: (Long) -> Unit,
     onEnterSystemPip: (Long) -> Unit,
-    onCloseMiniPlayer: (Long) -> Unit
+    onCloseMiniPlayer: (Long) -> Unit,
+    onPlayingStateChanged: (Boolean) -> Unit = {}
 ) {
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
     var isLargeMiniSize by remember { mutableStateOf(false) }
     var isMiniPlaying by remember { mutableStateOf(true) }
+    LaunchedEffect(isMiniPlaying) {
+        onPlayingStateChanged(isMiniPlaying)
+    }
     var currentPosMs by remember(video.path) { mutableStateOf(initialPositionMs) }
     var miniVideoViewRef by remember { mutableStateOf<android.widget.VideoView?>(null) }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                miniVideoViewRef?.stopPlayback()
+            } catch (_: Exception) {
+            }
+            onPlayingStateChanged(false)
+        }
+    }
+
     LaunchedEffect(miniVideoViewRef, isMiniPlaying) {
-        while (true) {
+        while (isMiniPlaying) {
             try {
                 val vv = miniVideoViewRef
                 if (vv != null && vv.isPlaying) {
@@ -1709,12 +1793,18 @@ private fun BoxScope.HybridFloatingMiniVideoWindow(
                 }
             } catch (_: Exception) {
             }
-            kotlinx.coroutines.delay(500L)
+            kotlinx.coroutines.delay(1000L)
         }
     }
 
     val boxWidth = if (isLargeMiniSize) 286.dp else 224.dp
     val boxHeight = if (isLargeMiniSize) 168.dp else 134.dp
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    LaunchedEffect(configuration.orientation, configuration.screenWidthDp, configuration.screenHeightDp) {
+        // Reset floating offset cleanly on Portrait <-> Landscape rotation so mini player never clips off-screen
+        offsetX = 0f
+        offsetY = 0f
+    }
 
     Surface(
         modifier = Modifier
@@ -1763,7 +1853,11 @@ private fun BoxScope.HybridFloatingMiniVideoWindow(
                                 mp.start()
                                 isMiniPlaying = true
                             }
-                            setOnErrorListener { _, _, _ -> true }
+                            setOnCompletionListener { isMiniPlaying = false }
+                            setOnErrorListener { _, _, _ ->
+                                isMiniPlaying = false
+                                true
+                            }
                         } catch (_: Exception) {
                         }
                     }

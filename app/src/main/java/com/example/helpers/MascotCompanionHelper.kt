@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
@@ -553,6 +554,19 @@ object MascotSongDropTargetRegistry {
     }
 }
 
+fun Modifier.mascotSongDropTarget(item: MediaItem): Modifier = composed {
+    DisposableEffect(item.id) {
+        onDispose {
+            MascotSongDropTargetRegistry.unregisterSongRow(item.id)
+        }
+    }
+    this.onGloballyPositioned { coords ->
+        if (coords.isAttached) {
+            MascotSongDropTargetRegistry.registerSongRow(item, coords.boundsInRoot())
+        }
+    }
+}
+
 /**
  * 8 Live 3D Mascot Dance & Action Modes ("Mascots guida par animation lage ache sa")
  */
@@ -662,8 +676,8 @@ private object MascotTransparentBitmapCache {
             val raw = BitmapFactory.decodeResource(context.resources, breed.drawableResId, opts)
                 ?: return@withContext null
 
-            val targetW = 280
-            val targetH = ((raw.height.toFloat() / raw.width.coerceAtLeast(1)) * targetW).toInt().coerceAtLeast(280)
+            val targetW = 300
+            val targetH = ((raw.height.toFloat() / raw.width.coerceAtLeast(1)) * targetW).toInt().coerceAtLeast(300)
             val scaled = Bitmap.createScaledBitmap(raw, targetW, targetH, true)
             if (scaled !== raw) {
                 raw.recycle()
@@ -684,67 +698,13 @@ private object MascotTransparentBitmapCache {
             val fullImg = cutout.asImageBitmap()
             transparentCutoutCache[breed.drawableResId] = fullImg
 
-            // Central Torso Layer with static outer arms, static lower legs, and upper head erased
-            // so moving arms & legs never leave a duplicate static ghost limb behind!
-            val torsoOnlyImg = extractFeatheredPlushRegion(
-                srcPixels = srcPixels,
-                w = w,
-                h = h,
-                cxRatio = 0.50f,
-                cyRatio = 0.56f,
-                rxRatio = 0.27f,
-                ryRatio = 0.19f
-            ).asImageBitmap()
-
-            val headImg = extractFeatheredPlushRegion(
-                srcPixels = srcPixels,
-                w = w,
-                h = h,
-                cxRatio = 0.50f,
-                cyRatio = 0.26f,
-                rxRatio = 0.45f,
-                ryRatio = 0.28f
-            ).asImageBitmap()
-
-            val leftArmImg = extractFeatheredPlushRegion(
-                srcPixels = srcPixels,
-                w = w,
-                h = h,
-                cxRatio = 0.18f,
-                cyRatio = 0.55f,
-                rxRatio = 0.19f,
-                ryRatio = 0.18f
-            ).asImageBitmap()
-
-            val rightArmImg = extractFeatheredPlushRegion(
-                srcPixels = srcPixels,
-                w = w,
-                h = h,
-                cxRatio = 0.82f,
-                cyRatio = 0.55f,
-                rxRatio = 0.19f,
-                ryRatio = 0.18f
-            ).asImageBitmap()
-
-            val leftFootImg = extractFeatheredPlushRegion(
-                srcPixels = srcPixels,
-                w = w,
-                h = h,
-                cxRatio = 0.34f,
-                cyRatio = 0.84f,
-                rxRatio = 0.20f,
-                ryRatio = 0.17f
-            ).asImageBitmap()
-
-            val rightFootImg = extractFeatheredPlushRegion(
-                srcPixels = srcPixels,
-                w = w,
-                h = h,
-                cxRatio = 0.66f,
-                cyRatio = 0.84f,
-                rxRatio = 0.20f,
-                ryRatio = 0.17f
-            ).asImageBitmap()
+            // Extract full-coverage anatomical layers (NO clipped small ovals, NO missing pixels!)
+            val torsoOnlyImg = extractAnatomicalLayer(srcPixels, w, h, AnatomicalPart.TORSO_CORE).asImageBitmap()
+            val headImg = extractAnatomicalLayer(srcPixels, w, h, AnatomicalPart.HEAD_AND_EARS).asImageBitmap()
+            val leftArmImg = extractAnatomicalLayer(srcPixels, w, h, AnatomicalPart.LEFT_ARM).asImageBitmap()
+            val rightArmImg = extractAnatomicalLayer(srcPixels, w, h, AnatomicalPart.RIGHT_ARM).asImageBitmap()
+            val leftFootImg = extractAnatomicalLayer(srcPixels, w, h, AnatomicalPart.LEFT_LEG).asImageBitmap()
+            val rightFootImg = extractAnatomicalLayer(srcPixels, w, h, AnatomicalPart.RIGHT_LEG).asImageBitmap()
 
             val parts = ArticulatedMascotParts(
                 rawCutoutBitmap = cutout,
@@ -763,47 +723,84 @@ private object MascotTransparentBitmapCache {
         }
     }
 
-    private fun extractFeatheredPlushRegion(
+    private enum class AnatomicalPart {
+        HEAD_AND_EARS,
+        TORSO_CORE,
+        LEFT_ARM,
+        RIGHT_ARM,
+        LEFT_LEG,
+        RIGHT_LEG
+    }
+
+    private fun smoothStep(edge0: Float, edge1: Float, x: Float): Float {
+        val t = ((x - edge0) / (edge1 - edge0).coerceAtLeast(0.0001f)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+
+    private fun extractAnatomicalLayer(
         srcPixels: IntArray,
         w: Int,
         h: Int,
-        cxRatio: Float,
-        cyRatio: Float,
-        rxRatio: Float,
-        ryRatio: Float
+        part: AnatomicalPart
     ): Bitmap {
         val outPixels = IntArray(w * h)
-        val cx = cxRatio * w
-        val cy = cyRatio * h
-        val rx = (rxRatio * w).coerceAtLeast(1f)
-        val ry = (ryRatio * h).coerceAtLeast(1f)
-
-        val minX = (cx - rx).toInt().coerceIn(0, w - 1)
-        val maxX = (cx + rx).toInt().coerceIn(0, w - 1)
-        val minY = (cy - ry).toInt().coerceIn(0, h - 1)
-        val maxY = (cy + ry).toInt().coerceIn(0, h - 1)
-
-        for (y in minY..maxY) {
-            val dy = (y - cy) / ry
-            val dy2 = dy * dy
+        for (y in 0 until h) {
+            val ny = y.toFloat() / h.toFloat()
             val rowOffset = y * w
-            for (x in minX..maxX) {
+            for (x in 0 until w) {
                 val src = srcPixels[rowOffset + x]
                 val srcAlpha = (src ushr 24) and 0xFF
                 if (srcAlpha == 0) continue
-                val dx = (x - cx) / rx
-                val distSq = dx * dx + dy2
-                if (distSq >= 1.0f) continue
-                val dist = kotlin.math.sqrt(distSq)
-                val featherFactor = if (dist <= 0.60f) {
-                    1.0f
-                } else {
-                    val t = ((1.0f - dist) / 0.40f).coerceIn(0f, 1f)
-                    t * t * (3f - 2f * t)
+                val nx = x.toFloat() / w.toFloat()
+
+                // Slight downward curve at the chin/neck so the round chin stays on the head layer
+                val centerDistX = abs(nx - 0.50f)
+                val neckLineY = 0.485f - (centerDistX * centerDistX) * 0.22f
+
+                val weight: Float = when (part) {
+                    AnatomicalPart.HEAD_AND_EARS -> {
+                        1f - smoothStep(neckLineY - 0.025f, neckLineY + 0.025f, ny)
+                    }
+                    AnatomicalPart.LEFT_LEG -> {
+                        val topW = smoothStep(0.68f, 0.73f, ny)
+                        val sideW = 1f - smoothStep(0.48f, 0.51f, nx)
+                        topW * sideW
+                    }
+                    AnatomicalPart.RIGHT_LEG -> {
+                        val topW = smoothStep(0.68f, 0.73f, ny)
+                        val sideW = smoothStep(0.49f, 0.52f, nx)
+                        topW * sideW
+                    }
+                    AnatomicalPart.LEFT_ARM -> {
+                        val topW = smoothStep(0.40f, 0.45f, ny)
+                        val botW = 1f - smoothStep(0.67f, 0.72f, ny)
+                        val horizW = 1f - smoothStep(0.28f, 0.35f, nx)
+                        topW * botW * horizW
+                    }
+                    AnatomicalPart.RIGHT_ARM -> {
+                        val topW = smoothStep(0.40f, 0.45f, ny)
+                        val botW = 1f - smoothStep(0.67f, 0.72f, ny)
+                        val horizW = smoothStep(0.65f, 0.72f, nx)
+                        topW * botW * horizW
+                    }
+                    AnatomicalPart.TORSO_CORE -> {
+                        // Overlap neck (0.43..0.48) and upper hips (0.68..0.76) so rotating head & kicking legs
+                        // never expose a gap, while erasing outer static arms and lower static feet!
+                        val topW = smoothStep(0.42f, 0.47f, ny)
+                        val botW = 1f - smoothStep(0.73f, 0.77f, ny)
+                        val inArmBand = smoothStep(0.41f, 0.45f, ny) * (1f - smoothStep(0.66f, 0.71f, ny))
+                        val outerLeftArm = (1f - smoothStep(0.25f, 0.31f, nx)) * inArmBand
+                        val outerRightArm = smoothStep(0.69f, 0.75f, nx) * inArmBand
+                        val armExclusion = (1f - outerLeftArm) * (1f - outerRightArm)
+                        topW * botW * armExclusion
+                    }
                 }
-                val newAlpha = (srcAlpha * featherFactor).toInt().coerceIn(0, 255)
-                if (newAlpha > 0) {
-                    outPixels[rowOffset + x] = (newAlpha shl 24) or (src and 0x00FFFFFF)
+
+                if (weight > 0.01f) {
+                    val newAlpha = (srcAlpha * weight).roundToInt().coerceIn(0, 255)
+                    if (newAlpha > 0) {
+                        outPixels[rowOffset + x] = (newAlpha shl 24) or (src and 0x00FFFFFF)
+                    }
                 }
             }
         }
@@ -826,8 +823,8 @@ private object MascotTransparentBitmapCache {
         var head = 0
         var tail = 0
 
-        val minBrightness = if (isWhiteFurSubject) 245 else 232
-        val maxChannelDiff = if (isWhiteFurSubject) 9 else 20
+        val minBrightness = if (isWhiteFurSubject) 242 else 218
+        val maxChannelDiff = if (isWhiteFurSubject) 10 else 24
 
         fun isStudioWhiteBackdrop(pixel: Int, x: Int, y: Int): Boolean {
             val r = (pixel shr 16) and 0xFF
@@ -836,19 +833,44 @@ private object MascotTransparentBitmapCache {
             val minC = min(r, min(g, b))
             val maxC = max(r, max(g, b))
             val diff = maxC - minC
+
+            // 1. Standard outer studio white/off-white backdrop
             if (minC >= minBrightness && diff <= maxChannelDiff) {
                 return true
             }
-            // Also remove soft neutral grey studio floor drop-shadows at the bottom & corners
-            if (y > (h * 0.84f).toInt() && diff <= 14) {
-                val isOutsideFeet = x < (w * 0.25f).toInt() ||
-                    x > (w * 0.75f).toInt() ||
-                    y > (h * 0.92f).toInt() ||
-                    x in (w * 0.46f).toInt()..(w * 0.54f).toInt()
-                if (isOutsideFeet && minC >= 188) {
+
+            // 2. Bottom studio floor & contact shadow under and around the feet ("iski tangon Ke Niche Jo Hai vah Sara Kuchh Hata Do")
+            if (y >= (h * 0.81f).toInt()) {
+                val floorMaxDiff = if (isWhiteFurSubject) 16 else 28
+                val floorMinBri = if (isWhiteFurSubject) 172 else 130
+                if (diff <= floorMaxDiff && minC >= floorMinBri) {
                     return true
                 }
             }
+
+            // 3. Hard bottom floor margin below the toes (y >= 93.5% of height)
+            if (y >= (h * 0.935f).toInt() && diff <= 32 && minC >= 110) {
+                return true
+            }
+
+            // 4. Shaded vertical studio gap between the two legs ("iski tang bilkul clear samajhni chahie")
+            if (y >= (h * 0.73f).toInt() && x in (w * 0.43f).toInt()..(w * 0.57f).toInt()) {
+                val gapMaxDiff = if (isWhiteFurSubject) 15 else 26
+                val gapMinBri = if (isWhiteFurSubject) 182 else 142
+                if (diff <= gapMaxDiff && minC >= gapMinBri) {
+                    return true
+                }
+            }
+
+            // 5. Shaded studio pocket under the headphone headband arch ("Modi ki bilkul Charon taraf se Kuchh Nahin Hona chahie")
+            if (y in (h * 0.08f).toInt()..(h * 0.26f).toInt() && x in (w * 0.23f).toInt()..(w * 0.77f).toInt()) {
+                val archMaxDiff = if (isWhiteFurSubject) 10 else 22
+                val archMinBri = if (isWhiteFurSubject) 236 else 185
+                if (diff <= archMaxDiff && minC >= archMinBri) {
+                    return true
+                }
+            }
+
             return false
         }
 
@@ -860,8 +882,9 @@ private object MascotTransparentBitmapCache {
             val b = c and 0xFF
             val minC = min(r, min(g, b))
             val maxC = max(r, max(g, b))
-            if (minC < 246 || (maxC - minC) > 6) return false
-            // Verify 3x3 neighborhood is flat untextured studio backdrop (protects white fur!)
+            val reqMin = if (isWhiteFurSubject) 242 else 192
+            val reqDiff = if (isWhiteFurSubject) 7 else 20
+            if (minC < reqMin || (maxC - minC) > reqDiff) return false
             var minLum = 255
             var maxLum = 0
             for (dy in -1..1) {
@@ -873,7 +896,7 @@ private object MascotTransparentBitmapCache {
                     if (lum > maxLum) maxLum = lum
                 }
             }
-            return (maxLum - minLum) <= 4
+            return (maxLum - minLum) <= (if (isWhiteFurSubject) 4 else 10)
         }
 
         fun enqueueIfBackdrop(x: Int, y: Int) {
@@ -896,30 +919,28 @@ private object MascotTransparentBitmapCache {
             enqueueIfBackdrop(w - 1, y)
         }
 
-        // 2. Seed from enclosed white pockets:
-        //    (a) Under the headphone headband arch (between headband and top of head/ears)
-        val archMinX = (w * 0.25f).toInt()
-        val archMaxX = (w * 0.75f).toInt()
-        val archMinY = (h * 0.08f).toInt()
-        val archMaxY = (h * 0.24f).toInt()
-        for (y in archMinY..archMaxY step 2) {
-            for (x in archMinX..archMaxX step 2) {
+        // 2. Seed from enclosed pockets:
+        //    (a) Headphone headband arch above head
+        for (y in (h * 0.08f).toInt()..(h * 0.26f).toInt() step 2) {
+            for (x in (w * 0.24f).toInt()..(w * 0.76f).toInt() step 2) {
                 if (isFlatInteriorWhitePocket(x, y)) {
                     enqueueIfBackdrop(x, y)
                 }
             }
         }
-
-        //    (b) Enclosed gap between the two legs near the bottom
-        val legGapMinX = (w * 0.44f).toInt()
-        val legGapMaxX = (w * 0.56f).toInt()
-        val legGapMinY = (h * 0.76f).toInt()
-        val legGapMaxY = (h * 0.96f).toInt()
-        for (y in legGapMinY..legGapMaxY step 2) {
-            for (x in legGapMinX..legGapMaxX step 2) {
-                if (isFlatInteriorWhitePocket(x, y)) {
-                    enqueueIfBackdrop(x, y)
-                }
+        //    (b) Gap between the two legs & under the feet
+        for (y in (h * 0.74f).toInt() until h step 2) {
+            for (x in (w * 0.43f).toInt()..(w * 0.57f).toInt() step 2) {
+                enqueueIfBackdrop(x, y)
+            }
+        }
+        //    (c) Pockets between arms, earcups, and torso/tail
+        for (y in (h * 0.36f).toInt()..(h * 0.84f).toInt() step 2) {
+            for (x in (w * 0.14f).toInt()..(w * 0.35f).toInt() step 2) {
+                if (isFlatInteriorWhitePocket(x, y)) enqueueIfBackdrop(x, y)
+            }
+            for (x in (w * 0.65f).toInt()..(w * 0.86f).toInt() step 2) {
+                if (isFlatInteriorWhitePocket(x, y)) enqueueIfBackdrop(x, y)
             }
         }
 
@@ -934,10 +955,45 @@ private object MascotTransparentBitmapCache {
             if (y + 1 < h) enqueueIfBackdrop(x, y + 1)
         }
 
-        // 3. Soft anti-aliased alpha feathering along the plush fur silhouette
-        for (y in 1 until h - 1) {
-            for (x in 1 until w - 1) {
-                val idx = y * w + x
+        // 3. Two-Pass White/Grey Halo Choke: removes pale anti-aliased white studio fringes around fur & limbs
+        val fringeMinBri = if (isWhiteFurSubject) 235 else 182
+        val fringeMaxDiff = if (isWhiteFurSubject) 10 else 28
+        repeat(2) {
+            val toClear = IntArray(w * h)
+            var clearCount = 0
+            for (y in 1 until h - 1) {
+                val row = y * w
+                for (x in 1 until w - 1) {
+                    val idx = row + x
+                    if (!visited[idx]) {
+                        val touchesTransparent = visited[idx - 1] || visited[idx + 1] || visited[idx - w] || visited[idx + w]
+                        if (touchesTransparent) {
+                            val c = pixels[idx]
+                            val r = (c shr 16) and 0xFF
+                            val g = (c shr 8) and 0xFF
+                            val b = c and 0xFF
+                            val minC = min(r, min(g, b))
+                            val maxC = max(r, max(g, b))
+                            val diff = maxC - minC
+                            if (minC >= fringeMinBri && diff <= fringeMaxDiff) {
+                                toClear[clearCount++] = idx
+                            }
+                        }
+                    }
+                }
+            }
+            for (i in 0 until clearCount) {
+                val idx = toClear[i]
+                visited[idx] = true
+                pixels[idx] = 0x00000000
+            }
+        }
+
+        // 4. Clean anti-aliased edge feathering + RGB color decontamination (pulls interior fur color to the edge)
+        for (y in 2 until h - 2) {
+            val row = y * w
+            for (x in 2 until w - 2) {
+                val idx = row + x
                 if (!visited[idx]) {
                     var transparentNeighbors = 0
                     if (visited[idx - 1]) transparentNeighbors++
@@ -945,14 +1001,23 @@ private object MascotTransparentBitmapCache {
                     if (visited[idx - w]) transparentNeighbors++
                     if (visited[idx + w]) transparentNeighbors++
                     if (transparentNeighbors > 0) {
-                        val c = pixels[idx]
-                        val r = (c shr 16) and 0xFF
-                        val g = (c shr 8) and 0xFF
-                        val b = c and 0xFF
+                        var interiorColor = pixels[idx]
+                        // Look 2px inward for a pure fur pixel to eliminate any residual white edge tint
+                        val offsets = intArrayOf(-2, 2, -2 * w, 2 * w, -w - 1, -w + 1, w - 1, w + 1)
+                        for (off in offsets) {
+                            val nIdx = idx + off
+                            if (nIdx in 0 until (w * h) && !visited[nIdx]) {
+                                interiorColor = pixels[nIdx]
+                                break
+                            }
+                        }
+                        val r = (interiorColor shr 16) and 0xFF
+                        val g = (interiorColor shr 8) and 0xFF
+                        val b = interiorColor and 0xFF
                         val newAlpha = when (transparentNeighbors) {
-                            3, 4 -> 75
-                            2 -> 150
-                            else -> 215
+                            3, 4 -> 90
+                            2 -> 165
+                            else -> 225
                         }
                         pixels[idx] = (newAlpha shl 24) or (r shl 16) or (g shl 8) or b
                     }
@@ -1108,6 +1173,8 @@ fun DeformingJumping3DPlushMascot(
     auraColor: Color,
     customFurColor: Color? = null,
     drawInternalFloorShadow: Boolean = false,
+    isLiftedInAir: Boolean = false,
+    danceTransition: Float = if (isMusicPlaying || happyJumpTicks > 0) 1f else 0f,
     modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
@@ -1129,20 +1196,28 @@ fun DeformingJumping3DPlushMascot(
             danceMode
         }
 
-        // Active Beat-Synced Dance vs Calm Standing/Breathing Idle Posture:
-        // When song is playing (or user triggered a jump stunt), dance energetically!
-        // When song is paused/stopped, transition smoothly into calm breathing idle on the floor.
-        val isDancingActive = isMusicPlaying || happyJumpTicks > 0
-        val energyMult = if (isDancingActive) 1.25f else 0.18f
+        // Smooth multi-step transition curve (`0f` = 100% Stationary Paused, `1f` = Full Living 3D Cartoon Dance)
+        val rawDanceWeight = if (happyJumpTicks > 0) {
+            max(danceTransition, 0.85f).coerceIn(0f, 1f)
+        } else {
+            danceTransition.coerceIn(0f, 1f)
+        }
+        // Multi-step activation envelopes for fluid, staggered transition when playback starts
+        val headGrooveW = (rawDanceWeight / 0.45f).coerceIn(0f, 1f)
+        val armGrooveW = ((rawDanceWeight - 0.15f) / 0.55f).coerceIn(0f, 1f)
+        val legDanceW = ((rawDanceWeight - 0.25f) / 0.75f).coerceIn(0f, 1f)
+        val isDancingActive = rawDanceWeight > 0.005f
+
+        val extraLandingSquash = if (landingSquashTicks > 0) sin(landingSquashTicks * 0.45f) * 0.18f else 0f
+        val isStationaryPaused = !isDancingActive && !isLiftedInAir && extraLandingSquash <= 0.005f
 
         // =========================================================================
-        // 1. BEAT-SYNCED TRAMPOLINE JUMP & DANCE PHYSICS VS CALM IDLE STOP
+        // 1. MULTI-STEP JUMP, SQUASH & BOUNCE KINEMATICS (100% STILL WHEN PAUSED)
         // =========================================================================
         val jumpSpeed = when {
-            !isDancingActive -> 1.6f
-            activeStyle == MascotDanceMode.TRAMPOLINE_ACROBAT -> 4.1f
+            !isDancingActive -> 1.5f
+            activeStyle == MascotDanceMode.TRAMPOLINE_ACROBAT -> 4.0f
             activeStyle == MascotDanceMode.BHANGRA_GROOVE -> 3.8f
-            activeStyle == MascotDanceMode.DJ_BOUNCE -> 3.6f
             else -> 3.6f
         }
         val jumpCycle = t * jumpSpeed
@@ -1150,42 +1225,38 @@ fun DeformingJumping3DPlushMascot(
 
         val airborneFactor: Float
         val crouchFactor: Float
-        if (!isDancingActive) {
-            // Calm standing/breathing idle posture on the bottom floor when music is paused/stopped
+        if (isLiftedInAir) {
+            airborneFactor = 1.0f
+            crouchFactor = 0f
+        } else if (!isDancingActive) {
             airborneFactor = 0f
-            crouchFactor = (sin(t * 1.8f) + 1f) * 0.035f
-        } else if (normPhase in 0.24f..0.88f) {
-            val airU = (normPhase - 0.24f) / 0.64f
-            airborneFactor = sin(airU * 3.1415927f).coerceIn(0f, 1f)
+            crouchFactor = 0f
+        } else if (normPhase in 0.26f..0.86f) {
+            val airU = (normPhase - 0.26f) / 0.60f
+            airborneFactor = (sin(airU * 3.1415927f) * legDanceW).coerceIn(0f, 1f)
             crouchFactor = 0f
         } else {
             airborneFactor = 0f
-            val groundU = if (normPhase < 0.24f) {
-                (normPhase + 0.12f) / 0.36f
-            } else {
-                (normPhase - 0.88f) / 0.36f
-            }
-            crouchFactor = sin(groundU * 3.1415927f).coerceIn(0f, 1f)
+            val groundU = if (normPhase < 0.26f) (normPhase + 0.14f) / 0.40f else (normPhase - 0.86f) / 0.40f
+            crouchFactor = (sin(groundU * 3.1415927f) * legDanceW).coerceIn(0f, 1f)
         }
 
-        val extraLandingSquash = if (landingSquashTicks > 0) sin(landingSquashTicks * 0.45f) * 0.22f else 0f
-        val totalCrouch = (crouchFactor + extraLandingSquash).coerceIn(0f, 1.22f)
-        val stuntBoost = if (happyJumpTicks > 0) 1.22f else 1.0f
+        val totalCrouch = (crouchFactor + extraLandingSquash).coerceIn(0f, 1.15f)
+        val stuntBoost = if (happyJumpTicks > 0) 1.18f else 1.0f
 
-        // Base unit scale so proportions stay crisp at any Dp size (88dp overlay or 252dp stage)
         val u = min(w, h)
-        val centerX = w * 0.5f + (if (isDancingActive) sin(t * 2.4f) * u * 0.025f else 0f)
-        val groundY = h * 0.88f
+        val centerX = w * 0.5f + (if (!isStationaryPaused && !isLiftedInAir) sin(t * 2.5f) * u * 0.026f * legDanceW else 0f)
+        val groundY = h * 0.94f
 
-        // High vertical jump trajectory when dancing + knee-squat drop on floor bounce
-        val jumpLiftY = -airborneFactor * (h * 0.27f * energyMult * stuntBoost) +
-            totalCrouch * (h * 0.055f)
+        val jumpLiftY = when {
+            isLiftedInAir -> -h * 0.045f
+            isStationaryPaused -> 0f
+            else -> (-airborneFactor * (h * 0.088f * stuntBoost) + totalCrouch * (h * 0.024f)) * legDanceW
+        }
 
-        // Cartoon Squash & Stretch ratios for torso & head (reacts on every multi-bounce impact!)
-        val squashX = 1.0f - airborneFactor * 0.09f + totalCrouch * 0.18f
-        val stretchY = 1.0f + airborneFactor * 0.12f - totalCrouch * 0.18f
+        val squashX = if (isStationaryPaused) 1.0f else 1.0f - airborneFactor * 0.035f + totalCrouch * 0.085f
+        val stretchY = if (isStationaryPaused) 1.0f else 1.0f + airborneFactor * 0.045f - totalCrouch * 0.085f
 
-        // Helper for 3D volumetric plush shading (highlight -> mid fur -> deep shadow + rim light)
         fun lighten(c: Color, amt: Float): Color = Color(
             red = (c.red + (1f - c.red) * amt).coerceIn(0f, 1f),
             green = (c.green + (1f - c.green) * amt).coerceIn(0f, 1f),
@@ -1203,7 +1274,8 @@ fun DeformingJumping3DPlushMascot(
         val isPanda = breed == CompanionBreed.BABY_PANDA_DJ || breed == CompanionBreed.BHANGRA_KING_PANDA
         val isHusky = breed == CompanionBreed.SIBERIAN_HUSKY_DJ
         val isBunny = breed.isBunny || breed == CompanionBreed.WHITE_BUNNY_DJ || breed == CompanionBreed.DISCO_PARTY_BUNNY
-        val isPuppy = breed == CompanionBreed.SKY_DJ_PUPPY || breed == CompanionBreed.LAVENDER_PUPPY_TAPE || breed == CompanionBreed.HIPHOP_GOLD_PUPPY
+        val isPuppy = breed == CompanionBreed.SKY_DJ_PUPPY || breed == CompanionBreed.LAVENDER_PUPPY_TAPE ||
+            breed == CompanionBreed.HIPHOP_GOLD_PUPPY
         val isLion = breed.isLion || breed == CompanionBreed.GOLDEN_LION_DJ || breed == CompanionBreed.CYBER_NEON_LION
         val isChick = breed == CompanionBreed.YELLOW_CHICK_DJ || breed == CompanionBreed.ROCKSTAR_CHICK_DJ
         val isPenguin = breed.isPenguin || breed == CompanionBreed.ROYAL_KING_PENGUIN || breed == CompanionBreed.COSMIC_ASTRO_PENGUIN
@@ -1211,16 +1283,19 @@ fun DeformingJumping3DPlushMascot(
             breed == CompanionBreed.LAVENDER_PUPPY_TAPE
 
         val mainFur = customFurColor ?: breed.primaryFur
-        val lightFur = lighten(mainFur, 0.34f)
-        val darkFur = darken(mainFur, 0.38f)
-        val limbFur = if (isPanda && customFurColor == null) Color(0xFF1C2026) else mainFur
-        val limbLight = if (isPanda && customFurColor == null) Color(0xFF454E5E) else lightFur
-        val limbDark = if (isPanda && customFurColor == null) Color(0xFF0B0D11) else darkFur
+        val lightFur = lighten(mainFur, 0.36f)
+        val darkFur = darken(mainFur, 0.34f)
+        val limbFur = if (isPanda && customFurColor == null) Color(0xFF1F242D) else mainFur
+        val limbLight = if (isPanda && customFurColor == null) Color(0xFF475266) else lightFur
+        val limbDark = if (isPanda && customFurColor == null) Color(0xFF0E1117) else darkFur
+        val creamFur = Color(0xFFFFF8EE)
+        val creamMid = Color(0xFFF3E6D3)
+        val creamShadow = Color(0xFFCBB89E)
         val bellyColor = breed.muzzlePatch
-        val accentColor = breed.headphoneAccent
+        val accentColor = if (breed == CompanionBreed.SKY_DJ_PUPPY && customFurColor == null) Color(0xFFFF5722) else breed.headphoneAccent
 
-        // Helper: Draw a 3D shaded plush sphere/oval with optional fluffy perimeter fur tufts
-        fun drawPlush3DOval(
+        // Smooth Pixar-grade 3D Volumetric Oval Helper (NO bumpy edge dots!)
+        fun drawCartoon3DOval(
             cx: Float,
             cy: Float,
             rx: Float,
@@ -1228,49 +1303,33 @@ fun DeformingJumping3DPlushMascot(
             hiColor: Color = lightFur,
             midColor: Color = mainFur,
             loColor: Color = darkFur,
-            rimColor: Color = auraColor,
-            furTuftCount: Int = 0,
-            tuftSize: Float = u * 0.018f
+            rimHighlightAlpha: Float = 0.36f
         ) {
-            // 1. Optional perimeter fluffy fur tufts so silhouette looks like soft 3D plush fur
-            if (furTuftCount > 0 && !isPenguin) {
-                for (i in 0 until furTuftCount) {
-                    val ang = (i.toFloat() / furTuftCount) * 6.2831855f
-                    val tx = cx + cos(ang) * (rx * 0.95f)
-                    val ty = cy + sin(ang) * (ry * 0.95f)
-                    val tColor = if (sin(ang) < 0f) hiColor else midColor
-                    drawCircle(
-                        color = tColor,
-                        radius = tuftSize,
-                        center = Offset(tx, ty)
-                    )
-                }
-            }
-            // 2. Main 3D spherical radial gradient fill
-            val gradRadius = max(rx, ry) * 1.45f
+            val gradRadius = max(rx, ry) * 1.48f
             drawOval(
                 brush = Brush.radialGradient(
                     colors = listOf(hiColor, midColor, loColor),
-                    center = Offset(cx - rx * 0.28f, cy - ry * 0.32f),
+                    center = Offset(cx - rx * 0.30f, cy - ry * 0.34f),
                     radius = gradRadius.coerceAtLeast(4f)
                 ),
                 topLeft = Offset(cx - rx, cy - ry),
                 size = Size(rx * 2f, ry * 2f)
             )
-            // 3. Subtle 3D rim light on top-left edge
-            drawArc(
-                color = rimColor.copy(alpha = 0.42f),
-                startAngle = 195f,
-                sweepAngle = 110f,
-                useCenter = false,
-                topLeft = Offset(cx - rx * 0.96f, cy - ry * 0.96f),
-                size = Size(rx * 1.92f, ry * 1.92f),
-                style = Stroke(width = (u * 0.012f).coerceAtLeast(1.2f), cap = StrokeCap.Round)
-            )
+            if (rimHighlightAlpha > 0.01f) {
+                drawArc(
+                    color = Color.White.copy(alpha = rimHighlightAlpha),
+                    startAngle = 205f,
+                    sweepAngle = 95f,
+                    useCenter = false,
+                    topLeft = Offset(cx - rx * 0.90f, cy - ry * 0.90f),
+                    size = Size(rx * 1.80f, ry * 1.80f),
+                    style = Stroke(width = (u * 0.010f).coerceAtLeast(1.1f), cap = StrokeCap.Round)
+                )
+            }
         }
 
-        // Helper: Draw a 3D plush limb segment (capsule between two joints)
-        fun drawPlushLimbSegment(
+        // Smooth 3D Volumetric Limb Capsule Helper
+        fun drawCartoon3DLimb(
             p1: Offset,
             p2: Offset,
             thickness: Float,
@@ -1278,450 +1337,92 @@ fun DeformingJumping3DPlushMascot(
             mid: Color = limbFur,
             lo: Color = limbDark
         ) {
-            // Outer dark fur edge for 3D depth separation
             drawLine(
                 color = lo,
                 start = p1,
                 end = p2,
-                strokeWidth = thickness * 1.08f,
+                strokeWidth = thickness * 1.06f,
                 cap = StrokeCap.Round
             )
-            // Main 3D plush cylinder gradient
             drawLine(
                 brush = Brush.linearGradient(
                     colors = listOf(hi, mid, lo),
-                    start = Offset(min(p1.x, p2.x) - thickness * 0.5f, min(p1.y, p2.y) - thickness * 0.5f),
-                    end = Offset(max(p1.x, p2.x) + thickness * 0.5f, max(p1.y, p2.y) + thickness * 0.5f)
+                    start = Offset(min(p1.x, p2.x) - thickness * 0.45f, min(p1.y, p2.y) - thickness * 0.45f),
+                    end = Offset(max(p1.x, p2.x) + thickness * 0.45f, max(p1.y, p2.y) + thickness * 0.45f)
                 ),
                 start = p1,
                 end = p2,
                 strokeWidth = thickness,
                 cap = StrokeCap.Round
             )
-            // Soft velvet specular highlight along upper edge
-            val highlightOffset = Offset(-thickness * 0.14f, -thickness * 0.14f)
+            val specularShift = Offset(-thickness * 0.14f, -thickness * 0.14f)
             drawLine(
-                color = hi.copy(alpha = 0.55f),
-                start = p1 + highlightOffset,
-                end = p2 + highlightOffset,
-                strokeWidth = thickness * 0.34f,
+                color = hi.copy(alpha = 0.58f),
+                start = p1 + specularShift,
+                end = p2 + specularShift,
+                strokeWidth = thickness * 0.28f,
                 cap = StrokeCap.Round
             )
         }
 
         // =========================================================================
-        // 2. BOUNCING 3D SUBWOOFER / TRAMPOLINE SPEAKER PAD ON THE FLOOR
-        //    Physically compresses downward when the Gudda squats (`totalCrouch`)
-        //    and springs upward with glowing bass rings when Gudda launches!
+        // 2. BODY CORE COORDINATES (ZERO SHADOW/PAD UNDER FEET — 100% CLEAR)
         // =========================================================================
-        val padCompressionY = totalCrouch * (u * 0.045f) - airborneFactor * (u * 0.015f)
-        val padCenterY = groundY + padCompressionY
-        val padRx = u * (0.34f + totalCrouch * 0.05f - airborneFactor * 0.02f)
-        val padRy = u * (0.075f - totalCrouch * 0.015f).coerceAtLeast(0.045f)
-
-        if (drawInternalFloorShadow) {
-            // Soft ground shadow under the speaker pad
-            drawOval(
-                color = Color.Black.copy(alpha = 0.50f),
-                topLeft = Offset(centerX - padRx * 1.12f, groundY - padRy * 0.4f),
-                size = Size(padRx * 2.24f, padRy * 2.2f)
-            )
-        }
-
-        // 3D Speaker Base Cylinder Wall
-        val baseHeight = (u * 0.055f * (1f - totalCrouch * 0.38f)).coerceAtLeast(u * 0.022f)
-        drawOval(
-            color = Color(0xFF0A0F1D),
-            topLeft = Offset(centerX - padRx, padCenterY + baseHeight - padRy),
-            size = Size(padRx * 2f, padRy * 2f)
-        )
-        drawRect(
-            brush = Brush.horizontalGradient(
-                colors = listOf(Color(0xFF0D1426), Color(0xFF233254), Color(0xFF0D1426)),
-                startX = centerX - padRx,
-                endX = centerX + padRx
-            ),
-            topLeft = Offset(centerX - padRx, padCenterY),
-            size = Size(padRx * 2f, baseHeight)
-        )
-        // Neon LED strip around speaker base
-        drawOval(
-            brush = Brush.horizontalGradient(
-                listOf(accentColor, auraColor, accentColor)
-            ),
-            topLeft = Offset(centerX - padRx, padCenterY + baseHeight * 0.55f - padRy),
-            size = Size(padRx * 2f, padRy * 2f),
-            style = Stroke(width = (u * 0.018f).coerceAtLeast(1.8f))
-        )
-        // Top Bouncing Trampoline Woofer Cone
-        drawOval(
-            brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF28354E), Color(0xFF131B2E), Color(0xFF090D18)),
-                center = Offset(centerX, padCenterY - padRy * 0.2f),
-                radius = padRx * 1.1f
-            ),
-            topLeft = Offset(centerX - padRx, padCenterY - padRy),
-            size = Size(padRx * 2f, padRy * 2f)
-        )
-        // Glowing Bass Cone Ring
-        drawOval(
-            color = accentColor.copy(alpha = (0.65f + totalCrouch * 0.30f).coerceIn(0.4f, 0.98f)),
-            topLeft = Offset(centerX - padRx * 0.72f, padCenterY - padRy * 0.72f),
-            size = Size(padRx * 1.44f, padRy * 1.44f),
-            style = Stroke(width = (u * 0.016f).coerceAtLeast(1.6f))
-        )
-        // Dynamic shadow of the Gudda on the speaker cone (shrinks as Gudda jumps high!)
-        val shadowScale = (1f - airborneFactor * 0.58f + totalCrouch * 0.15f).coerceIn(0.32f, 1.15f)
-        drawOval(
-            color = Color.Black.copy(alpha = (0.62f * shadowScale).coerceIn(0.18f, 0.68f)),
-            topLeft = Offset(centerX - padRx * 0.62f * shadowScale, padCenterY - padRy * 0.58f * shadowScale),
-            size = Size(padRx * 1.24f * shadowScale, padRy * 1.16f * shadowScale)
-        )
-        // Launch / Landing Shockwave Ring
-        if (totalCrouch > 0.12f || airborneFactor in 0.01f..0.28f) {
-            val waveScale = 1.05f + (1f - airborneFactor) * 0.28f
-            drawOval(
-                color = auraColor.copy(alpha = (0.70f * (1f - airborneFactor)).coerceIn(0f, 0.78f)),
-                topLeft = Offset(centerX - padRx * waveScale, padCenterY - padRy * waveScale),
-                size = Size(padRx * 2f * waveScale, padRy * 2f * waveScale),
-                style = Stroke(width = (u * 0.016f).coerceAtLeast(1.5f))
-            )
-        }
-
-        // =========================================================================
-        // 2B. TRUE 6-PART SKELETAL PHOTO-PUPPET ENGINE (100% EXACT PHOTO LOOK +
-        //     REAL WALKING PHOTO LEGS, SWINGING PHOTO ARMS, TURNING PHOTO HEAD,
-        //     AND REAL 3D PINK TONGUE COMING IN & OUT OF THE PHOTO'S MOUTH!)
-        // =========================================================================
-        if (parts != null) {
-            val rig = getFaceRigForBreed(breed)
-            val dstW = (w * 0.90f * squashX).roundToInt().coerceAtLeast(16)
-            val dstH = (h * 0.84f * stretchY).roundToInt().coerceAtLeast(16)
-            val hipSwayPx = sin(t * 3.8f) * (w * 0.032f)
-            val walkBounceY = -abs(sin(walkStridePhase * 1.4f)) * (h * 0.042f)
-            val totalLiftY = jumpLiftY * 0.72f + walkBounceY
-            val dstLeft = ((w - dstW) * 0.5f + hipSwayPx).roundToInt()
-            val dstTop = ((h * 0.07f) + totalLiftY).roundToInt()
-            val dstOffset = IntOffset(dstLeft, dstTop)
-            val dstSize = IntSize(dstW, dstH)
-
-            val legPhase = walkStridePhase * 1.55f + t * 2.2f
-            val leftStepSin = sin(legPhase)
-            val rightStepSin = -sin(legPhase)
-
-            // 1. Wagging 3D Plush Tail behind the photo-puppet
-            val tailBase = Offset(dstLeft + dstW * 0.70f, dstTop + dstH * 0.66f)
-            val tailWag = sin(t * 9.5f) * 0.65f
-            val tailTip = Offset(
-                tailBase.x + cos(tailWag - 0.3f) * (u * 0.13f),
-                tailBase.y + sin(tailWag - 0.3f) * (u * 0.10f) - u * 0.03f
-            )
-            drawPlushLimbSegment(tailBase, tailTip, u * 0.042f, lightFur, mainFur, darkFur)
-
-            // 2. Real Photo Left & Right Legs (stepping forward/backward, lifting up/down, and kicking!)
-            val leftHipAnchor = Offset(dstLeft + dstW * 0.36f, dstTop + dstH * 0.71f)
-            val rightHipAnchor = Offset(dstLeft + dstW * 0.64f, dstTop + dstH * 0.71f)
-
-            val leftLegStrideX = leftStepSin * (dstW * 0.13f) - airborneFactor * (dstW * 0.06f)
-            val leftLegLiftY = -max(0f, leftStepSin) * (dstH * 0.12f) - airborneFactor * (dstH * 0.07f)
-            val leftLegAngleDeg = leftStepSin * 28f - airborneFactor * 22f
-
-            val rightLegStrideX = rightStepSin * (dstW * 0.13f) + airborneFactor * (dstW * 0.06f)
-            val rightLegLiftY = -max(0f, rightStepSin) * (dstH * 0.12f) - airborneFactor * (dstH * 0.07f)
-            val rightLegAngleDeg = rightStepSin * 28f + airborneFactor * 22f
-
-            // Fur-matched 3D thigh bridges so legs stay seamlessly connected during big strides
-            val leftAnklePos = Offset(
-                leftHipAnchor.x + leftLegStrideX,
-                leftHipAnchor.y + dstH * 0.12f + leftLegLiftY
-            )
-            val rightAnklePos = Offset(
-                rightHipAnchor.x + rightLegStrideX,
-                rightHipAnchor.y + dstH * 0.12f + rightLegLiftY
-            )
-            drawPlushLimbSegment(leftHipAnchor, leftAnklePos, u * 0.095f, limbLight, limbFur, limbDark)
-            drawPlushLimbSegment(rightHipAnchor, rightAnklePos, u * 0.095f, limbLight, limbFur, limbDark)
-
-            // Draw back leg first, then front leg based on stride phase for true 3D depth!
-            withTransform({
-                translate(left = leftLegStrideX, top = leftLegLiftY)
-                rotate(degrees = leftLegAngleDeg, pivot = leftHipAnchor)
-            }) {
-                drawImage(
-                    image = parts.leftFootLayerBmp,
-                    dstOffset = dstOffset,
-                    dstSize = dstSize
-                )
-            }
-            withTransform({
-                translate(left = rightLegStrideX, top = rightLegLiftY)
-                rotate(degrees = rightLegAngleDeg, pivot = rightHipAnchor)
-            }) {
-                drawImage(
-                    image = parts.rightFootLayerBmp,
-                    dstOffset = dstOffset,
-                    dstSize = dstSize
-                )
-            }
-
-            // 3. Real Photo Central Torso / Belly (`torsoOnlyLayerBmp` — static arms & legs cleanly removed!)
-            val torsoBreathScale = 1f + sin(t * 3.8f) * 0.032f
-            withTransform({
-                scale(
-                    scaleX = torsoBreathScale,
-                    scaleY = 1f / torsoBreathScale,
-                    pivot = Offset(dstLeft + dstW * 0.50f, dstTop + dstH * 0.56f)
-                )
-            }) {
-                drawImage(
-                    image = parts.torsoOnlyLayerBmp,
-                    dstOffset = dstOffset,
-                    dstSize = dstSize
-                )
-            }
-
-            // 4. Real Photo Left & Right Arms swinging & waving from shoulder joints!
-            val leftShoulderPivot = Offset(dstLeft + dstW * 0.27f, dstTop + dstH * 0.48f)
-            val rightShoulderPivot = Offset(dstLeft + dstW * 0.73f, dstTop + dstH * 0.48f)
-
-            val armWaveSin = sin(t * 5.4f + walkStridePhase * 0.8f)
-            val armWaveCos = cos(t * 5.4f + walkStridePhase * 0.8f)
-
-            val leftArmDeg = armWaveSin * 36f + airborneFactor * 42f - totalCrouch * 20f
-            val rightArmDeg = -armWaveCos * 36f - airborneFactor * 42f + totalCrouch * 20f
-            val leftArmLiftY = -max(0f, armWaveSin) * (dstH * 0.07f) - airborneFactor * (dstH * 0.08f)
-            val rightArmLiftY = -max(0f, armWaveCos) * (dstH * 0.07f) - airborneFactor * (dstH * 0.08f)
-            val leftArmOutX = -abs(armWaveSin) * (dstW * 0.045f)
-            val rightArmOutX = abs(armWaveCos) * (dstW * 0.045f)
-
-            // 3D Fur Shoulder Bridges so waving arms stay smoothly joined to torso
-            drawPlushLimbSegment(
-                leftShoulderPivot,
-                Offset(leftShoulderPivot.x - dstW * 0.08f + leftArmOutX, leftShoulderPivot.y + dstH * 0.06f + leftArmLiftY),
-                u * 0.082f,
-                limbLight,
-                limbFur,
-                limbDark
-            )
-            drawPlushLimbSegment(
-                rightShoulderPivot,
-                Offset(rightShoulderPivot.x + dstW * 0.08f + rightArmOutX, rightShoulderPivot.y + dstH * 0.06f + rightArmLiftY),
-                u * 0.082f,
-                limbLight,
-                limbFur,
-                limbDark
-            )
-
-            withTransform({
-                translate(left = leftArmOutX, top = leftArmLiftY)
-                rotate(degrees = leftArmDeg, pivot = leftShoulderPivot)
-            }) {
-                drawImage(
-                    image = parts.leftArmLayerBmp,
-                    dstOffset = dstOffset,
-                    dstSize = dstSize
-                )
-            }
-            withTransform({
-                translate(left = rightArmOutX, top = rightArmLiftY)
-                rotate(degrees = rightArmDeg, pivot = rightShoulderPivot)
-            }) {
-                drawImage(
-                    image = parts.rightArmLayerBmp,
-                    dstOffset = dstOffset,
-                    dstSize = dstSize
-                )
-            }
-
-            // 5. Real Photo Head Turning Left-Right, Tilting & Nodding + Real 3D Tongue Coming Out of Mouth!
-            val neckPivot = Offset(dstLeft + dstW * 0.50f, dstTop + dstH * 0.42f)
-            val headTurnX = sin(t * 2.4f) * (dstW * 0.045f) + walkDir * (dstW * 0.024f)
-            val headNodY = cos(t * 4.8f) * (dstH * 0.022f) - airborneFactor * (dstH * 0.028f)
-            val headTiltDeg = sin(t * 3.1f) * 12.5f + walkDir * 3.5f
-
-            withTransform({
-                translate(left = headTurnX, top = headNodY)
-                rotate(degrees = headTiltDeg, pivot = neckPivot)
-            }) {
-                // 5A. Draw the actual photo's 3D Head, Ears & Headphones
-                drawImage(
-                    image = parts.headLayerBmp,
-                    dstOffset = dstOffset,
-                    dstSize = dstSize
-                )
-
-                // 5B. Animated Blinking Eyes & Moving 3D Specular Catchlights on the Photo's Eyes
-                val leftEyeCenter = Offset(dstLeft + rig.leftEyeX * dstW, dstTop + rig.leftEyeY * dstH)
-                val rightEyeCenter = Offset(dstLeft + rig.rightEyeX * dstW, dstTop + rig.rightEyeY * dstH)
-                val eyeRadius = rig.eyeRadiusRatio * dstW
-                val gazeShiftX = sin(t * 2.4f) * (eyeRadius * 0.34f) + walkDir * (eyeRadius * 0.20f)
-                val gazeShiftY = cos(t * 3.0f) * (eyeRadius * 0.22f)
-
-                val blinkCycle = (t * 1.7f) % 4.8f
-                val blinkAmount = if (blinkCycle > 4.42f) {
-                    sin(((blinkCycle - 4.42f) / 0.38f) * 3.1415927f).coerceIn(0f, 1f)
-                } else 0f
-
-                listOf(leftEyeCenter, rightEyeCenter).forEach { eyePos ->
-                    // Moving 3D glossy catchlights inside the photo's real eyes
-                    drawCircle(
-                        color = Color.White,
-                        radius = eyeRadius * 0.30f,
-                        center = Offset(eyePos.x - eyeRadius * 0.22f + gazeShiftX, eyePos.y - eyeRadius * 0.24f + gazeShiftY)
-                    )
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.85f),
-                        radius = eyeRadius * 0.15f,
-                        center = Offset(eyePos.x + eyeRadius * 0.26f + gazeShiftX, eyePos.y + eyeRadius * 0.22f + gazeShiftY)
-                    )
-                    // Natural fur eyelid blink
-                    if (blinkAmount > 0.05f) {
-                        drawOval(
-                            color = mainFur,
-                            topLeft = Offset(eyePos.x - eyeRadius * 1.05f, eyePos.y - eyeRadius * 1.05f),
-                            size = Size(eyeRadius * 2.1f, eyeRadius * 2.1f * blinkAmount)
-                        )
-                    }
-                }
-
-                // 5C. REAL MOVING MOUTH & 3D PINK TONGUE COMING IN AND OUT ("jeebh andar se bahar aaye")
-                val mouthCenter = Offset(dstLeft + rig.mouthX * dstW, dstTop + rig.mouthY * dstH)
-                // Smooth cycle where tongue slides OUT from inside the mouth (0.0 -> 1.0) and retracts back IN!
-                val rawTongueWave = (sin(t * 4.2f) + 0.35f).coerceIn(0f, 1.35f) / 1.35f
-                val tongueOutFactor = (rawTongueWave + airborneFactor * 0.35f).coerceIn(0.12f, 1.0f)
-
-                val mouthW = dstW * 0.115f * (0.85f + tongueOutFactor * 0.25f)
-                val mouthCavityH = dstH * 0.042f * (0.55f + tongueOutFactor * 0.65f)
-
-                // Dark 3D inside-mouth cavity
-                drawOval(
-                    color = Color(0xFF3A0812),
-                    topLeft = Offset(mouthCenter.x - mouthW * 0.50f, mouthCenter.y - mouthCavityH * 0.42f),
-                    size = Size(mouthW, mouthCavityH)
-                )
-
-                // 3D Pink Tongue emerging from inside the mouth, extending downward & wiggling left-right!
-                if (tongueOutFactor > 0.18f) {
-                    val tongueW = mouthW * 0.72f
-                    val tongueLen = (dstH * 0.068f) * tongueOutFactor
-                    val tongueWiggleX = sin(t * 8.6f) * (mouthW * 0.18f)
-                    val tongueTopY = mouthCenter.y - mouthCavityH * 0.10f
-
-                    val tonguePath = Path().apply {
-                        moveTo(mouthCenter.x - tongueW * 0.48f, tongueTopY)
-                        quadraticTo(
-                            mouthCenter.x - tongueW * 0.54f + tongueWiggleX * 0.5f,
-                            tongueTopY + tongueLen * 0.75f,
-                            mouthCenter.x + tongueWiggleX,
-                            tongueTopY + tongueLen
-                        )
-                        quadraticTo(
-                            mouthCenter.x + tongueW * 0.54f + tongueWiggleX * 0.5f,
-                            tongueTopY + tongueLen * 0.75f,
-                            mouthCenter.x + tongueW * 0.48f,
-                            tongueTopY
-                        )
-                        close()
-                    }
-                    drawPath(
-                        path = tonguePath,
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0xFFC2185B),
-                                Color(0xFFFF4081),
-                                Color(0xFFFF80AB)
-                            ),
-                            startY = tongueTopY,
-                            endY = tongueTopY + tongueLen
-                        )
-                    )
-                    drawPath(
-                        path = tonguePath,
-                        color = Color(0xFF880E4F),
-                        style = Stroke(width = (u * 0.008f).coerceAtLeast(1f))
-                    )
-                    // Center tongue groove
-                    drawLine(
-                        color = Color(0xFFAD1457),
-                        start = Offset(mouthCenter.x, tongueTopY + tongueLen * 0.08f),
-                        end = Offset(mouthCenter.x + tongueWiggleX * 0.75f, tongueTopY + tongueLen * 0.74f),
-                        strokeWidth = (u * 0.009f).coerceAtLeast(1.1f),
-                        cap = StrokeCap.Round
-                    )
-                    // Wet glossy white catchlight on the tip of the tongue
-                    drawOval(
-                        color = Color.White.copy(alpha = 0.72f),
-                        topLeft = Offset(
-                            mouthCenter.x - tongueW * 0.18f + tongueWiggleX * 0.7f,
-                            tongueTopY + tongueLen * 0.58f
-                        ),
-                        size = Size(tongueW * 0.32f, tongueLen * 0.22f)
-                    )
-                }
-            }
-            return@Canvas
-        }
-
-        // =========================================================================
-        // 3. BODY CORE COORDINATES (TORSO, HIPS, SHOULDERS, NECK)
-        // =========================================================================
-        val hipSwayX = sin(t * 3.4f) * (u * 0.032f * energyMult)
+        val hipSwayX = if (isStationaryPaused || isLiftedInAir) 0f else sin(t * 3.8f) * (u * 0.028f * legDanceW)
         val torsoCenterX = centerX + hipSwayX
-        val torsoCenterY = (h * 0.60f) + jumpLiftY
-        val torsoRx = u * 0.175f * squashX
+        val torsoCenterY = (h * 0.61f) + jumpLiftY
+        val torsoRx = u * 0.168f * squashX
         val torsoRy = u * 0.155f * stretchY
 
         // =========================================================================
-        // 4. PLAYFUL WAGGING 3D TAIL (Fast wag when dancing, calm slow sway when idle)
+        // 3. PLAYFUL WAGGING 3D CARTOON TAIL (ONLY WHEN PLAYING OR LIFTED)
         // =========================================================================
-        val tailSpeed = if (isDancingActive) 10.5f else 2.2f
-        val tailAmp = if (isDancingActive) 0.62f else 0.16f
-        val tailWagAngle = sin(t * tailSpeed) * tailAmp + airborneFactor * 0.35f
-        val tailBase = Offset(torsoCenterX + torsoRx * 0.72f, torsoCenterY + torsoRy * 0.38f)
+        val tailWagAngle = when {
+            isStationaryPaused -> -0.20f
+            isLiftedInAir -> sin(t * 9.5f) * 0.55f + 0.25f
+            else -> sin(t * 9.8f) * 0.58f * legDanceW - 0.15f
+        }
+        val tailBase = Offset(torsoCenterX + torsoRx * 0.72f, torsoCenterY + torsoRy * 0.42f)
         val tailTip = Offset(
-            tailBase.x + cos(tailWagAngle - 0.35f) * (u * 0.12f),
-            tailBase.y + sin(tailWagAngle - 0.35f) * (u * 0.095f) - u * 0.035f
+            tailBase.x + cos(tailWagAngle - 0.30f) * (u * 0.115f),
+            tailBase.y + sin(tailWagAngle - 0.30f) * (u * 0.090f) - u * 0.032f
         )
         if (isBunny) {
-            drawPlush3DOval(
-                cx = tailBase.x + u * 0.035f,
-                cy = tailBase.y + sin(t * tailSpeed) * u * 0.015f,
-                rx = u * 0.048f,
-                ry = u * 0.046f,
+            drawCartoon3DOval(
+                cx = tailBase.x + u * 0.030f,
+                cy = tailBase.y,
+                rx = u * 0.044f,
+                ry = u * 0.042f,
                 hiColor = Color.White,
                 midColor = Color(0xFFF5F5F7),
-                loColor = Color(0xFFD0D4DC),
-                furTuftCount = 8,
-                tuftSize = u * 0.012f
+                loColor = Color(0xFFC8CDD8)
             )
         } else if (isLion || isPuppy || isHusky) {
-            drawPlushLimbSegment(
+            drawCartoon3DLimb(
                 p1 = tailBase,
                 p2 = tailTip,
-                thickness = if (isHusky) u * 0.046f else u * 0.038f,
+                thickness = if (isHusky) u * 0.044f else u * 0.036f,
                 hi = if (isHusky) Color.White else lightFur,
                 mid = mainFur,
                 lo = darkFur
             )
             if (isLion || isHusky) {
-                drawPlush3DOval(
+                drawCartoon3DOval(
                     cx = tailTip.x,
                     cy = tailTip.y,
-                    rx = u * 0.036f,
-                    ry = u * 0.032f,
-                    hiColor = if (isHusky) Color.White else lighten(breed.earColor, 0.2f),
+                    rx = u * 0.032f,
+                    ry = u * 0.030f,
+                    hiColor = if (isHusky) Color.White else lighten(breed.earColor, 0.25f),
                     midColor = if (isHusky) Color(0xFFECEFF1) else breed.earColor,
-                    loColor = darken(breed.earColor, 0.3f),
-                    furTuftCount = 6,
-                    tuftSize = u * 0.010f
+                    loColor = darken(breed.earColor, 0.32f)
                 )
             }
         } else if (!isChick && !isPenguin) {
-            drawPlush3DOval(
-                cx = tailBase.x + u * 0.025f + sin(t * tailSpeed) * u * 0.014f,
+            drawCartoon3DOval(
+                cx = tailBase.x + u * 0.022f,
                 cy = tailBase.y,
-                rx = u * 0.040f,
-                ry = u * 0.040f,
+                rx = u * 0.036f,
+                ry = u * 0.036f,
                 hiColor = lightFur,
                 midColor = mainFur,
                 loColor = darkFur
@@ -1729,160 +1430,215 @@ fun DeformingJumping3DPlushMascot(
         }
 
         // =========================================================================
-        // 5. TWO-JOINT 3D ARTICULATED LEGS, BENDING KNEES & PLUSH FEET WITH TOE BEANS
-        //    - Deep outward frog-knee squat on crouch (`totalCrouch`)
-        //    - High mid-air foot kicks & ankle flex when jumping (`airborneFactor`)
-        //    - Alternating walk stride when patrolling (`walkStridePhase`)
+        // 4. CRYSTAL-CLEAR 2-JOINT 3D LEGS & FEET WITH RHYTHMIC FRONT-BACK DANCE!
+        //    ("iski tang bilkul clear samajhni chahie" & ZERO shadow underneath!)
         // =========================================================================
-        val legPhase = if (isActivelyWalking) walkStridePhase * 1.4f else t * 4.8f
-        val leftStride = sin(legPhase)
-        val rightStride = -sin(legPhase)
+        val legPhase = if (isStationaryPaused) 0f else if (isActivelyWalking) walkStridePhase * 1.45f else t * 5.2f
+        val rawLegSine = if (isStationaryPaused) 0f else sin(legPhase)
+        val leftKickBack = if (isStationaryPaused || isLiftedInAir) 0f else max(0f, -rawLegSine) * legDanceW
+        val leftStepFront = if (isStationaryPaused || isLiftedInAir) 0f else max(0f, rawLegSine) * legDanceW
+        val rightKickBack = if (isStationaryPaused || isLiftedInAir) 0f else max(0f, rawLegSine) * legDanceW
+        val rightStepFront = if (isStationaryPaused || isLiftedInAir) 0f else max(0f, -rawLegSine) * legDanceW
 
-        val leftHip = Offset(torsoCenterX - torsoRx * 0.52f, torsoCenterY + torsoRy * 0.58f)
-        val rightHip = Offset(torsoCenterX + torsoRx * 0.52f, torsoCenterY + torsoRy * 0.58f)
+        val leftHip = Offset(torsoCenterX - torsoRx * 0.46f, torsoCenterY + torsoRy * 0.64f)
+        val rightHip = Offset(torsoCenterX + torsoRx * 0.46f, torsoCenterY + torsoRy * 0.64f)
 
-        // Left Knee & Foot kinematics
-        val leftKneeOutX = -u * (0.045f + totalCrouch * 0.085f + max(0f, leftStride) * 0.035f)
-        val leftKneeY = leftHip.y + u * (0.075f - totalCrouch * 0.040f - airborneFactor * 0.025f)
-        val leftKnee = Offset(leftHip.x + leftKneeOutX, leftKneeY)
+        val legThickness = u * 0.072f
 
-        val leftFootLift = (max(0f, leftStride) * 0.065f + airborneFactor * 0.045f) * u * energyMult
-        val leftFootKickX = -airborneFactor * u * 0.055f - max(0f, leftStride) * u * 0.030f
-        val leftFoot = Offset(
-            x = leftHip.x - u * 0.025f + leftFootKickX,
-            y = (leftHip.y + u * (0.145f - totalCrouch * 0.050f) - leftFootLift).coerceAtMost(padCenterY - u * 0.015f)
-        )
+        val leftLegScale = if (isLiftedInAir) 0.96f else (1.0f - leftKickBack * 0.16f + leftStepFront * 0.06f)
+        val rightLegScale = if (isLiftedInAir) 0.96f else (1.0f - rightKickBack * 0.16f + rightStepFront * 0.06f)
 
-        // Right Knee & Foot kinematics
-        val rightKneeOutX = u * (0.045f + totalCrouch * 0.085f + max(0f, rightStride) * 0.035f)
-        val rightKneeY = rightHip.y + u * (0.075f - totalCrouch * 0.040f - airborneFactor * 0.025f)
-        val rightKnee = Offset(rightHip.x + rightKneeOutX, rightKneeY)
+        val liftedFootWiggle = if (isLiftedInAir) sin(t * 8.5f) * u * 0.022f else 0f
 
-        val rightFootLift = (max(0f, rightStride) * 0.065f + airborneFactor * 0.045f) * u * energyMult
-        val rightFootKickX = airborneFactor * u * 0.055f + max(0f, rightStride) * u * 0.030f
-        val rightFoot = Offset(
-            x = rightHip.x + u * 0.025f + rightFootKickX,
-            y = (rightHip.y + u * (0.145f - totalCrouch * 0.050f) - rightFootLift).coerceAtMost(padCenterY - u * 0.015f)
-        )
+        val leftKnee = if (isLiftedInAir) {
+            Offset(leftHip.x - u * 0.052f, leftHip.y + u * 0.046f + liftedFootWiggle * 0.4f)
+        } else {
+            Offset(
+                leftHip.x - u * (0.022f + totalCrouch * 0.060f - leftKickBack * 0.020f + leftStepFront * 0.018f),
+                leftHip.y + u * (0.078f - totalCrouch * 0.028f - leftKickBack * 0.030f)
+            )
+        }
+        val rightKnee = if (isLiftedInAir) {
+            Offset(rightHip.x + u * 0.052f, rightHip.y + u * 0.046f - liftedFootWiggle * 0.4f)
+        } else {
+            Offset(
+                rightHip.x + u * (0.022f + totalCrouch * 0.060f - rightKickBack * 0.020f + rightStepFront * 0.018f),
+                rightHip.y + u * (0.078f - totalCrouch * 0.028f - rightKickBack * 0.030f)
+            )
+        }
 
-        val legThickness = u * 0.078f
+        val leftFoot = if (isLiftedInAir) {
+            Offset(leftHip.x - u * 0.064f, leftHip.y + u * 0.112f + liftedFootWiggle)
+        } else {
+            val liftY = (leftKickBack * 0.095f + airborneFactor * 0.030f - leftStepFront * 0.012f) * u
+            val shiftX = leftKickBack * u * 0.018f - leftStepFront * u * 0.024f
+            Offset(
+                x = leftHip.x - u * 0.026f + shiftX,
+                y = (leftHip.y + u * (0.162f - totalCrouch * 0.036f) - liftY).coerceAtMost(groundY - u * 0.048f)
+            )
+        }
 
-        fun draw3DFootWithBeans(footCenter: Offset, isLeft: Boolean, isKickingUp: Boolean) {
-            if (isChick || isPenguin) {
-                // 3D Orange webbed/clawed bird foot
-                val orangeHi = Color(0xFFFFB74D)
-                val orangeMid = Color(0xFFFF8F00)
-                val orangeLo = Color(0xFFE65100)
-                drawPlush3DOval(
-                    cx = footCenter.x,
-                    cy = footCenter.y,
-                    rx = u * 0.056f,
-                    ry = u * 0.034f,
-                    hiColor = orangeHi,
-                    midColor = orangeMid,
-                    loColor = orangeLo
+        val rightFoot = if (isLiftedInAir) {
+            Offset(rightHip.x + u * 0.064f, rightHip.y + u * 0.112f - liftedFootWiggle)
+        } else {
+            val liftY = (rightKickBack * 0.095f + airborneFactor * 0.030f - rightStepFront * 0.012f) * u
+            val shiftX = -rightKickBack * u * 0.018f + rightStepFront * u * 0.024f
+            Offset(
+                x = rightHip.x + u * 0.026f + shiftX,
+                y = (rightHip.y + u * (0.162f - totalCrouch * 0.036f) - liftY).coerceAtMost(groundY - u * 0.048f)
+            )
+        }
+
+        fun draw3DCartoonLegAndFoot(
+            hip: Offset,
+            knee: Offset,
+            foot: Offset,
+            isLeft: Boolean,
+            scale: Float
+        ) {
+            val thighColorHi = if (isPuppy) creamFur else limbLight
+            val thighColorMid = if (isPuppy) mainFur else limbFur
+            val thighColorLo = if (isPuppy) darkFur else limbDark
+
+            if (!isChick) {
+                drawCartoon3DLimb(hip, knee, legThickness * scale, thighColorHi, thighColorMid, thighColorLo)
+                drawCartoon3DLimb(
+                    knee,
+                    foot,
+                    legThickness * 0.88f * scale,
+                    if (isPuppy) Color.White else thighColorHi,
+                    if (isPuppy) creamMid else thighColorMid,
+                    if (isPuppy) creamShadow else thighColorLo
                 )
-                for (toe in -1..1) {
-                    drawCircle(
-                        color = orangeHi,
-                        radius = u * 0.016f,
-                        center = Offset(footCenter.x + toe * u * 0.024f, footCenter.y + u * 0.018f)
-                    )
-                }
             } else {
-                // Plush 3D Paw Foot + Pink Sole Pad & 3 Toe Beans when jumping/kicking!
-                val footRx = u * 0.062f
-                val footRy = u * (if (isKickingUp) 0.052f else 0.042f)
-                drawPlush3DOval(
-                    cx = footCenter.x + (if (isLeft) -u * 0.006f else u * 0.006f),
-                    cy = footCenter.y,
+                drawCartoon3DLimb(hip, foot, u * 0.032f * scale, Color(0xFFFFB74D), Color(0xFFFF8F00), Color(0xFFE65100))
+            }
+
+            if (isChick || isPenguin) {
+                drawCartoon3DOval(
+                    cx = foot.x,
+                    cy = foot.y,
+                    rx = u * 0.056f * scale,
+                    ry = u * 0.034f * scale,
+                    hiColor = Color(0xFFFFCC80),
+                    midColor = Color(0xFFFF9800),
+                    loColor = Color(0xFFE65100)
+                )
+            } else {
+                // Clean, crisp creamy-white 3D cartoon puppy/teddy foot!
+                val footRx = u * 0.068f * scale
+                val footRy = u * (if (isLiftedInAir) 0.054f else 0.042f) * scale
+                val footCenterX = foot.x + (if (isLeft) -u * 0.006f else u * 0.006f)
+                drawCartoon3DOval(
+                    cx = footCenterX,
+                    cy = foot.y,
                     rx = footRx,
                     ry = footRy,
-                    hiColor = limbLight,
-                    midColor = limbFur,
-                    loColor = limbDark,
-                    furTuftCount = 6,
-                    tuftSize = u * 0.010f
+                    hiColor = Color.White,
+                    midColor = if (isPanda) limbFur else creamFur,
+                    loColor = if (isPanda) limbDark else creamShadow,
+                    rimHighlightAlpha = 0.50f
                 )
-                // Pink plush paw sole pad & 3 cute toe beans
-                val padColor = Color(0xFFFF80AB)
-                drawOval(
-                    color = padColor,
-                    topLeft = Offset(footCenter.x - footRx * 0.45f, footCenter.y - footRy * 0.25f),
-                    size = Size(footRx * 0.90f, footRy * 0.72f)
-                )
-                for (tIdx in -1..1) {
-                    drawCircle(
+                if (isLiftedInAir) {
+                    // Show cute pink 3D paw pad & 3 toe beans on lifted foot sole (Screenshot 4)
+                    val padColor = Color(0xFF8D5540)
+                    drawOval(
                         color = padColor,
-                        radius = footRx * 0.18f,
-                        center = Offset(
-                            footCenter.x + tIdx * footRx * 0.36f,
-                            footCenter.y - footRy * 0.48f
-                        )
+                        topLeft = Offset(footCenterX - footRx * 0.40f, foot.y - footRy * 0.22f),
+                        size = Size(footRx * 0.80f, footRy * 0.66f)
                     )
+                    for (tIdx in -1..1) {
+                        drawCircle(
+                            color = padColor,
+                            radius = footRx * 0.16f,
+                            center = Offset(footCenterX + tIdx * footRx * 0.34f, foot.y - footRy * 0.45f)
+                        )
+                    }
+                } else {
+                    // Clean subtle 3D toe crease lines on top of shoe/paw foot
+                    for (toeX in listOf(-0.28f, 0.28f)) {
+                        drawLine(
+                            color = creamShadow.copy(alpha = 0.72f),
+                            start = Offset(footCenterX + footRx * toeX, foot.y + footRy * 0.18f),
+                            end = Offset(footCenterX + footRx * toeX * 1.15f, foot.y + footRy * 0.82f),
+                            strokeWidth = (u * 0.009f).coerceAtLeast(1.1f),
+                            cap = StrokeCap.Round
+                        )
+                    }
                 }
             }
         }
 
-        // Draw Left & Right 2-Segment 3D Legs (Hip -> Knee -> Foot)
-        if (!isChick) {
-            drawPlushLimbSegment(leftHip, leftKnee, legThickness)
-            drawPlushLimbSegment(leftKnee, leftFoot, legThickness * 0.92f)
-            drawPlushLimbSegment(rightHip, rightKnee, legThickness)
-            drawPlushLimbSegment(rightKnee, rightFoot, legThickness * 0.92f)
-        } else {
-            // Slender bird legs for Chick
-            drawPlushLimbSegment(leftHip, leftFoot, u * 0.032f, Color(0xFFFFB74D), Color(0xFFFF8F00), Color(0xFFE65100))
-            drawPlushLimbSegment(rightHip, rightFoot, u * 0.032f, Color(0xFFFFB74D), Color(0xFFFF8F00), Color(0xFFE65100))
-        }
-        draw3DFootWithBeans(leftFoot, isLeft = true, isKickingUp = airborneFactor > 0.2f || leftStride > 0.2f)
-        draw3DFootWithBeans(rightFoot, isLeft = false, isKickingUp = airborneFactor > 0.2f || rightStride > 0.2f)
+        // True front/back leg Z-ordering helper: draw back-kicking leg BEFORE torso, front-stepping leg AFTER torso!
+        val leftBehind = leftKickBack > 0.08f
+        val rightBehind = rightKickBack > 0.08f
+
+        if (leftBehind) draw3DCartoonLegAndFoot(leftHip, leftKnee, leftFoot, true, leftLegScale)
+        if (rightBehind) draw3DCartoonLegAndFoot(rightHip, rightKnee, rightFoot, false, rightLegScale)
 
         // =========================================================================
-        // 6. 3D VOLUMETRIC PLUSH TORSO & BELLY PATCH (+ CASSETTE DECK OR GOLD CHAIN)
+        // 5. 3D CARTOON TORSO / SKY-BLUE HOODIE JACKET / PLUSH SUIT
         // =========================================================================
-        drawPlush3DOval(
+        val wearsJacket = isPuppy || (!isChick && !isPenguin && !isPanda && !isBunny && !isLion && !holdsDeck)
+        val jacketHi = if (isPuppy) Color(0xFF90CAF9) else lightFur
+        val jacketMid = if (isPuppy) Color(0xFF42A5F5) else mainFur
+        val jacketLo = if (isPuppy) Color(0xFF1565C0) else darkFur
+
+        drawCartoon3DOval(
             cx = torsoCenterX,
             cy = torsoCenterY,
             rx = torsoRx,
             ry = torsoRy,
-            hiColor = lightFur,
-            midColor = mainFur,
-            loColor = darkFur,
-            furTuftCount = 16,
-            tuftSize = u * 0.016f
+            hiColor = if (wearsJacket) jacketHi else lightFur,
+            midColor = if (wearsJacket) jacketMid else mainFur,
+            loColor = if (wearsJacket) jacketLo else darkFur,
+            rimHighlightAlpha = 0.38f
         )
 
-        // Soft 3D Cream/White Plush Belly Patch
-        val bellyBreath = 1f + sin(t * 3.6f) * 0.045f
-        val bellyRx = torsoRx * (if (isPenguin) 0.76f else 0.68f) * bellyBreath
-        val bellyRy = torsoRy * (if (isPenguin) 0.80f else 0.70f) * bellyBreath
+        // Cream/White Plush Belly or Zip-Up Inner Shirt Panel
+        val bellyBreath = if (isStationaryPaused) 1f else 1f + sin(t * 4.2f) * 0.036f * legDanceW
+        val bellyRx = torsoRx * (if (wearsJacket) 0.42f else if (isPenguin) 0.76f else 0.66f) * bellyBreath
+        val bellyRy = torsoRy * (if (wearsJacket) 0.82f else 0.74f) * bellyBreath
         drawOval(
             brush = Brush.radialGradient(
-                colors = listOf(
-                    lighten(bellyColor, 0.35f),
-                    bellyColor,
-                    darken(bellyColor, 0.18f)
-                ),
+                colors = listOf(Color.White, bellyColor, darken(bellyColor, 0.14f)),
                 center = Offset(torsoCenterX - bellyRx * 0.2f, torsoCenterY - bellyRy * 0.2f),
                 radius = max(bellyRx, bellyRy) * 1.3f
             ),
-            topLeft = Offset(torsoCenterX - bellyRx, torsoCenterY - bellyRy * 0.85f),
-            size = Size(bellyRx * 2f, bellyRy * 1.85f)
+            topLeft = Offset(torsoCenterX - bellyRx, torsoCenterY - bellyRy * 0.86f),
+            size = Size(bellyRx * 2f, bellyRy * 1.80f)
         )
 
-        // Hip-Hop Gold Chain or Bhangra Jacket Trim OR 3D Spinning Cassette Boombox Deck
+        if (wearsJacket) {
+            // Crisp white hoodie collar/zipper placket trim
+            drawArc(
+                color = Color.White,
+                startAngle = 25f,
+                sweepAngle = 130f,
+                useCenter = false,
+                topLeft = Offset(torsoCenterX - torsoRx * 0.56f, torsoCenterY - torsoRy * 0.96f),
+                size = Size(torsoRx * 1.12f, torsoRy * 0.42f),
+                style = Stroke(width = (u * 0.022f).coerceAtLeast(2f), cap = StrokeCap.Round)
+            )
+            // White hoodie pocket trim accents
+            listOf(-1f, 1f).forEach { side ->
+                drawLine(
+                    color = Color.White.copy(alpha = 0.85f),
+                    start = Offset(torsoCenterX + side * torsoRx * 0.44f, torsoCenterY + torsoRy * 0.18f),
+                    end = Offset(torsoCenterX + side * torsoRx * 0.72f, torsoCenterY + torsoRy * 0.44f),
+                    strokeWidth = (u * 0.012f).coerceAtLeast(1.2f),
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+
         if (holdsDeck) {
-            val deckW = torsoRx * 1.28f
-            val deckH = torsoRy * 0.86f
+            val deckW = torsoRx * 1.24f
+            val deckH = torsoRy * 0.82f
             val deckLeft = torsoCenterX - deckW * 0.5f
-            val deckTop = torsoCenterY - deckH * 0.42f
+            val deckTop = torsoCenterY - deckH * 0.40f
             drawRoundRect(
-                brush = Brush.verticalGradient(
-                    listOf(Color(0xFF28354A), Color(0xFF121824)),
-                    startY = deckTop,
-                    endY = deckTop + deckH
-                ),
+                brush = Brush.verticalGradient(listOf(Color(0xFF28354A), Color(0xFF121824))),
                 topLeft = Offset(deckLeft, deckTop),
                 size = Size(deckW, deckH),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(u * 0.03f, u * 0.03f)
@@ -1894,40 +1650,32 @@ fun DeformingJumping3DPlushMascot(
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(u * 0.03f, u * 0.03f),
                 style = Stroke(width = (u * 0.012f).coerceAtLeast(1.4f))
             )
-            // Dual spinning cassette reels inside chest deck
-            val reelR = deckH * 0.26f
-            val spinAng = t * 6.8f
+            val reelR = deckH * 0.25f
+            val spinAng = if (isStationaryPaused) 0.4f else t * 6.8f
             listOf(torsoCenterX - deckW * 0.24f, torsoCenterX + deckW * 0.24f).forEach { rxPos ->
                 val rCenter = Offset(rxPos, deckTop + deckH * 0.52f)
                 drawCircle(color = Color(0xFF0B0F19), radius = reelR, center = rCenter)
-                drawCircle(
-                    color = accentColor,
-                    radius = reelR,
-                    center = rCenter,
-                    style = Stroke(width = (u * 0.010f).coerceAtLeast(1.2f))
-                )
+                drawCircle(color = accentColor, radius = reelR, center = rCenter, style = Stroke(width = (u * 0.010f).coerceAtLeast(1.2f)))
                 val sx = cos(spinAng) * reelR * 0.8f
                 val sy = sin(spinAng) * reelR * 0.8f
                 drawLine(Color.White, rCenter - Offset(sx, sy), rCenter + Offset(sx, sy), strokeWidth = 1.6.dp.toPx())
                 drawLine(Color.White, rCenter - Offset(-sy, sx), rCenter + Offset(-sy, sx), strokeWidth = 1.6.dp.toPx())
             }
-            // Signature Red Collar with 3D Shiny Gold Bell around the neck + Gold Chain
+        } else if (!wearsJacket && !isChick && !isPenguin) {
+            // Classic cute Red Collar with 3D Gold Bell for Teddy/Bunny/Panda/Lion
             val collarY = torsoCenterY - torsoRy * 0.72f
             drawArc(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(Color(0xFFB71C1C), Color(0xFFFF1744), Color(0xFFD50000))
-                ),
+                brush = Brush.horizontalGradient(listOf(Color(0xFFB71C1C), Color(0xFFFF1744), Color(0xFFD50000))),
                 startAngle = 15f,
                 sweepAngle = 150f,
                 useCenter = false,
                 topLeft = Offset(torsoCenterX - torsoRx * 0.62f, collarY - torsoRy * 0.22f),
                 size = Size(torsoRx * 1.24f, torsoRy * 0.48f),
-                style = Stroke(width = (u * 0.028f).coerceAtLeast(2.4f), cap = StrokeCap.Round)
+                style = Stroke(width = (u * 0.026f).coerceAtLeast(2.2f), cap = StrokeCap.Round)
             )
-            // 3D Shiny Gold Bell with jingle slot & highlight
-            val bellJingleX = if (isDancingActive) sin(t * 9.5f) * (u * 0.010f) else 0f
+            val bellJingleX = if (!isStationaryPaused) sin(t * 9.5f) * (u * 0.009f) * armGrooveW else 0f
             val bellCenter = Offset(torsoCenterX + bellJingleX, collarY + torsoRy * 0.26f)
-            val bellR = u * 0.034f
+            val bellR = u * 0.032f
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(Color(0xFFFFF59D), Color(0xFFFFD600), Color(0xFFE65100)),
@@ -1937,54 +1685,45 @@ fun DeformingJumping3DPlushMascot(
                 radius = bellR,
                 center = bellCenter
             )
-            // Bell horizontal rim & dark acoustic slot
-            drawLine(
-                color = Color(0xFF5D4037),
-                start = Offset(bellCenter.x - bellR * 0.55f, bellCenter.y + bellR * 0.22f),
-                end = Offset(bellCenter.x + bellR * 0.55f, bellCenter.y + bellR * 0.22f),
-                strokeWidth = (u * 0.008f).coerceAtLeast(1.2f),
-                cap = StrokeCap.Round
-            )
-            drawCircle(
-                color = Color(0xFF3E2723),
-                radius = bellR * 0.22f,
-                center = Offset(bellCenter.x, bellCenter.y + bellR * 0.42f)
-            )
         }
 
-        // =========================================================================
-        // 7. TWO-SEGMENT 3D ARTICULATED ARMS, ELBOWS & PLUSH PAWS WITH PINK TOE BEANS
-        //    - Swings energetically up & down when song is playing (`isDancingActive`)
-        //    - Rests calmly at sides with gentle breathing when paused/stopped!
-        // =========================================================================
-        val leftShoulder = Offset(torsoCenterX - torsoRx * 0.82f, torsoCenterY - torsoRy * 0.34f)
-        val rightShoulder = Offset(torsoCenterX + torsoRx * 0.82f, torsoCenterY - torsoRy * 0.34f)
+        // Draw front-stepping or standing legs IN FRONT of the torso jacket hem!
+        if (!leftBehind) draw3DCartoonLegAndFoot(leftHip, leftKnee, leftFoot, true, leftLegScale)
+        if (!rightBehind) draw3DCartoonLegAndFoot(rightHip, rightKnee, rightFoot, false, rightLegScale)
 
-        val leftWaveOsc = if (isDancingActive) sin(t * 5.2f) else sin(t * 1.6f) * 0.08f
-        val rightWaveOsc = if (isDancingActive) cos(t * 5.2f) else cos(t * 1.6f) * 0.08f
+        // =========================================================================
+        // 6. CRYSTAL-CLEAR 2-JOINT 3D ARMS & HANDS ("Hath bilkul clear")
+        // =========================================================================
+        val leftShoulder = Offset(torsoCenterX - torsoRx * 0.88f, torsoCenterY - torsoRy * 0.38f)
+        val rightShoulder = Offset(torsoCenterX + torsoRx * 0.88f, torsoCenterY - torsoRy * 0.38f)
+
+        val leftWaveOsc = if (isStationaryPaused) 0f else sin(t * 5.2f) * armGrooveW
+        val rightWaveOsc = if (isStationaryPaused) 0f else cos(t * 5.2f) * armGrooveW
 
         val leftArmAngle = when {
-            !isDancingActive -> 0.68f + leftWaveOsc
-            holdsDeck && airborneFactor < 0.45f -> 0.42f + leftWaveOsc * 0.18f
-            activeStyle == MascotDanceMode.BHANGRA_GROOVE -> -1.15f + leftWaveOsc * 0.52f - airborneFactor * 0.35f
-            else -> -0.35f - airborneFactor * 1.15f + totalCrouch * 0.85f + leftWaveOsc * 0.55f
+            isLiftedInAir -> -0.35f + sin(t * 11f) * 0.35f
+            isStationaryPaused -> 0.82f
+            holdsDeck && airborneFactor < 0.45f -> 0.48f + leftWaveOsc * 0.16f
+            activeStyle == MascotDanceMode.BHANGRA_GROOVE -> 0.82f - armGrooveW * (1.85f - leftWaveOsc * 0.45f)
+            else -> 0.82f - armGrooveW * (0.95f + airborneFactor * 0.72f - leftWaveOsc * 0.52f)
         }
         val rightArmAngle = when {
-            !isDancingActive -> 0.68f - rightWaveOsc
-            holdsDeck && airborneFactor < 0.45f -> 0.42f + rightWaveOsc * 0.18f
-            activeStyle == MascotDanceMode.BHANGRA_GROOVE -> -1.15f - rightWaveOsc * 0.52f - airborneFactor * 0.35f
-            else -> -0.35f - airborneFactor * 1.15f + totalCrouch * 0.85f - rightWaveOsc * 0.55f
+            isLiftedInAir -> -0.35f - sin(t * 11f) * 0.35f
+            isStationaryPaused -> 0.82f
+            holdsDeck && airborneFactor < 0.45f -> 0.48f + rightWaveOsc * 0.16f
+            activeStyle == MascotDanceMode.BHANGRA_GROOVE -> 0.82f - armGrooveW * (1.85f + rightWaveOsc * 0.45f)
+            else -> 0.82f - armGrooveW * (0.95f + airborneFactor * 0.72f + rightWaveOsc * 0.52f)
         }
 
         val upperArmLen = u * 0.095f
-        val forearmLen = u * 0.095f
+        val forearmLen = u * 0.088f
         val armThick = u * 0.068f
 
         val leftElbow = Offset(
             x = leftShoulder.x - cos(leftArmAngle) * upperArmLen,
             y = leftShoulder.y + sin(leftArmAngle) * upperArmLen
         )
-        val leftForearmAngle = leftArmAngle - 0.38f - airborneFactor * 0.35f
+        val leftForearmAngle = leftArmAngle - 0.32f - airborneFactor * 0.28f
         val leftPaw = Offset(
             x = leftElbow.x - cos(leftForearmAngle) * forearmLen,
             y = leftElbow.y + sin(leftForearmAngle) * forearmLen
@@ -1994,187 +1733,158 @@ fun DeformingJumping3DPlushMascot(
             x = rightShoulder.x + cos(rightArmAngle) * upperArmLen,
             y = rightShoulder.y + sin(rightArmAngle) * upperArmLen
         )
-        val rightForearmAngle = rightArmAngle - 0.38f - airborneFactor * 0.35f
+        val rightForearmAngle = rightArmAngle - 0.32f - airborneFactor * 0.28f
         val rightPaw = Offset(
             x = rightElbow.x + cos(rightForearmAngle) * forearmLen,
             y = rightElbow.y + sin(rightForearmAngle) * forearmLen
         )
 
-        fun draw3DHandPaw(pawCenter: Offset, isRaisedHigh: Boolean) {
-            val pawR = u * 0.046f
-            drawPlush3DOval(
+        val sleeveHi = if (wearsJacket) jacketHi else limbLight
+        val sleeveMid = if (wearsJacket) jacketMid else limbFur
+        val sleeveLo = if (wearsJacket) jacketLo else limbDark
+
+        fun draw3DCartoonHandPaw(pawCenter: Offset, isRaised: Boolean) {
+            val pawR = u * 0.048f
+            drawCartoon3DOval(
                 cx = pawCenter.x,
                 cy = pawCenter.y,
                 rx = pawR,
                 ry = pawR * 0.94f,
-                hiColor = limbLight,
-                midColor = limbFur,
-                loColor = limbDark,
-                furTuftCount = if (isPenguin) 0 else 6,
-                tuftSize = u * 0.009f
+                hiColor = if (isPuppy || wearsJacket) Color.White else limbLight,
+                midColor = if (isPuppy || wearsJacket) creamFur else limbFur,
+                loColor = if (isPuppy || wearsJacket) creamShadow else limbDark,
+                rimHighlightAlpha = 0.50f
             )
-            if (!isChick && !isPenguin) {
-                // Cute pink plush palm pad & 3 toe beans visible when waving/cheering!
+            if (!isChick && !isPenguin && (isRaised || isLiftedInAir)) {
                 val beanColor = Color(0xFFFF80AB)
                 drawCircle(
-                    color = beanColor.copy(alpha = if (isRaisedHigh) 0.95f else 0.80f),
-                    radius = pawR * 0.40f,
-                    center = Offset(pawCenter.x, pawCenter.y + pawR * 0.10f)
+                    color = beanColor.copy(alpha = 0.88f),
+                    radius = pawR * 0.36f,
+                    center = Offset(pawCenter.x, pawCenter.y + pawR * 0.08f)
                 )
                 for (b in -1..1) {
                     drawCircle(
                         color = beanColor,
-                        radius = pawR * 0.17f,
-                        center = Offset(
-                            pawCenter.x + b * pawR * 0.38f,
-                            pawCenter.y - pawR * 0.36f
-                        )
+                        radius = pawR * 0.16f,
+                        center = Offset(pawCenter.x + b * pawR * 0.36f, pawCenter.y - pawR * 0.36f)
                     )
                 }
             }
         }
 
-        drawPlushLimbSegment(leftShoulder, leftElbow, armThick)
-        drawPlushLimbSegment(leftElbow, leftPaw, armThick * 0.92f)
-        draw3DHandPaw(leftPaw, isRaisedHigh = leftPaw.y < leftShoulder.y)
+        drawCartoon3DLimb(leftShoulder, leftElbow, armThick, sleeveHi, sleeveMid, sleeveLo)
+        drawCartoon3DLimb(leftElbow, leftPaw, armThick * 0.90f, sleeveHi, sleeveMid, sleeveLo)
+        if (wearsJacket) {
+            drawCircle(color = Color.White, radius = armThick * 0.48f, center = leftPaw)
+        }
+        draw3DCartoonHandPaw(leftPaw, isRaised = leftPaw.y < leftShoulder.y)
 
-        drawPlushLimbSegment(rightShoulder, rightElbow, armThick)
-        drawPlushLimbSegment(rightElbow, rightPaw, armThick * 0.92f)
-        draw3DHandPaw(rightPaw, isRaisedHigh = rightPaw.y < rightShoulder.y)
+        drawCartoon3DLimb(rightShoulder, rightElbow, armThick, sleeveHi, sleeveMid, sleeveLo)
+        drawCartoon3DLimb(rightElbow, rightPaw, armThick * 0.90f, sleeveHi, sleeveMid, sleeveLo)
+        if (wearsJacket) {
+            drawCircle(color = Color.White, radius = armThick * 0.48f, center = rightPaw)
+        }
+        draw3DCartoonHandPaw(rightPaw, isRaised = rightPaw.y < rightShoulder.y)
 
         // =========================================================================
-        // 8. 3D SPHERICAL HEAD, BREED-SPECIFIC EARS / MANE & 3D DJ HEADPHONES
+        // 7. EXPRESSIVE PIXAR 3D CARTOON HEAD, EARS & STUDIO DJ HEADPHONES
         // =========================================================================
-        val headTilt = sin(t * 2.8f) * (0.14f * energyMult)
-        val headTurnX = (sin(t * 1.9f) * u * 0.024f * energyMult) + (if (isActivelyWalking) walkDir * u * 0.015f else 0f)
-        val headNodY = (-airborneFactor * 0.025f + totalCrouch * 0.032f) * u
+        val headTilt = when {
+            isLiftedInAir -> sin(t * 9.2f) * 0.22f
+            isStationaryPaused -> 0f
+            else -> sin(t * 3.0f) * (0.14f * headGrooveW)
+        }
+        val headTurnX = when {
+            isLiftedInAir -> cos(t * 7.5f) * u * 0.026f
+            isStationaryPaused -> 0f
+            else -> (sin(t * 2.1f) * u * 0.024f * headGrooveW) + (if (isActivelyWalking) walkDir * u * 0.012f else 0f)
+        }
+        val headNodY = when {
+            isLiftedInAir -> -u * 0.014f
+            isStationaryPaused -> 0f
+            else -> (-airborneFactor * 0.022f + totalCrouch * 0.026f) * u * headGrooveW
+        }
 
-        val headCenterX = torsoCenterX + headTurnX + sin(headTilt) * (u * 0.025f)
-        val headCenterY = torsoCenterY - torsoRy * 0.88f - u * 0.115f + headNodY
-        val headRx = u * 0.215f * (1f - airborneFactor * 0.05f + totalCrouch * 0.08f)
-        val headRy = u * 0.195f * (1f + airborneFactor * 0.06f - totalCrouch * 0.07f)
+        val headCenterX = torsoCenterX + headTurnX + sin(headTilt) * (u * 0.022f)
+        val headCenterY = torsoCenterY - torsoRy * 0.84f - u * 0.122f + headNodY
+        val headRx = u * 0.232f * (1f - airborneFactor * 0.04f + totalCrouch * 0.06f)
+        val headRy = u * 0.205f * (1f + airborneFactor * 0.05f - totalCrouch * 0.05f)
 
-        // Delayed secondary spring for floppy ears & mane
-        val earSpring = sin(jumpCycle - 0.85f) * energyMult
+        val earSpring = if (isStationaryPaused) 0f else sin(jumpCycle - 0.85f) * headGrooveW
 
-        // --- A. 18-LOBE 3D VOLUMETRIC LION MANE (For Golden Lion DJ & Cyber Neon Lion) ---
+        // 18-Lobe 3D Lion Mane
         if (isLion) {
             val maneHi = lighten(breed.earColor, 0.28f)
             val maneMid = breed.earColor
             val maneLo = darken(breed.earColor, 0.42f)
-            val lobeCount = 18
-            val maneRx = headRx * 1.32f
-            val maneRy = headRy * 1.32f
+            val lobeCount = 16
+            val maneRx = headRx * 1.28f
+            val maneRy = headRy * 1.28f
             for (i in 0 until lobeCount) {
-                val ang = (i.toFloat() / lobeCount) * 6.2831855f + sin(t * 3.2f) * 0.04f
-                val pulseR = 1f + sin(t * 5.5f + i) * 0.04f + airborneFactor * 0.05f
-                val lx = headCenterX + cos(ang) * maneRx * pulseR
-                val ly = headCenterY + sin(ang) * maneRy * pulseR - earSpring * u * 0.012f
-                drawPlush3DOval(
-                    cx = lx,
-                    cy = ly,
-                    rx = u * 0.064f,
-                    ry = u * 0.064f,
-                    hiColor = maneHi,
-                    midColor = maneMid,
-                    loColor = maneLo
-                )
+                val ang = (i.toFloat() / lobeCount) * 6.2831855f + (if (isStationaryPaused) 0f else sin(t * 3.2f) * 0.04f)
+                val lx = headCenterX + cos(ang) * maneRx
+                val ly = headCenterY + sin(ang) * maneRy - earSpring * u * 0.010f
+                drawCartoon3DOval(lx, ly, u * 0.062f, u * 0.062f, maneHi, maneMid, maneLo, rimHighlightAlpha = 0.20f)
             }
         }
 
-        // --- B. BREED-SPECIFIC 3D EARS (Bunny Long 2-Joint Floppy Ears, Teddy/Panda Round Ears, Chick Feathers) ---
+        // Breed Ears (Behind Head)
         if (isBunny) {
-            // Long 2-segment floppy plush bunny ears that bounce & bend in mid-air!
-            val earFlop = earSpring * 0.38f - airborneFactor * 0.25f
+            val earFlop = earSpring * 0.36f - airborneFactor * 0.22f
             listOf(-1f, 1f).forEach { side ->
                 val earBase = Offset(headCenterX + side * headRx * 0.46f, headCenterY - headRy * 0.78f)
                 val earMid = Offset(
-                    earBase.x + side * u * (0.035f + earFlop * 0.03f),
-                    earBase.y - u * (0.115f + airborneFactor * 0.025f)
+                    earBase.x + side * u * (0.032f + earFlop * 0.03f),
+                    earBase.y - u * (0.115f + airborneFactor * 0.020f)
                 )
                 val earTip = Offset(
-                    earMid.x + side * u * (0.055f + earFlop * 0.06f),
-                    earMid.y - u * 0.065f + abs(earFlop) * u * 0.04f
+                    earMid.x + side * u * (0.052f + earFlop * 0.05f),
+                    earMid.y - u * 0.062f + abs(earFlop) * u * 0.035f
                 )
-                drawPlushLimbSegment(earBase, earMid, u * 0.072f, lightFur, mainFur, darkFur)
-                drawPlushLimbSegment(earMid, earTip, u * 0.064f, lightFur, mainFur, darkFur)
-                // Pink inner ear canal
+                drawCartoon3DLimb(earBase, earMid, u * 0.072f, lightFur, mainFur, darkFur)
+                drawCartoon3DLimb(earMid, earTip, u * 0.062f, lightFur, mainFur, darkFur)
                 drawLine(
                     color = breed.earColor,
                     start = earBase + Offset(0f, -u * 0.015f),
                     end = earMid + Offset(side * u * 0.01f, -u * 0.01f),
-                    strokeWidth = u * 0.032f,
+                    strokeWidth = u * 0.030f,
                     cap = StrokeCap.Round
                 )
             }
         } else if (isChick) {
-            // 3 Bouncy Top Crown Feathers for Baby Chick & Rockstar Chick DJ
             for (f in -1..1) {
-                val fx = headCenterX + f * u * 0.034f + sin(t * 5f + f) * u * 0.012f
-                val fy = headCenterY - headRy * 1.05f - (1 - abs(f)) * u * 0.025f + earSpring * u * 0.018f
-                drawPlush3DOval(
-                    cx = fx,
-                    cy = fy,
-                    rx = u * 0.024f,
-                    ry = u * 0.048f,
-                    hiColor = lightFur,
-                    midColor = mainFur,
-                    loColor = darkFur
-                )
+                val fx = headCenterX + f * u * 0.034f + (if (isStationaryPaused) 0f else sin(t * 5f + f) * u * 0.010f)
+                val fy = headCenterY - headRy * 1.04f - (1 - abs(f)) * u * 0.025f + earSpring * u * 0.016f
+                drawCartoon3DOval(fx, fy, u * 0.024f, u * 0.046f, lightFur, mainFur, darkFur)
             }
         } else if (isHusky) {
-            // Pointed 3D Siberian Husky Ears with White Inner Fur Triangles
-            val earBounceY = earSpring * u * 0.018f
+            val earBounceY = earSpring * u * 0.016f
             listOf(-1f, 1f).forEach { side ->
                 val baseInner = Offset(headCenterX + side * headRx * 0.30f, headCenterY - headRy * 0.78f)
                 val baseOuter = Offset(headCenterX + side * headRx * 0.82f, headCenterY - headRy * 0.48f)
-                val tip = Offset(
-                    headCenterX + side * headRx * 0.68f,
-                    headCenterY - headRy * 1.34f + earBounceY * side
-                )
+                val tip = Offset(headCenterX + side * headRx * 0.68f, headCenterY - headRy * 1.32f + earBounceY * side)
                 val outerEarPath = Path().apply {
-                    moveTo(baseInner.x, baseInner.y)
-                    lineTo(tip.x, tip.y)
-                    lineTo(baseOuter.x, baseOuter.y)
-                    close()
+                    moveTo(baseInner.x, baseInner.y); lineTo(tip.x, tip.y); lineTo(baseOuter.x, baseOuter.y); close()
                 }
-                drawPath(
-                    path = outerEarPath,
-                    brush = Brush.verticalGradient(
-                        listOf(lightFur, mainFur, darkFur),
-                        startY = tip.y,
-                        endY = baseOuter.y
-                    )
-                )
+                drawPath(outerEarPath, Brush.verticalGradient(listOf(lightFur, mainFur, darkFur), tip.y, baseOuter.y))
                 val innerEarPath = Path().apply {
                     moveTo(baseInner.x + side * u * 0.018f, baseInner.y - u * 0.008f)
                     lineTo(tip.x - side * u * 0.008f, tip.y + u * 0.032f)
                     lineTo(baseOuter.x - side * u * 0.022f, baseOuter.y - u * 0.012f)
                     close()
                 }
-                drawPath(path = innerEarPath, color = Color(0xFFFFE4EC))
+                drawPath(innerEarPath, Color(0xFFFFE4EC))
             }
         } else if (!isPenguin && !isPuppy) {
-            // Round 3D Teddy / Panda / Lion Plush Ears
-            val earBounceY = earSpring * u * 0.022f
+            val earBounceY = earSpring * u * 0.020f
             listOf(-1f, 1f).forEach { side ->
-                val ex = headCenterX + side * headRx * 0.78f
-                val ey = headCenterY - headRy * 0.72f + earBounceY * side
+                val ex = headCenterX + side * headRx * 0.76f
+                val ey = headCenterY - headRy * 0.70f + earBounceY * side
                 val earR = u * 0.074f
-                drawPlush3DOval(
-                    cx = ex,
-                    cy = ey,
-                    rx = earR,
-                    ry = earR,
-                    hiColor = limbLight,
-                    midColor = limbFur,
-                    loColor = limbDark,
-                    furTuftCount = 8,
-                    tuftSize = u * 0.011f
-                )
+                drawCartoon3DOval(ex, ey, earR, earR, limbLight, limbFur, limbDark)
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(lighten(breed.earColor, 0.25f), breed.earColor, darken(breed.earColor, 0.25f)),
+                        listOf(lighten(breed.earColor, 0.25f), breed.earColor, darken(breed.earColor, 0.25f)),
                         center = Offset(ex, ey),
                         radius = earR * 0.65f
                     ),
@@ -2184,12 +1894,12 @@ fun DeformingJumping3DPlushMascot(
             }
         }
 
-        // --- C. MAIN 3D SPHERICAL PLUSH HEAD ---
+        // Main 3D Pixar Spherical Head
         val headFurMain = if (isPanda) Color(0xFFFDFBF7) else mainFur
         val headFurHi = if (isPanda) Color.White else lightFur
         val headFurLo = if (isPanda) Color(0xFFD7DCE4) else darkFur
 
-        drawPlush3DOval(
+        drawCartoon3DOval(
             cx = headCenterX,
             cy = headCenterY,
             rx = headRx,
@@ -2197,12 +1907,28 @@ fun DeformingJumping3DPlushMascot(
             hiColor = headFurHi,
             midColor = headFurMain,
             loColor = headFurLo,
-            furTuftCount = 20,
-            tuftSize = u * 0.016f
+            rimHighlightAlpha = 0.44f
         )
 
-        // Penguin White Heart-Shaped Facial Mask
-        if (isPenguin) {
+        // Puppy Creamy-White Face Mask (Center forehead blaze + wide cheerful cheek/muzzle fur)
+        if (isPuppy) {
+            // Forehead blaze between eyes
+            drawOval(
+                brush = Brush.verticalGradient(listOf(Color.White, creamFur)),
+                topLeft = Offset(headCenterX - headRx * 0.17f, headCenterY - headRy * 0.84f),
+                size = Size(headRx * 0.34f, headRy * 0.90f)
+            )
+            // Lower creamy-white puffy cheek/muzzle mask
+            drawOval(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color.White, creamFur, creamMid),
+                    center = Offset(headCenterX, headCenterY + headRy * 0.24f),
+                    radius = headRx * 0.85f
+                ),
+                topLeft = Offset(headCenterX - headRx * 0.82f, headCenterY - headRy * 0.04f),
+                size = Size(headRx * 1.64f, headRy * 0.98f)
+            )
+        } else if (isPenguin) {
             drawOval(
                 color = Color(0xFFFDFBF7),
                 topLeft = Offset(headCenterX - headRx * 0.78f, headCenterY - headRy * 0.62f),
@@ -2210,252 +1936,217 @@ fun DeformingJumping3DPlushMascot(
             )
         }
 
-        // Puppy Hanging Floppy 3D Ears (Swing outward on jumps!)
+        // Puppy Floppy 3D Ears on Both Sides (With cute white inner ear patches!)
         if (isPuppy) {
-            val earSwingOut = (airborneFactor * 0.35f + abs(earSpring) * 0.22f) * u * 0.08f
+            val earSwingOut = if (isStationaryPaused) 0f else (airborneFactor * 0.35f + abs(earSpring) * 0.22f) * u * 0.075f
             listOf(-1f, 1f).forEach { side ->
-                val earTop = Offset(headCenterX + side * headRx * 0.82f, headCenterY - headRy * 0.32f)
+                val earTop = Offset(headCenterX + side * headRx * 0.86f, headCenterY - headRy * 0.26f)
                 val earBot = Offset(
-                    headCenterX + side * (headRx * 0.98f + earSwingOut),
-                    headCenterY + headRy * 0.52f - airborneFactor * u * 0.04f
+                    headCenterX + side * (headRx * 1.04f + earSwingOut),
+                    headCenterY + headRy * 0.56f - airborneFactor * u * 0.038f
                 )
-                drawPlushLimbSegment(
+                drawCartoon3DLimb(
                     p1 = earTop,
                     p2 = earBot,
-                    thickness = u * 0.076f,
-                    hi = lighten(breed.earColor, 0.22f),
+                    thickness = u * 0.078f,
+                    hi = lighten(breed.earColor, 0.24f),
                     mid = breed.earColor,
-                    lo = darken(breed.earColor, 0.35f)
+                    lo = darken(breed.earColor, 0.34f)
+                )
+                // Soft inner white spot on floppy puppy ear
+                drawOval(
+                    color = creamFur.copy(alpha = 0.85f),
+                    topLeft = Offset(earBot.x - u * 0.016f, earBot.y - u * 0.040f),
+                    size = Size(u * 0.032f, u * 0.056f)
                 )
             }
         }
 
-        // --- D. 3D STUDIO DJ HEADPHONES (Arc Headband + Bass-Thumping RGB Earcups) ---
-        val earcupPulse = (if (isMusicPlaying) abs(sin(t * 6.2f)) * 0.022f else 0.008f) * u
-        // Headband arc over the top of the head
-        drawArc(
-            color = Color(0xFF1A2234),
-            startAngle = 185f,
-            sweepAngle = 170f,
-            useCenter = false,
-            topLeft = Offset(headCenterX - headRx * 1.06f, headCenterY - headRy * 1.08f),
-            size = Size(headRx * 2.12f, headRy * 1.85f),
-            style = Stroke(width = (u * 0.036f).coerceAtLeast(3f), cap = StrokeCap.Round)
-        )
+        // 3D Studio DJ Headphones (Sleek headband + glossy 3D earcups)
+        val earcupPulse = if (isStationaryPaused) 0f else abs(sin(t * 6.2f)) * 0.018f * u * headGrooveW
         drawArc(
             color = accentColor,
-            startAngle = 195f,
-            sweepAngle = 150f,
+            startAngle = 188f,
+            sweepAngle = 164f,
             useCenter = false,
-            topLeft = Offset(headCenterX - headRx * 1.06f, headCenterY - headRy * 1.08f),
-            size = Size(headRx * 2.12f, headRy * 1.85f),
-            style = Stroke(width = (u * 0.014f).coerceAtLeast(1.5f), cap = StrokeCap.Round)
+            topLeft = Offset(headCenterX - headRx * 1.04f, headCenterY - headRy * 1.08f),
+            size = Size(headRx * 2.08f, headRy * 1.82f),
+            style = Stroke(width = (u * 0.034f).coerceAtLeast(3f), cap = StrokeCap.Round)
+        )
+        drawArc(
+            color = Color.White.copy(alpha = 0.72f),
+            startAngle = 212f,
+            sweepAngle = 116f,
+            useCenter = false,
+            topLeft = Offset(headCenterX - headRx * 1.00f, headCenterY - headRy * 1.04f),
+            size = Size(headRx * 2.00f, headRy * 1.74f),
+            style = Stroke(width = (u * 0.012f).coerceAtLeast(1.3f), cap = StrokeCap.Round)
         )
 
-        // Left & Right 3D Earcups with glowing neon rings
         listOf(-1f, 1f).forEach { side ->
-            val cupX = headCenterX + side * (headRx * 1.02f + earcupPulse)
-            val cupY = headCenterY + headRy * 0.02f
+            val cupX = headCenterX + side * (headRx * 0.99f + earcupPulse)
+            val cupY = headCenterY - headRy * 0.02f
             val cupRx = u * 0.044f
-            val cupRy = u * 0.074f
-            // Inner cushion
+            val cupRy = u * 0.072f
             drawOval(
-                color = Color(0xFF0E1320),
-                topLeft = Offset(cupX - cupRx * 1.15f, cupY - cupRy * 1.05f),
-                size = Size(cupRx * 2.3f, cupRy * 2.1f)
+                color = Color(0xFF141A29),
+                topLeft = Offset(cupX - cupRx * 1.12f, cupY - cupRy * 1.05f),
+                size = Size(cupRx * 2.24f, cupRy * 2.10f)
             )
-            // Outer 3D metallic shell
             drawOval(
                 brush = Brush.radialGradient(
-                    colors = listOf(lighten(accentColor, 0.4f), accentColor, Color(0xFF121A2B)),
+                    colors = listOf(lighten(accentColor, 0.45f), accentColor, darken(accentColor, 0.35f)),
                     center = Offset(cupX - side * cupRx * 0.2f, cupY - cupRy * 0.3f),
                     radius = cupRy * 1.3f
                 ),
                 topLeft = Offset(cupX - cupRx, cupY - cupRy),
                 size = Size(cupRx * 2f, cupRy * 2f)
             )
-            // Glowing RGB ring on earcup
             drawOval(
                 color = Color.White.copy(alpha = 0.85f),
-                topLeft = Offset(cupX - cupRx * 0.72f, cupY - cupRy * 0.72f),
-                size = Size(cupRx * 1.44f, cupRy * 1.44f),
-                style = Stroke(width = (u * 0.010f).coerceAtLeast(1.2f))
+                topLeft = Offset(cupX - cupRx * 0.65f, cupY - cupRy * 0.65f),
+                size = Size(cupRx * 1.30f, cupRy * 1.30f),
+                style = Stroke(width = (u * 0.010f).coerceAtLeast(1.1f))
             )
         }
 
-        // Cool Bucket Hat with Devil Horns for Mixtape / Boombox Breeds
-        if (holdsDeck) {
-            val hatTopY = headCenterY - headRy * 1.06f
-            val hatBrimY = headCenterY - headRy * 0.46f
-            val hatPath = Path().apply {
-                moveTo(headCenterX - headRx * 0.96f, hatBrimY)
-                quadraticTo(headCenterX, hatBrimY - u * 0.035f, headCenterX + headRx * 0.96f, hatBrimY)
-                lineTo(headCenterX + headRx * 0.68f, hatTopY)
-                quadraticTo(headCenterX, hatTopY - u * 0.025f, headCenterX - headRx * 0.68f, hatTopY)
-                close()
-            }
-            drawPath(
-                path = hatPath,
-                brush = Brush.verticalGradient(
-                    listOf(Color(0xFF2B3548), Color(0xFF121722)),
-                    startY = hatTopY,
-                    endY = hatBrimY
-                )
-            )
-            drawPath(
-                path = hatPath,
-                color = accentColor,
-                style = Stroke(width = (u * 0.012f).coerceAtLeast(1.4f))
-            )
-            // Cute neon devil horns on top of bucket hat
-            listOf(-1f, 1f).forEach { side ->
-                val hornPath = Path().apply {
-                    val hx = headCenterX + side * headRx * 0.45f
-                    moveTo(hx - side * u * 0.028f, hatTopY + u * 0.01f)
-                    quadraticTo(hx + side * u * 0.02f, hatTopY - u * 0.065f, hx + side * u * 0.048f, hatTopY - u * 0.075f)
-                    quadraticTo(hx + side * u * 0.035f, hatTopY - u * 0.02f, hx + side * u * 0.025f, hatTopY + u * 0.015f)
-                    close()
-                }
-                drawPath(hornPath, color = accentColor)
-            }
-        }
-
         // =========================================================================
-        // 9. DEEP 3D GALAXY EYES, SMOOTH EYELID BLINKS, KAWAII CHEEKS & SINGING MOUTH
+        // 8. BIG SOULFUL PIXAR 3D EYES, EYEBROWS & ROSY CHEEKS
         // =========================================================================
-        val eyeY = headCenterY - headRy * 0.06f + headNodY * 0.3f
-        val leftEyeCenter = Offset(headCenterX - headRx * 0.38f + headTurnX * 0.35f, eyeY)
-        val rightEyeCenter = Offset(headCenterX + headRx * 0.38f + headTurnX * 0.35f, eyeY)
-        val eyeR = u * 0.046f
+        val eyeY = headCenterY - headRy * 0.09f + headNodY * 0.25f
+        val leftEyeCenter = Offset(headCenterX - headRx * 0.36f + headTurnX * 0.35f, eyeY)
+        val rightEyeCenter = Offset(headCenterX + headRx * 0.36f + headTurnX * 0.35f, eyeY)
+        val eyeRx = u * 0.048f
+        val eyeRy = u * 0.054f
 
-        // Panda Dark Eye Patches behind the eyes
         if (isPanda) {
-            listOf(leftEyeCenter, rightEyeCenter).forEachIndexed { idx, ec ->
+            listOf(leftEyeCenter, rightEyeCenter).forEach { ec ->
                 drawOval(
                     color = Color(0xFF1A1E24),
-                    topLeft = Offset(ec.x - eyeR * 1.38f, ec.y - eyeR * 1.25f),
-                    size = Size(eyeR * 2.76f, eyeR * 2.50f)
+                    topLeft = Offset(ec.x - eyeRx * 1.38f, ec.y - eyeRy * 1.25f),
+                    size = Size(eyeRx * 2.76f, eyeRy * 2.50f)
                 )
             }
         }
 
-        // Rosy Kawaii Cheek Blush
-        val blushAlpha = (0.42f + airborneFactor * 0.28f).coerceIn(0.32f, 0.72f)
+        val blushAlpha = if (isStationaryPaused) 0.34f else (0.38f + airborneFactor * 0.24f).coerceIn(0.32f, 0.68f)
         listOf(-1f, 1f).forEach { side ->
-            val cx = headCenterX + side * headRx * 0.60f + headTurnX * 0.3f
-            val cy = eyeY + headRy * 0.30f
+            val cx = headCenterX + side * headRx * 0.58f + headTurnX * 0.3f
+            val cy = eyeY + headRy * 0.33f
             drawOval(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFFFF4081).copy(alpha = blushAlpha), Color.Transparent),
+                    colors = listOf(Color(0xFFFF6B95).copy(alpha = blushAlpha), Color.Transparent),
                     center = Offset(cx, cy),
-                    radius = u * 0.048f
+                    radius = u * 0.046f
                 ),
-                topLeft = Offset(cx - u * 0.048f, cy - u * 0.030f),
-                size = Size(u * 0.096f, u * 0.060f)
+                topLeft = Offset(cx - u * 0.046f, cy - u * 0.028f),
+                size = Size(u * 0.092f, u * 0.056f)
             )
         }
 
-        // Eye Blink & Happy ^ ^ Jump Expression
-        val blinkPhase = (t * 1.6f) % 5.0f
-        val isHappyJumpArc = airborneFactor > 0.78f || happyJumpTicks > 22
-        val blinkAmount = when {
-            blinkPhase > 4.65f -> sin(((blinkPhase - 4.65f) / 0.35f) * 3.1415927f).coerceIn(0f, 1f)
-            else -> 0f
-        }
+        val blinkPhase = if (isStationaryPaused) 0f else (t * 1.6f) % 5.0f
+        val isHappyJumpArc = !isStationaryPaused && !isLiftedInAir && (airborneFactor > 0.80f || happyJumpTicks > 24)
+        val blinkAmount = if (!isStationaryPaused && blinkPhase > 4.66f) {
+            sin(((blinkPhase - 4.66f) / 0.34f) * 3.1415927f).coerceIn(0f, 1f)
+        } else 0f
 
         if (isHappyJumpArc) {
-            // Joyful ^ ^ curved anime eyes at the peak of high jumps!
             listOf(leftEyeCenter, rightEyeCenter).forEach { ec ->
                 drawArc(
-                    color = Color(0xFF1A110B),
+                    color = Color(0xFF1C1009),
                     startAngle = 200f,
                     sweepAngle = 140f,
                     useCenter = false,
-                    topLeft = Offset(ec.x - eyeR * 0.95f, ec.y - eyeR * 0.65f),
-                    size = Size(eyeR * 1.90f, eyeR * 1.40f),
-                    style = Stroke(width = (u * 0.022f).coerceAtLeast(2.4f), cap = StrokeCap.Round)
+                    topLeft = Offset(ec.x - eyeRx * 0.95f, ec.y - eyeRy * 0.60f),
+                    size = Size(eyeRx * 1.90f, eyeRy * 1.30f),
+                    style = Stroke(width = (u * 0.022f).coerceAtLeast(2.2f), cap = StrokeCap.Round)
                 )
             }
         } else {
-            val gazeX = sin(t * 2.4f) * eyeR * 0.24f + headTurnX * 0.2f
-            val gazeY = (-airborneFactor * 0.22f + totalCrouch * 0.16f) * eyeR
+            val gazeX = if (isStationaryPaused) 0f else sin(t * 2.4f) * eyeRx * 0.22f + headTurnX * 0.18f
+            val gazeY = if (isStationaryPaused) 0f else (-airborneFactor * 0.18f + totalCrouch * 0.14f) * eyeRy
 
             listOf(leftEyeCenter, rightEyeCenter).forEach { ec ->
-                // 1. Outer dark plush eye socket rim
-                drawCircle(color = Color(0xFF0E0906), radius = eyeR * 1.06f, center = ec)
-                // 2. Deep 3D galaxy iris gradient
-                drawCircle(
+                // Clean white sclera highlight behind iris for expressive cartoon look
+                drawOval(
+                    color = Color.White,
+                    topLeft = Offset(ec.x - eyeRx * 1.06f, ec.y - eyeRy * 1.04f),
+                    size = Size(eyeRx * 2.12f, eyeRy * 2.08f)
+                )
+                // Dark outer eye rim
+                drawOval(
+                    color = Color(0xFF140C08),
+                    topLeft = Offset(ec.x - eyeRx * 1.04f, ec.y - eyeRy * 1.02f),
+                    size = Size(eyeRx * 2.08f, eyeRy * 2.04f),
+                    style = Stroke(width = (u * 0.010f).coerceAtLeast(1.1f))
+                )
+                // Warm Pixar brown/amber 3D iris
+                drawOval(
                     brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color(0xFF3A2218),
-                            Color(0xFF1B0F0A),
-                            accentColor.copy(alpha = 0.65f)
-                        ),
-                        center = Offset(ec.x + gazeX, ec.y + gazeY + eyeR * 0.25f),
-                        radius = eyeR
+                        colors = listOf(Color(0xFF6D4023), Color(0xFF3E1F10), Color(0xFF140A05)),
+                        center = Offset(ec.x + gazeX, ec.y + gazeY + eyeRy * 0.15f),
+                        radius = eyeRy * 1.1f
                     ),
-                    radius = eyeR * 0.96f,
-                    center = ec
+                    topLeft = Offset(ec.x - eyeRx * 0.84f + gazeX * 0.4f, ec.y - eyeRy * 0.88f + gazeY * 0.4f),
+                    size = Size(eyeRx * 1.68f, eyeRy * 1.76f)
                 )
-                // 3. Center dark pupil
-                drawCircle(
-                    color = Color(0xFF070504),
-                    radius = eyeR * 0.56f,
-                    center = Offset(ec.x + gazeX * 0.8f, ec.y + gazeY * 0.8f)
+                // Glossy black center pupil
+                drawOval(
+                    color = Color(0xFF060403),
+                    topLeft = Offset(ec.x - eyeRx * 0.50f + gazeX * 0.7f, ec.y - eyeRy * 0.56f + gazeY * 0.7f),
+                    size = Size(eyeRx * 1.00f, eyeRy * 1.12f)
                 )
-                // 4. Primary big glossy white star catchlight (top-left)
+                // Dual glossy Pixar catchlights
                 drawCircle(
                     color = Color.White,
-                    radius = eyeR * 0.36f,
-                    center = Offset(ec.x - eyeR * 0.28f + gazeX, ec.y - eyeR * 0.28f + gazeY)
+                    radius = eyeRx * 0.34f,
+                    center = Offset(ec.x - eyeRx * 0.26f + gazeX * 0.8f, ec.y - eyeRy * 0.30f + gazeY * 0.8f)
                 )
-                // 5. Secondary neon sparkle catchlight (bottom-right)
                 drawCircle(
                     color = Color.White.copy(alpha = 0.88f),
-                    radius = eyeR * 0.17f,
-                    center = Offset(ec.x + eyeR * 0.30f + gazeX, ec.y + eyeR * 0.28f + gazeY)
+                    radius = eyeRx * 0.16f,
+                    center = Offset(ec.x + eyeRx * 0.26f + gazeX * 0.8f, ec.y + eyeRy * 0.26f + gazeY * 0.8f)
                 )
-                // 6. Smooth progressive fur eyelid blink from top
                 if (blinkAmount > 0.05f) {
                     drawArc(
                         color = headFurMain,
                         startAngle = 180f,
                         sweepAngle = 180f,
                         useCenter = true,
-                        topLeft = Offset(ec.x - eyeR * 1.1f, ec.y - eyeR * 1.1f),
-                        size = Size(eyeR * 2.2f, eyeR * 2.2f * blinkAmount)
+                        topLeft = Offset(ec.x - eyeRx * 1.12f, ec.y - eyeRy * 1.12f),
+                        size = Size(eyeRx * 2.24f, eyeRy * 2.24f * blinkAmount)
                     )
                 }
             }
-            // Expressive 3D eyebrows that lift during jumps
-            val browLift = -airborneFactor * u * 0.018f
+
+            val browLift = if (isStationaryPaused) 0f else -airborneFactor * u * 0.016f
             listOf(-1f, 1f).forEach { side ->
                 val ec = if (side < 0f) leftEyeCenter else rightEyeCenter
                 drawArc(
-                    color = darken(headFurMain, 0.55f),
+                    color = darken(mainFur, 0.45f),
                     startAngle = if (side < 0f) 210f else 230f,
                     sweepAngle = 100f,
                     useCenter = false,
-                    topLeft = Offset(ec.x - eyeR * 0.85f, ec.y - eyeR * 1.35f + browLift),
-                    size = Size(eyeR * 1.70f, eyeR * 0.85f),
-                    style = Stroke(width = (u * 0.016f).coerceAtLeast(1.8f), cap = StrokeCap.Round)
+                    topLeft = Offset(ec.x - eyeRx * 0.90f, ec.y - eyeRy * 1.48f + browLift),
+                    size = Size(eyeRx * 1.80f, eyeRy * 0.82f),
+                    style = Stroke(width = (u * 0.018f).coerceAtLeast(1.8f), cap = StrokeCap.Round)
                 )
             }
         }
 
-        // --- E. 3D PLUSH MUZZLE, NOSE / BEAK & BEAT-SYNCED SINGING MOUTH ---
-        val muzzleCenter = Offset(headCenterX + headTurnX * 0.45f, headCenterY + headRy * 0.30f + headNodY * 0.4f)
-        val mouthOpen = if (isMusicPlaying || happyJumpTicks > 0) {
-            (abs(sin(t * 6.4f)) * 0.85f + 0.15f + airborneFactor * 0.25f).coerceIn(0.15f, 1.10f)
-        } else {
-            (airborneFactor * 0.75f + abs(sin(t * 3.2f)) * 0.22f).coerceIn(0.10f, 0.85f)
+        // =========================================================================
+        // 9. EXPRESSIVE 3D MUZZLE, GLOSSY NOSE & SINGING / SURPRISED MOUTH
+        // =========================================================================
+        val muzzleCenter = Offset(headCenterX + headTurnX * 0.45f, headCenterY + headRy * 0.28f + headNodY * 0.4f)
+        val mouthOpen = when {
+            isLiftedInAir -> 0.95f
+            isStationaryPaused -> 0.10f
+            else -> (abs(sin(t * 6.2f)) * 0.78f + 0.20f) * headGrooveW
         }
 
         if (isChick || isPenguin) {
-            // 3D Orange Beak that opens to sing!
             val beakW = u * 0.068f
             val beakH = u * 0.046f
-            // Open mouth cavity inside beak
             if (mouthOpen > 0.20f) {
                 drawOval(
                     color = Color(0xFF4A0E1C),
@@ -2468,7 +2159,6 @@ fun DeformingJumping3DPlushMascot(
                     size = Size(beakW * 0.76f, beakH * 0.48f * mouthOpen)
                 )
             }
-            // Upper 3D orange beak
             val upperBeak = Path().apply {
                 moveTo(muzzleCenter.x - beakW * 0.75f, muzzleCenter.y)
                 quadraticTo(muzzleCenter.x, muzzleCenter.y - beakH * 0.95f, muzzleCenter.x + beakW * 0.75f, muzzleCenter.y)
@@ -2477,88 +2167,80 @@ fun DeformingJumping3DPlushMascot(
             }
             drawPath(
                 path = upperBeak,
-                brush = Brush.verticalGradient(
-                    listOf(Color(0xFFFFD54F), Color(0xFFFF8F00)),
-                    startY = muzzleCenter.y - beakH,
-                    endY = muzzleCenter.y + beakH * 0.4f
-                )
+                brush = Brush.verticalGradient(listOf(Color(0xFFFFD54F), Color(0xFFFF8F00)), muzzleCenter.y - beakH, muzzleCenter.y + beakH * 0.4f)
             )
         } else {
-            // 3D Rounded Plush Snout / Muzzle
             val snoutRx = headRx * 0.38f
-            val snoutRy = headRy * 0.29f
-            drawOval(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color.White, bellyColor, darken(bellyColor, 0.20f)),
-                    center = Offset(muzzleCenter.x - snoutRx * 0.2f, muzzleCenter.y - snoutRy * 0.3f),
-                    radius = snoutRx * 1.3f
-                ),
-                topLeft = Offset(muzzleCenter.x - snoutRx, muzzleCenter.y - snoutRy * 0.85f),
-                size = Size(snoutRx * 2f, snoutRy * 1.85f + mouthOpen * u * 0.022f)
-            )
+            val snoutRy = headRy * 0.28f
+            if (!isPuppy) {
+                drawOval(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color.White, bellyColor, darken(bellyColor, 0.16f)),
+                        center = Offset(muzzleCenter.x - snoutRx * 0.2f, muzzleCenter.y - snoutRy * 0.3f),
+                        radius = snoutRx * 1.3f
+                    ),
+                    topLeft = Offset(muzzleCenter.x - snoutRx, muzzleCenter.y - snoutRy * 0.85f),
+                    size = Size(snoutRx * 2f, snoutRy * 1.85f + mouthOpen * u * 0.018f)
+                )
+            }
 
-            // Animated Singing / Cheering 3D Mouth Cavity + Happy Pink Tongue when dancing
-            val mouthY = muzzleCenter.y + snoutRy * 0.22f
-            val mouthW = snoutRx * (0.86f + mouthOpen * 0.25f)
-            val mouthH = (snoutRy * 0.88f * mouthOpen).coerceAtLeast(u * 0.016f)
-
-            if (isDancingActive) {
+            val mouthY = muzzleCenter.y + snoutRy * 0.28f
+            if (isLiftedInAir) {
+                // Surprised round "O" mouth when lifted in air!
+                val oRx = snoutRx * 0.48f
+                val oRy = snoutRy * 0.68f * (0.92f + sin(t * 10f) * 0.08f)
                 drawOval(
                     color = Color(0xFF3E0A16),
-                    topLeft = Offset(muzzleCenter.x - mouthW * 0.5f, mouthY - mouthH * 0.35f),
+                    topLeft = Offset(muzzleCenter.x - oRx, mouthY - oRy * 0.55f),
+                    size = Size(oRx * 2f, oRy * 2f)
+                )
+                drawOval(
+                    brush = Brush.verticalGradient(listOf(Color(0xFFD81B60), Color(0xFFFF6090))),
+                    topLeft = Offset(muzzleCenter.x - oRx * 0.66f, mouthY + oRy * 0.18f),
+                    size = Size(oRx * 1.32f, oRy * 0.90f)
+                )
+            } else if (isDancingActive) {
+                // Happy cheerful singing 3D cartoon mouth with bouncy pink tongue!
+                val mouthW = snoutRx * (0.94f + mouthOpen * 0.22f)
+                val mouthH = (snoutRy * 0.92f * mouthOpen).coerceAtLeast(u * 0.018f)
+                drawOval(
+                    color = Color(0xFF420917),
+                    topLeft = Offset(muzzleCenter.x - mouthW * 0.5f, mouthY - mouthH * 0.28f),
                     size = Size(mouthW, mouthH)
                 )
-                // Happy Pink 3D Tongue hanging out and bouncing with the music beat!
-                val tongueBounce = abs(sin(t * 7.2f)) * u * 0.016f
+                val tongueBounce = abs(sin(t * 7.2f)) * u * 0.014f * headGrooveW
                 drawOval(
-                    brush = Brush.verticalGradient(
-                        listOf(Color(0xFFFF80AB), Color(0xFFFF4081))
-                    ),
-                    topLeft = Offset(muzzleCenter.x - mouthW * 0.34f, mouthY - mouthH * 0.05f),
-                    size = Size(mouthW * 0.68f, mouthH * 0.85f + tongueBounce)
+                    brush = Brush.verticalGradient(listOf(Color(0xFFFF80AB), Color(0xFFE91E63))),
+                    topLeft = Offset(muzzleCenter.x - mouthW * 0.34f, mouthY + mouthH * 0.05f),
+                    size = Size(mouthW * 0.68f, mouthH * 0.78f + tongueBounce)
                 )
             } else {
-                // Calm cute smiling mouth when paused/idle
+                // Calm cute closed smile when playback is paused (100% still!)
                 drawArc(
                     color = Color(0xFF3E2723),
-                    startAngle = 20f,
-                    sweepAngle = 140f,
+                    startAngle = 18f,
+                    sweepAngle = 144f,
                     useCenter = false,
-                    topLeft = Offset(muzzleCenter.x - snoutRx * 0.42f, mouthY - u * 0.018f),
-                    size = Size(snoutRx * 0.84f, u * 0.032f),
-                    style = Stroke(width = (u * 0.014f).coerceAtLeast(1.6f), cap = StrokeCap.Round)
-                )
-            }
-            // Cute white Bunny Buck Teeth or tiny upper smile teeth
-            if (isBunny && isDancingActive) {
-                drawRoundRect(
-                    color = Color.White,
-                    topLeft = Offset(muzzleCenter.x - u * 0.018f, mouthY - mouthH * 0.32f),
-                    size = Size(u * 0.017f, u * 0.022f),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
-                )
-                drawRoundRect(
-                    color = Color.White,
-                    topLeft = Offset(muzzleCenter.x + u * 0.001f, mouthY - mouthH * 0.32f),
-                    size = Size(u * 0.017f, u * 0.022f),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
+                    topLeft = Offset(muzzleCenter.x - snoutRx * 0.44f, mouthY - u * 0.016f),
+                    size = Size(snoutRx * 0.88f, u * 0.032f),
+                    style = Stroke(width = (u * 0.014f).coerceAtLeast(1.5f), cap = StrokeCap.Round)
                 )
             }
 
-            // Glossy 3D Plush Nose with specular highlight
+            // Cute 3D Shiny Nose
             val noseCenter = Offset(muzzleCenter.x, muzzleCenter.y - snoutRy * 0.34f)
             val noseRx = snoutRx * 0.38f
-            val noseRy = snoutRy * 0.28f
-            val noseColor = if (isBunny) Color(0xFFFF6090) else Color(0xFF281812)
+            val noseRy = snoutRy * 0.27f
+            val noseColor = if (isBunny) Color(0xFFFF6090) else Color(0xFF231510)
             drawOval(
                 color = noseColor,
                 topLeft = Offset(noseCenter.x - noseRx, noseCenter.y - noseRy),
                 size = Size(noseRx * 2f, noseRy * 2f)
             )
             drawOval(
-                color = Color.White.copy(alpha = 0.75f),
-                topLeft = Offset(noseCenter.x - noseRx * 0.55f, noseCenter.y - noseRy * 0.65f),
-                size = Size(noseRx * 0.70f, noseRy * 0.55f)
+                color = Color.White.copy(alpha = 0.80f),
+                topLeft = Offset(noseCenter.x - noseRx * 0.54f, noseCenter.y - noseRy * 0.64f),
+                size = Size(noseRx * 0.68f, noseRy * 0.52f)
             )
         }
     }
@@ -2661,32 +2343,34 @@ fun Modifier.timedMediaTouchHold(
 fun FluffyMascot3DStudioPortrait(
     breed: CompanionBreed,
     modifier: Modifier = Modifier,
-    showStudioBackdrop: Boolean = true,
+    showStudioBackdrop: Boolean = false,
     animateReels: Boolean = true,
     isMusicPlaying: Boolean = true,
     customFurColor: Color? = null
 ) {
-    val context = LocalContext.current
-    var articulatedParts by remember(breed.drawableResId) {
-        mutableStateOf(MascotTransparentBitmapCache.getCachedArticulatedSync(breed.drawableResId))
-    }
-    LaunchedEffect(breed.drawableResId) {
-        if (articulatedParts == null) {
-            articulatedParts = MascotTransparentBitmapCache.getOrLoadArticulatedMascot(context, breed)
+    var liveTick by remember { mutableFloatStateOf(0f) }
+    var danceTransition by remember { mutableFloatStateOf(if (isMusicPlaying) 1f else 0f) }
+
+    // 0% idle CPU: run 50fps loop only while playing or smoothly settling back to idle pose
+    LaunchedEffect(isMusicPlaying) {
+        while (isMusicPlaying || danceTransition > 0.005f) {
+            delay(20L)
+            if (isMusicPlaying) {
+                danceTransition = (danceTransition + 0.08f).coerceAtMost(1f)
+                liveTick += 0.24f
+            } else {
+                danceTransition = (danceTransition - 0.12f).coerceAtLeast(0f)
+                if (danceTransition > 0.005f) {
+                    liveTick += 0.16f * danceTransition
+                }
+            }
+        }
+        if (!isMusicPlaying) {
+            danceTransition = 0f
         }
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "mascot_card_3d_jump")
-    val liveTick by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 62.831855f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 5200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "mascot_card_live_tick"
-    )
-    val staggeredTick = liveTick + (breed.ordinal * 0.75f)
+    val staggeredTick = if (danceTransition > 0.01f) liveTick + (breed.ordinal * 0.75f) else 0f
 
     Box(
         modifier = modifier.background(
@@ -2706,18 +2390,19 @@ fun FluffyMascot3DStudioPortrait(
     ) {
         DeformingJumping3DPlushMascot(
             breed = breed,
-            parts = articulatedParts,
+            parts = null,
             animTick = staggeredTick,
             walkStridePhase = staggeredTick * 1.45f,
             walkDir = 1f,
             isMusicPlaying = isMusicPlaying,
-            isActivelyWalking = true,
+            isActivelyWalking = isMusicPlaying,
             happyJumpTicks = if (animateReels && isMusicPlaying) 12 else 0,
             landingSquashTicks = 0,
             danceMode = MascotDanceMode.TRAMPOLINE_ACROBAT,
             auraColor = breed.headphoneAccent,
             customFurColor = customFurColor,
-            drawInternalFloorShadow = true,
+            drawInternalFloorShadow = false,
+            danceTransition = danceTransition,
             modifier = Modifier.fillMaxSize()
         )
     }
@@ -2725,13 +2410,13 @@ fun FluffyMascot3DStudioPortrait(
 
 /**
  * Interactive 100% Real-Time 3D Volumetric Multi-Jointed Plush Companion ("Gudda") Overlay with:
- * A. Beat-Synced Dancing & Calm Idle Stop (connected directly to live ExoPlayer `isMusicPlaying` state)
+ * A. Beat-Synced Multi-Step Dancing & 100% Stationary Idle Stop (connected directly to live audio/video playback state)
  * B. Multi-Bounce Gravity Physics (5 to 7 realistic bounces with `gravityAccel = 0.85f` & `bounceDamping = 0.76f`,
  *    decreasing height 100% -> 76% -> 58% -> 44% -> 33% -> 25% -> 18% -> settle + squash-and-stretch on every hit)
- * C. 2-Second Drag & Hold Over Any Song Row to Auto-Play (glowing 0%..100% circular progress ring, haptic pulse,
- *    gravity drop to floor, auto-play song, and auto-scrolling near top/bottom edges)
+ * C. 2-Second Drag & Hold Over Any Song/Video Row to Auto-Play (glowing 0%..100% circular progress ring, haptic pulse,
+ *    gravity drop to floor, auto-play song/video, and auto-scrolling near top/bottom edges)
  * D. Double-Tap on Mascot to Immediately Pause/Stop Music ("Music Paused by Puppy/Teddy")
- * E. Character & Custom Fur Color Switcher (Golden Puppy, Fluffy Teddy Bear, Siberian Husky, Panda + all 21 Mascots)
+ * E. 100% CleanMascot Rendering ("Sirf Gudda Hona Chahiye Aur Kuch Nahi" — zero clutter under legs or around 4 sides)
  */
 @Composable
 fun RealisticCompanionOverlay(
@@ -2765,15 +2450,12 @@ fun RealisticCompanionOverlay(
 
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
-    val configuration = LocalConfiguration.current
     val density = LocalDensity.current
 
-    val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
-    val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-    val mascotBoxWidthPx = with(density) { (mascotSizeDp + 30.dp).toPx() }
-    val mascotBoxHeightPx = with(density) { (mascotSizeDp + 48.dp).toPx() }
-    val mascotSizePx = with(density) { mascotSizeDp.toPx() }
-    val floorY = (screenHeightPx - mascotBoxHeightPx - with(density) { bottomClearanceDp.toPx() }).coerceAtLeast(60f)
+    val effectiveMascotSizeDp = mascotSizeDp.coerceAtLeast(112.dp)
+    val mascotBoxWidthPx = with(density) { (effectiveMascotSizeDp + 16.dp).toPx() }
+    val mascotBoxHeightPx = with(density) { (effectiveMascotSizeDp + 20.dp).toPx() }
+    val mascotSizePx = with(density) { effectiveMascotSizeDp.toPx() }
 
     val breed = remember(breedName, penguinsOnlyMode) {
         val selected = CompanionBreed.entries.find {
@@ -2787,15 +2469,6 @@ fun RealisticCompanionOverlay(
     val danceMode = remember(danceModeId) { MascotDanceMode.fromId(danceModeId) }
     val auraEffect = remember(auraEffectId) { MascotAuraEffect.fromId(auraEffectId) }
 
-    var articulatedParts by remember(breed.drawableResId) {
-        mutableStateOf(MascotTransparentBitmapCache.getCachedArticulatedSync(breed.drawableResId))
-    }
-    LaunchedEffect(breed.drawableResId) {
-        if (articulatedParts == null) {
-            articulatedParts = MascotTransparentBitmapCache.getOrLoadArticulatedMascot(context, breed)
-        }
-    }
-
     val prefs = remember(context) {
         context.getSharedPreferences("hybrid_mascot_custom_prefs", Context.MODE_PRIVATE)
     }
@@ -2806,42 +2479,65 @@ fun RealisticCompanionOverlay(
         MascotFurColorPreset.fromId(selectedFurPresetId)
     }
 
-    var overlayRootOffset by remember { mutableStateOf(Offset.Zero) }
-    var posX by remember { mutableFloatStateOf(with(density) { 18.dp.toPx() }) }
-    var posY by remember { mutableFloatStateOf(floorY) }
-    var velX by remember { mutableFloatStateOf(0f) }
-    var velY by remember { mutableFloatStateOf(0f) }
-    var bounceCount by remember { mutableIntStateOf(0) }
-    var walkDir by remember { mutableFloatStateOf(1f) }
-    var walkStridePhase by remember { mutableFloatStateOf(0f) }
-    var isActivelyWalking by remember { mutableStateOf(true) }
-    var isDragging by remember { mutableStateOf(false) }
-    var animTick by remember { mutableFloatStateOf(0f) }
-    var happyJumpTicks by remember { mutableIntStateOf(0) }
-    var flip360Ticks by remember { mutableIntStateOf(0) }
-    var landingSquashTicks by remember { mutableIntStateOf(0) }
     var showMascotFeatureHub by remember { mutableStateOf(false) }
 
-    // 2-Second Drag & Hold Over Song Row State
-    var hoveredSong by remember { mutableStateOf<MediaItem?>(null) }
-    var hoveredSongElapsedMs by remember { mutableLongStateOf(0L) }
-    val songHoldProgress = (hoveredSongElapsedMs / 2000f).coerceIn(0f, 1f)
+    BackHandler(enabled = showMascotFeatureHub) {
+        showMascotFeatureHub = false
+    }
 
-    LaunchedEffect(nowPlayingTitle, isMusicPlaying, breed, danceMode) {
-        if (isMusicPlaying && nowPlayingTitle.isNotBlank()) {
-            happyJumpTicks = 36
-        } else if (!isMusicPlaying) {
-            // Immediately settle dance stunts when music is paused/stopped
-            happyJumpTicks = 0
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val screenWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(mascotBoxWidthPx + 24f)
+        val screenHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(mascotBoxHeightPx + 80f)
+        val floorY = (screenHeightPx - mascotBoxHeightPx - with(density) { bottomClearanceDp.toPx() }).coerceAtLeast(60f)
+
+        var overlayRootOffset by remember { mutableStateOf(Offset.Zero) }
+        val defaultRightX = (screenWidthPx - mascotBoxWidthPx - with(density) { 10.dp.toPx() }).coerceAtLeast(12f)
+        var posX by remember { mutableFloatStateOf(defaultRightX) }
+        var posY by remember { mutableFloatStateOf(floorY) }
+        var velX by remember { mutableFloatStateOf(0f) }
+        var velY by remember { mutableFloatStateOf(0f) }
+        var bounceCount by remember { mutableIntStateOf(0) }
+        var walkDir by remember { mutableFloatStateOf(-1f) }
+        var walkStridePhase by remember { mutableFloatStateOf(0f) }
+        var isActivelyWalking by remember { mutableStateOf(false) }
+        var isDragging by remember { mutableStateOf(false) }
+        var animTick by remember { mutableFloatStateOf(0f) }
+        var danceTransition by remember { mutableFloatStateOf(if (isMusicPlaying) 1f else 0f) }
+        var happyJumpTicks by remember { mutableIntStateOf(0) }
+        var flip360Ticks by remember { mutableIntStateOf(0) }
+        var landingSquashTicks by remember { mutableIntStateOf(0) }
+        var physicsWakeToken by remember { mutableIntStateOf(0) }
+
+        // 2-Second Drag & Hold Over Song Row State
+        var hoveredSong by remember { mutableStateOf<MediaItem?>(null) }
+        var hoveredSongElapsedMs by remember { mutableLongStateOf(0L) }
+        val songHoldProgress = (hoveredSongElapsedMs / 2000f).coerceIn(0f, 1f)
+
+        LaunchedEffect(nowPlayingTitle, isMusicPlaying, breed, danceMode) {
+            if (isMusicPlaying && nowPlayingTitle.isNotBlank()) {
+                happyJumpTicks = 24
+                physicsWakeToken++
+            } else if (!isMusicPlaying) {
+                // Immediately settle all dance stunts when playback is paused/stopped ("without Uske vaise Shant Khada Rahe")
+                happyJumpTicks = 0
+                flip360Ticks = 0
+            }
         }
-    }
 
-    LaunchedEffect(floorY) {
-        if (posY > floorY) posY = floorY
-    }
+        LaunchedEffect(screenWidthPx, floorY) {
+            val maxValidX = (screenWidthPx - mascotBoxWidthPx - 6f).coerceAtLeast(6f)
+            if (posX > maxValidX) {
+                posX = maxValidX
+            }
+            if (!isDragging && bounceCount == 0 && abs(velY) < 0.8f) {
+                posY = floorY
+            } else if (posY > floorY) {
+                posY = floorY
+            }
+        }
 
     // =========================================================================
-    // 2-SECOND DRAG & HOLD OVER ANY SONG TO AUTO-PLAY + EDGE AUTO-SCROLL LOOP
+    // 2-SECOND DRAG & HOLD OVER ANY SONG/VIDEO TO AUTO-PLAY + EDGE AUTO-SCROLL
     // =========================================================================
     LaunchedEffect(isDragging) {
         if (!isDragging) {
@@ -2858,7 +2554,6 @@ fun RealisticCompanionOverlay(
             val centerRootX = overlayRootOffset.x + posX + mascotBoxWidthPx * 0.5f
             val centerRootY = overlayRootOffset.y + posY + mascotBoxHeightPx * 0.52f
 
-            // Auto-scroll the song list if user drags mascot near top or bottom edge
             if (centerRootY < screenHeightPx * 0.22f) {
                 MascotSongDropTargetRegistry.requestAutoScroll(-16f)
             } else if (centerRootY > screenHeightPx * 0.76f) {
@@ -2881,7 +2576,6 @@ fun RealisticCompanionOverlay(
                 MascotSongDropTargetRegistry.holdProgress = (hoveredSongElapsedMs / 2000f).coerceIn(0f, 1f)
 
                 if (hoveredSongElapsedMs >= 2000L) {
-                    // 2.0 Seconds Reached! Haptic pulse + Drop mascot with multi-bounce gravity + Auto-Play Song!
                     try {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     } catch (_: Exception) {}
@@ -2900,12 +2594,12 @@ fun RealisticCompanionOverlay(
                     MascotSongDropTargetRegistry.hoveredTrackTitle = ""
                     MascotSongDropTargetRegistry.holdProgress = 0f
 
-                    // Release drag so mascot drops to the floor with 5-7 realistic bounces!
                     isDragging = false
                     bounceCount = 0
                     velY = -16f
                     velX = 0f
                     happyJumpTicks = 40
+                    physicsWakeToken++
                     break
                 }
             } else {
@@ -2920,7 +2614,8 @@ fun RealisticCompanionOverlay(
     }
 
     // =========================================================================
-    // MULTI-BOUNCE GRAVITY PHYSICS (5 TO 7 BOUNCES) & BEAT-SYNCED DANCE LOOP
+    // MULTI-BOUNCE GRAVITY PHYSICS (5 TO 7 BOUNCES) & FLUID MULTI-STEP DANCE LOOP
+    // 0% IDLE CPU: suspends cleanly once paused and settled on the floor!
     // =========================================================================
     LaunchedEffect(
         isDragging,
@@ -2931,17 +2626,40 @@ fun RealisticCompanionOverlay(
         floorY,
         screenWidthPx,
         mascotSizePx,
-        showMascotFeatureHub
+        showMascotFeatureHub,
+        physicsWakeToken
     ) {
         val gravityAccel = 0.85f
         val bounceDamping = 0.76f
 
         while (true) {
-            delay(20L)
-            val airborneNow = posY < floorY - 1.0f || abs(velY) > 0.6f
+            val airborneNow = posY < floorY - 1.5f || abs(velY) > 0.6f || abs(velX) > 0.6f
             val hasActiveStunt = happyJumpTicks > 0 || flip360Ticks > 0 || landingSquashTicks > 0 || airborneNow || isDragging
+            if (!isMusicPlaying && !hasActiveStunt && danceTransition <= 0.005f) {
+                danceTransition = 0f
+                isActivelyWalking = false
+                posY = floorY
+                velY = 0f
+                velX = 0f
+                bounceCount = 0
+                break
+            }
+
+            delay(20L)
             val speedFactor = animSpeedMultiplier.coerceIn(0.6f, 2.2f)
-            animTick += if (isMusicPlaying || hasActiveStunt) 0.26f * speedFactor else 0.14f * speedFactor
+
+            // Fluid multi-step transition into/out of dancing when playback starts/stops
+            if (isMusicPlaying || happyJumpTicks > 0) {
+                danceTransition = (danceTransition + 0.055f).coerceAtMost(1f)
+            } else {
+                danceTransition = (danceTransition - 0.18f).coerceAtLeast(0f)
+            }
+
+            // Advance animation clock ONLY when playing, transitioning, or airborne/lifted
+            if (isMusicPlaying || hasActiveStunt || danceTransition > 0.005f) {
+                val activeRate = if (isMusicPlaying || hasActiveStunt) 0.25f else 0.16f * danceTransition
+                animTick += activeRate * speedFactor
+            }
 
             if (happyJumpTicks > 0) happyJumpTicks--
             if (flip360Ticks > 0) flip360Ticks--
@@ -2950,20 +2668,18 @@ fun RealisticCompanionOverlay(
             if (!isDragging) {
                 if (airborneNow) {
                     isActivelyWalking = true
-                    walkStridePhase += 0.44f * speedFactor
+                    walkStridePhase += 0.42f * speedFactor
                     velY += gravityAccel
                     posX += velX
                     posY += velY
 
-                    // Top ceiling bounce
                     if (posY <= 18f) {
                         posY = 18f
                         velY = abs(velY) * bounceDamping
                         velX *= 0.92f
                     }
 
-                    // Left & Right screen edge bounces when thrown diagonally
-                    val maxX = (screenWidthPx - mascotSizePx - 6f).coerceAtLeast(16f)
+                    val maxX = (screenWidthPx - mascotBoxWidthPx - 6f).coerceAtLeast(16f)
                     if (posX <= 6f) {
                         posX = 6f
                         velX = abs(velX) * bounceDamping
@@ -2974,7 +2690,6 @@ fun RealisticCompanionOverlay(
                         walkDir = -1f
                     }
 
-                    // Bottom floor impact -> 5 to 7 realistic bounces with decreasing height (76% restitution)
                     if (posY >= floorY) {
                         posY = floorY
                         landingSquashTicks = 11
@@ -3000,37 +2715,33 @@ fun RealisticCompanionOverlay(
                     velX = 0f
                     bounceCount = 0
 
-                    // Always walk left-to-right and right-to-left across the screen ("chalta Hua ho idhar se Udhar Hota Hua")
-                    val shouldPatrol = (autoWalkEnabled || danceMode == MascotDanceMode.PATROL_WALK) && !showMascotFeatureHub
+                    val shouldPatrol = isMusicPlaying && (danceMode == MascotDanceMode.PATROL_WALK) && !showMascotFeatureHub
                     if (shouldPatrol) {
                         isActivelyWalking = true
-                        val baseWalkSpeed = when {
-                            danceMode == MascotDanceMode.PATROL_WALK -> 2.65f
-                            isMusicPlaying -> 2.15f
-                            else -> 1.75f
-                        }
-                        val walkStep = baseWalkSpeed * speedFactor
+                        val walkStep = 2.25f * speedFactor * danceTransition
                         posX += walkDir * walkStep
-                        walkStridePhase += (if (isMusicPlaying) 0.56f else 0.46f) * speedFactor
+                        walkStridePhase += 0.52f * speedFactor * danceTransition
                         val minX = 10f
-                        val maxX = (screenWidthPx - mascotSizePx - 10f).coerceAtLeast(20f)
+                        val maxX = (screenWidthPx - mascotBoxWidthPx - 10f).coerceAtLeast(20f)
                         if (posX >= maxX) {
                             posX = maxX
                             walkDir = -1f
-                            happyJumpTicks = 18
                         } else if (posX <= minX) {
                             posX = minX
                             walkDir = 1f
-                            happyJumpTicks = 18
                         }
+                    } else if (isMusicPlaying || danceTransition > 0.01f) {
+                        isActivelyWalking = isMusicPlaying
+                        walkStridePhase += 0.45f * speedFactor * danceTransition
                     } else {
                         isActivelyWalking = false
-                        walkStridePhase += 0.36f * speedFactor
                     }
                 }
             }
         }
     }
+
+    val isCurrentlyLifted = isDragging || (posY < floorY - 14f)
 
     Box(
         modifier = Modifier
@@ -3042,7 +2753,7 @@ fun RealisticCompanionOverlay(
             }
     ) {
         // =========================================================================
-        // 1. 100% REAL JUMPING ("KUDNE WALA") MULTI-JOINTED 3D VOLUMETRIC GUDDA
+        // 1. 100% CLEAN, UNOBSTRUCTED 3D PLUSH MASCOT ("SIRF GUDDA HONA CHAHIYE AUR KUCH NAHI")
         // =========================================================================
         Box(
             modifier = Modifier
@@ -3052,19 +2763,17 @@ fun RealisticCompanionOverlay(
                         posY.roundToInt()
                     )
                 }
-                .size(width = mascotSizeDp + 30.dp, height = mascotSizeDp + 48.dp)
+                .size(width = effectiveMascotSizeDp + 16.dp, height = effectiveMascotSizeDp + 20.dp)
                 .pointerInput(isMusicPlaying, breed, danceMode) {
                     detectTapGestures(
                         onTap = {
-                            // Launch into a 6-bounce gravity jump stunt!
                             bounceCount = 0
-                            velY = -21f
-                            velX = walkDir * 2.8f
-                            happyJumpTicks = 44
-                            flip360Ticks = 28
+                            velY = -19.5f
+                            velX = 0f
+                            happyJumpTicks = 36
+                            physicsWakeToken++
                         },
                         onDoubleTap = {
-                            // Requirement D: Double-tap directly on Puppy/Teddy Bear stops/pauses music!
                             try {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             } catch (_: Exception) {}
@@ -3080,8 +2789,9 @@ fun RealisticCompanionOverlay(
                                 ).show()
                             } else {
                                 bounceCount = 0
-                                velY = -20f
-                                happyJumpTicks = 44
+                                velY = -18f
+                                happyJumpTicks = 36
+                                physicsWakeToken++
                                 Toast.makeText(
                                     context,
                                     "🎵 Music Resumed by ${breed.displayName}",
@@ -3101,23 +2811,24 @@ fun RealisticCompanionOverlay(
                             bounceCount = 0
                             velX = 0f
                             velY = 0f
-                            happyJumpTicks = 22
+                            physicsWakeToken++
                         },
                         onDragEnd = {
                             isDragging = false
                             bounceCount = 0
-                            // Ensure lifting & releasing always triggers 5 to 7 realistic floor bounces!
                             if (posY < floorY - 8f && abs(velY) < 6f) {
                                 velY = -10.5f
                             }
+                            physicsWakeToken++
                         },
                         onDragCancel = {
                             isDragging = false
                             bounceCount = 0
+                            physicsWakeToken++
                         },
                         onDrag = { change, dragAmount ->
                             change.consume()
-                            posX = (posX + dragAmount.x).coerceIn(0f, (screenWidthPx - mascotSizePx).coerceAtLeast(1f))
+                            posX = (posX + dragAmount.x).coerceIn(0f, (screenWidthPx - mascotBoxWidthPx).coerceAtLeast(1f))
                             posY = (posY + dragAmount.y).coerceIn(18f, floorY)
                             velX = (dragAmount.x * 0.85f).coerceIn(-30f, 30f)
                             velY = (dragAmount.y * 1.15f).coerceIn(-36f, 28f)
@@ -3126,22 +2837,14 @@ fun RealisticCompanionOverlay(
                 },
             contentAlignment = Alignment.Center
         ) {
-            // =========================================================================
-            // A. FLOATING MUSICAL NOTES (♪ ♫) & GLOWING 2-SECOND SONG HOLD RING
-            // =========================================================================
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val t = animTick
-                val w = size.width
-                val h = size.height
-                val pulse = (sin(t * 3.2f) + 1f) * 0.5f
-                val primaryAura = auraEffect.primaryColor
-                val secondaryAura = auraEffect.secondaryColor
-
-                // Glowing 2-Second Drag & Hold Circular Progress Ring (0% -> 100%)
-                if (isDragging && songHoldProgress > 0.01f) {
-                    val ringStroke = 5.5.dp.toPx()
-                    val ringDiameter = min(w, h) * 0.90f
-                    val ringTopLeft = Offset((w - ringDiameter) * 0.5f, (h - ringDiameter) * 0.52f)
+            // ONLY draw the 2-second hold progress ring when actively holding the mascot over a song/video row
+            if (isDragging && songHoldProgress > 0.01f) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+                    val ringStroke = 5.dp.toPx()
+                    val ringDiameter = min(w, h) * 0.92f
+                    val ringTopLeft = Offset((w - ringDiameter) * 0.5f, (h - ringDiameter) * 0.50f)
                     drawArc(
                         color = Color.White.copy(alpha = 0.24f),
                         startAngle = -90f,
@@ -3163,77 +2866,28 @@ fun RealisticCompanionOverlay(
                         style = Stroke(width = ringStroke, cap = StrokeCap.Round)
                     )
                 }
-
-                // Floating Musical Notes (♪ ♫) & Sonic Waves when music is actively playing!
-                if (isMusicPlaying || happyJumpTicks > 0) {
-                    val waveExpand = pulse * (w * 0.065f)
-                    drawArc(
-                        color = primaryAura.copy(alpha = 0.90f),
-                        startAngle = 140f,
-                        sweepAngle = 80f,
-                        useCenter = false,
-                        topLeft = Offset(w * 0.02f - waveExpand, h * 0.22f),
-                        size = Size(w * 0.22f, h * 0.26f),
-                        style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                    drawArc(
-                        color = secondaryAura.copy(alpha = 0.90f),
-                        startAngle = -40f,
-                        sweepAngle = 80f,
-                        useCenter = false,
-                        topLeft = Offset(w * 0.76f + waveExpand, h * 0.22f),
-                        size = Size(w * 0.22f, h * 0.26f),
-                        style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
-                    )
-
-                    val p1Y = h * (0.34f - ((t * 0.06f) % 0.26f))
-                    val p2Y = h * (0.40f - (((t + 1.4f) * 0.06f) % 0.26f))
-                    val p3Y = h * (0.26f - (((t + 0.8f) * 0.055f) % 0.22f))
-
-                    when {
-                        auraEffect == MascotAuraEffect.HEART_SHOWER || danceMode == MascotDanceMode.HEART_DISCO -> {
-                            drawFloatingHeart(center = Offset(w * 0.10f, p1Y), size = w * 0.075f, color = Color(0xFFFF4081))
-                            drawFloatingHeart(center = Offset(w * 0.90f, p2Y), size = w * 0.075f, color = Color(0xFFFF80AB))
-                            drawFloatingHeart(center = Offset(w * (0.5f + cos(t) * 0.30f), p3Y), size = w * 0.065f, color = Color(0xFFFF1744))
-                        }
-                        auraEffect == MascotAuraEffect.STAR_GALAXY -> {
-                            drawSparkleStar(center = Offset(w * 0.10f, p1Y), radius = w * 0.055f, color = Color(0xFFFFD54F))
-                            drawSparkleStar(center = Offset(w * 0.90f, p2Y), radius = w * 0.055f, color = Color(0xFFFFAB40))
-                            drawSparkleStar(center = Offset(w * (0.5f + cos(t) * 0.32f), p3Y), radius = w * 0.048f, color = Color(0xFF00E5FF))
-                        }
-                        else -> {
-                            drawFloatingMusicNote(center = Offset(w * 0.09f, p1Y), size = w * 0.054f, color = primaryAura)
-                            drawFloatingMusicNote(center = Offset(w * 0.91f, p2Y), size = w * 0.054f, color = secondaryAura)
-                            drawFloatingMusicNote(center = Offset(w * (0.5f + cos(t) * 0.32f), p3Y), size = w * 0.048f, color = Color(0xFFFFD54F))
-                        }
-                    }
-                }
             }
 
-            // =========================================================================
-            // B. 100% REAL-TIME 3D VOLUMETRIC MULTI-JOINTED JUMPING CHARACTER ("GUDDA")
-            // =========================================================================
+            // 100% CLEAN 3D PLUSH MASCOT ("SIRF GUDDA HONA CHAHIYE AUR KUCH NAHI")
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = 14.dp, bottom = 2.dp, start = 2.dp, end = 2.dp)
                     .graphicsLayer {
                         transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0.85f)
                         val cartwheelZ = if (flip360Ticks > 0) {
                             (1f - (flip360Ticks / 28f).coerceIn(0f, 1f)) * 360f
                         } else 0f
                         rotationZ = cartwheelZ
-                        // Extra squash-and-stretch on every floor bounce impact!
                         val impactFactor = if (landingSquashTicks > 0) {
-                            sin((landingSquashTicks / 11f) * 3.1415927f) * 0.22f
+                            sin((landingSquashTicks / 11f) * 3.1415927f) * 0.16f
                         } else 0f
                         scaleX = 1f + impactFactor
-                        scaleY = 1f - impactFactor * 0.85f
+                        scaleY = 1f - impactFactor * 0.80f
                     }
             ) {
                 DeformingJumping3DPlushMascot(
                     breed = breed,
-                    parts = articulatedParts,
+                    parts = null,
                     animTick = animTick,
                     walkStridePhase = walkStridePhase,
                     walkDir = walkDir,
@@ -3245,100 +2899,9 @@ fun RealisticCompanionOverlay(
                     auraColor = auraEffect.primaryColor,
                     customFurColor = activeFurColorPreset.furColor,
                     drawInternalFloorShadow = false,
+                    isLiftedInAir = isCurrentlyLifted,
+                    danceTransition = danceTransition,
                     modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            // =========================================================================
-            // C. ROYAL CROWN ACCENT (Clean 3D-compatible)
-            // =========================================================================
-            if (breed.wearsCrown) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val t = animTick
-                    val w = size.width
-                    val h = size.height
-                    val crownBob = if (isMusicPlaying || happyJumpTicks > 0) -abs(sin(t * 3.6f)) * (h * 0.16f) else 0f
-                    val crownPath = Path().apply {
-                        moveTo(w * 0.37f, h * 0.24f + crownBob)
-                        lineTo(w * 0.35f, h * 0.15f + crownBob)
-                        lineTo(w * 0.44f, h * 0.20f + crownBob)
-                        lineTo(w * 0.50f, h * 0.13f + crownBob)
-                        lineTo(w * 0.56f, h * 0.20f + crownBob)
-                        lineTo(w * 0.65f, h * 0.15f + crownBob)
-                        lineTo(w * 0.63f, h * 0.24f + crownBob)
-                        close()
-                    }
-                    drawPath(crownPath, color = Color(0xFFFFD700))
-                    drawPath(crownPath, color = Color(0xFFFF6F00), style = Stroke(width = 1.2.dp.toPx()))
-                }
-            }
-
-            // =========================================================================
-            // D. INTELLIGENT CONTEXT-AWARE DJ SPEECH BUBBLE / 2s SONG HOLD BADGE
-            // =========================================================================
-            val intelligentBubbleMessage = remember(
-                isDragging,
-                hoveredSong?.id,
-                 (songHoldProgress * 20).toInt(),
-                bounceCount,
-                isMusicPlaying,
-                nowPlayingTitle,
-                danceMode,
-                breed,
-                (animTick / 16f).toInt(),
-                happyJumpTicks > 0
-            ) {
-                when {
-                    isDragging && hoveredSong != null -> {
-                        "🎵 Hold ${(songHoldProgress * 100).toInt()}%: ${hoveredSong!!.cleanTitle.take(12)}"
-                    }
-                    bounceCount > 0 -> "🏀 Bounce #$bounceCount • ${breed.hatBadgeText}"
-                    happyJumpTicks > 15 -> "🔥 ${breed.hatBadgeText} Jump! 🎛️"
-                    isMusicPlaying -> {
-                        val phaseIdx = ((animTick / 16f).toInt().coerceAtLeast(0)) % 4
-                        when (phaseIdx) {
-                            0 -> if (nowPlayingTitle.isNotBlank()) "♪ ${nowPlayingTitle.take(15)} ♫" else "${danceMode.shortBadge} • 🎛️ Studio"
-                            1 -> "🕺 ${breed.hatBadgeText} Dancing! 🎛️"
-                            2 -> "⏸️ 2x Tap = Pause Music"
-                            else -> "🎛️ Tap Here for 21 Mascots"
-                        }
-                    }
-                    else -> "🐾 Idle • 🎛️ Studio (2x Tap Play)"
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .clip(RoundedCornerShape(50))
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(Color(0xEB0A101D), Color(0xEB131F36))
-                        )
-                    )
-                    .border(
-                        1.2.dp,
-                        when {
-                            isDragging && hoveredSong != null -> Color(0xFF00E676)
-                            isMusicPlaying -> breed.headphoneAccent
-                            else -> danceMode.accentColor.copy(alpha = 0.85f)
-                        },
-                        RoundedCornerShape(50)
-                    )
-                    .clickable { showMascotFeatureHub = !showMascotFeatureHub }
-                    .padding(horizontal = 8.dp, vertical = 2.5.dp)
-            ) {
-                Text(
-                    text = intelligentBubbleMessage,
-                    color = when {
-                        isDragging && hoveredSong != null -> Color(0xFF00E676)
-                        isMusicPlaying -> breed.headphoneAccent
-                        else -> danceMode.accentColor
-                    },
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 8.5.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -3720,6 +3283,7 @@ fun RealisticCompanionOverlay(
                 }
             }
         }
+    }
     }
 }
 

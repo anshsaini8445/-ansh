@@ -186,7 +186,8 @@ fun VideoPlayerView(
     onBackgroundAudioPlay: () -> Unit = {},
     onBackgroundAudioPlayWithPosition: ((Long, Float) -> Unit)? = null,
     onMinimizeToFloatingMiniPlayer: ((Long) -> Unit)? = null,
-    onLockInVault: (() -> Unit)? = null
+    onLockInVault: (() -> Unit)? = null,
+    onPlayingStateChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val hostView = LocalView.current
@@ -197,9 +198,16 @@ fun VideoPlayerView(
 
     var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
     var mediaPlayerRef by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+    var rawFallbackMediaPlayerRef by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var loudnessEnhancer by remember { mutableStateOf<LoudnessEnhancer?>(null) }
 
     var isPlaying by remember { mutableStateOf(true) }
+    LaunchedEffect(isPlaying) {
+        onPlayingStateChanged(isPlaying)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onPlayingStateChanged(false) }
+    }
     var currentPosMs by remember(videoPath) { mutableStateOf(initialPositionMs) }
     var latestKnownPositionMs by remember(videoPath) { mutableStateOf(initialPositionMs) }
     var wasPlayingBeforeStop by remember(videoPath) { mutableStateOf(true) }
@@ -212,7 +220,11 @@ fun VideoPlayerView(
     var brightnessPercent by remember {
         mutableStateOf(prefs.getInt("saved_brightness_pct", 75).coerceIn(2, 100))
     }
-    var volumePercent by remember { mutableStateOf(100) } // 0% to 200% (Hardware LoudnessEnhancer above 100%)
+    var volumePercent by remember {
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        mutableStateOf(((curVol * 100f) / maxVol).toInt().coerceIn(0, 100))
+    } // 0% to 200% (Hardware LoudnessEnhancer above 100%)
     var zoomScale by remember { mutableStateOf(1.0f) } // 0.5f (50%) to 6.0f (600%)
     var playbackSpeed by remember(videoPath) { mutableStateOf(initialSpeed.coerceIn(0.25f, 4.0f)) }
     var isLongPressSpeedActive by remember { mutableStateOf(false) }
@@ -268,7 +280,11 @@ fun VideoPlayerView(
     var videoSleepTimerTotalMinutes by remember { mutableStateOf(0) }
     var videoSleepRemainingSeconds by remember { mutableStateOf(0) }
     var aspectRatioMode by remember { mutableStateOf("Original Fit") }
-    var orientationLabel by remember { mutableStateOf("Auto") }
+    val currentConfig = androidx.compose.ui.platform.LocalConfiguration.current
+    val isCurrentlyLandscape = currentConfig.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    var orientationLabel by remember(isCurrentlyLandscape) {
+        mutableStateOf(if (isCurrentlyLandscape) "Landscape" else "Portrait")
+    }
     var nativeVideoWidth by remember { mutableStateOf(1920) }
     var nativeVideoHeight by remember { mutableStateOf(1080) }
     var isSoftwareFallbackActive by remember(videoPath) { mutableStateOf(false) }
@@ -278,14 +294,13 @@ fun VideoPlayerView(
         com.example.data.scanner.DeepMediaScanner.isFileNamePartialDownload(videoPath, f)
     }
     var partialPlayableDurationMs by remember(videoPath) { mutableStateOf(0L) }
-    var partialLiveBytes by remember(videoPath) {
-        mutableStateOf(
-            try {
-                if (!videoPath.startsWith("content://") && !videoPath.startsWith("http", true)) File(videoPath).length() else 0L
-            } catch (_: Exception) {
-                0L
+    var partialLiveBytes by remember(videoPath) { mutableStateOf(0L) }
+    LaunchedEffect(videoPath) {
+        if (!videoPath.startsWith("content://") && !videoPath.startsWith("http", true)) {
+            partialLiveBytes = withContext(Dispatchers.IO) {
+                runCatching { File(videoPath).length() }.getOrDefault(0L)
             }
-        )
+        }
     }
     val isNetworkStream = remember(videoPath) {
         videoPath.startsWith("http://", ignoreCase = true) ||
@@ -453,11 +468,21 @@ fun VideoPlayerView(
     }
 
     // Auto-hide BOTH system status bar AND 3-button navigation bar during video playback & Screen Lock
-    DisposableEffect(showControls, isScreenLocked) {
+    DisposableEffect(showControls, isScreenLocked, isCurrentlyLandscape) {
         fun applyImmersiveSystemBars(hideAllBars: Boolean) {
             try {
                 val activity = context as? Activity
                 val window = activity?.window ?: return
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    window.attributes = window.attributes.apply {
+                        layoutInDisplayCutoutMode =
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                            } else {
+                                android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                            }
+                    }
+                }
                 val controller = androidx.core.view.WindowCompat.getInsetsController(window, hostView)
                 controller.isAppearanceLightStatusBars = false
                 controller.isAppearanceLightNavigationBars = false
@@ -465,25 +490,29 @@ fun VideoPlayerView(
                     androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 if (hideAllBars) {
                     controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-                    @Suppress("DEPRECATION")
-                    window.decorView.systemUiVisibility = (
-                        android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
-                        )
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                        @Suppress("DEPRECATION")
+                        window.decorView.systemUiVisibility = (
+                            android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                            )
+                    }
                 } else {
                     // Keep bottom 3-button system navigation bar hidden even while controls show
                     controller.hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
-                    @Suppress("DEPRECATION")
-                    window.decorView.systemUiVisibility = (
-                        android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                        )
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                        @Suppress("DEPRECATION")
+                        window.decorView.systemUiVisibility = (
+                            android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            )
+                    }
                 }
             } catch (_: Exception) {
             }
@@ -494,28 +523,71 @@ fun VideoPlayerView(
         onDispose { }
     }
 
-    // Restore system status & navigation bars when exiting VideoPlayerView
-    DisposableEffect(Unit) {
+    // Keep screen awake while video is actively playing (covers software fallback & standard mode)
+    DisposableEffect(isPlaying) {
+        val activity = context as? Activity
+        try {
+            if (isPlaying) {
+                activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            } else {
+                activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        } catch (_: Exception) {
+        }
         onDispose {
             try {
-                val activity = context as? Activity
+                activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    // Save original window brightness and restore system bars & brightness when exiting VideoPlayerView
+    DisposableEffect(Unit) {
+        val activity = context as? Activity
+        val originalWindowBrightness = try {
+            activity?.window?.attributes?.screenBrightness
+                ?: android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        } catch (_: Exception) {
+            android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        onDispose {
+            try {
                 val window = activity?.window
                 if (window != null) {
+                    val lp = window.attributes
+                    lp.screenBrightness = originalWindowBrightness
+                    window.attributes = lp
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     val controller = androidx.core.view.WindowCompat.getInsetsController(window, hostView)
                     controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-                    @Suppress("DEPRECATION")
-                    window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                        @Suppress("DEPRECATION")
+                        window.decorView.systemUiVisibility = (
+                            android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            )
+                    }
+                    window.decorView.requestApplyInsets()
                 }
             } catch (_: Exception) {
             }
         }
     }
 
-    // 10-Second Auto-Hide Controls Timer (stays visible for a full 10 seconds after any interaction)
-    LaunchedEffect(showControls, lastInteractionTime, isPlaying, isScreenLocked) {
-        if (showControls && (isPlaying || isScreenLocked)) {
+    val isAnyOverlayDialogOpen = showThreeDotSheet ||
+        showAudioTrackDialog ||
+        showSubtitleDialog ||
+        showFilterDialog ||
+        showQueueDialog ||
+        showMediaInfoDialog ||
+        showSpeedDialog
+
+    // 10-Second Auto-Hide Controls Timer (pauses while 3-Dot Pro Tools or any tool dialog is open)
+    LaunchedEffect(showControls, lastInteractionTime, isPlaying, isScreenLocked, isAnyOverlayDialogOpen) {
+        if (showControls && (isPlaying || isScreenLocked) && !isAnyOverlayDialogOpen) {
             delay(CONTROLS_AUTO_HIDE_DELAY_MS)
-            if (System.currentTimeMillis() - lastInteractionTime >= CONTROLS_AUTO_HIDE_DELAY_MS) {
+            if (System.currentTimeMillis() - lastInteractionTime >= CONTROLS_AUTO_HIDE_DELAY_MS && !isAnyOverlayDialogOpen) {
                 showControls = false
             }
         }
@@ -539,15 +611,42 @@ fun VideoPlayerView(
     DisposableEffect(videoPath, allVideos) {
         val delegate = object : MediaNotificationHelper.ControlDelegate {
             override fun onNotificationPlayPause() {
-                videoViewRef?.let { vv ->
-                    if (vv.isPlaying) {
-                        vv.pause()
-                        isPlaying = false
-                    } else {
-                        vv.start()
+                if (isPlaying) onNotificationPause() else onNotificationPlay()
+            }
+
+            override fun onNotificationPlay() {
+                val vv = videoViewRef
+                val raw = rawFallbackMediaPlayerRef
+                try {
+                    if (isSoftwareFallbackActive) {
+                        isPlaying = true
+                    } else if (raw != null) {
+                        if (!raw.isPlaying) raw.start()
+                        isPlaying = true
+                    } else if (vv != null) {
+                        if (!vv.isPlaying) vv.start()
                         isPlaying = true
                     }
-                    postComposeVideoNotification(isPlaying, vv.currentPosition.toLong())
+                    postComposeVideoNotification(isPlaying, currentPosMs)
+                } catch (_: Exception) {
+                }
+            }
+
+            override fun onNotificationPause() {
+                val vv = videoViewRef
+                val raw = rawFallbackMediaPlayerRef
+                try {
+                    if (isSoftwareFallbackActive) {
+                        isPlaying = false
+                    } else if (raw != null) {
+                        if (raw.isPlaying) raw.pause()
+                        isPlaying = false
+                    } else if (vv != null) {
+                        if (vv.isPlaying) vv.pause()
+                        isPlaying = false
+                    }
+                    postComposeVideoNotification(isPlaying, currentPosMs)
+                } catch (_: Exception) {
                 }
             }
 
@@ -603,9 +702,27 @@ fun VideoPlayerView(
         MediaNotificationHelper.setControlDelegate(delegate)
         postComposeVideoNotification(isPlaying, currentPosMs)
         onDispose {
+            // If we are still the active delegate (not handed off to Background Audio), dismiss the orphan video notification!
             if (MediaNotificationHelper.getControlDelegate() === delegate) {
                 MediaNotificationHelper.setControlDelegate(null)
+                MediaNotificationHelper.cancelNotification(context)
             }
+            if (currentPosMs > 0L) {
+                onProgressUpdate(currentPosMs)
+            }
+            try {
+                loudnessEnhancer?.release()
+            } catch (_: Exception) {
+            }
+            loudnessEnhancer = null
+            try {
+                rawFallbackMediaPlayerRef?.let { raw ->
+                    if (raw.isPlaying) raw.stop()
+                    raw.release()
+                }
+            } catch (_: Exception) {
+            }
+            rawFallbackMediaPlayerRef = null
             try {
                 mediaPlayerRef?.let { mp ->
                     if (videoViewRef?.isPlaying != true && mp.isPlaying) {
@@ -1058,10 +1175,25 @@ fun VideoPlayerView(
             )
     ) {
         // --- HARDWARE FULL-SCREEN VIDEO SURFACE (Supports standard & Pending/Partial .crdownload/.part movies via direct FileDescriptor) ---
+        val configOrientation = currentConfig.orientation
+        val configWidthDp = currentConfig.screenWidthDp
+        val configHeightDp = currentConfig.screenHeightDp
         key(videoPath) {
             AndroidView(
                 factory = { ctx ->
-                    android.widget.FrameLayout(ctx).apply {
+                    object : android.widget.FrameLayout(ctx) {
+                        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                            super.onSizeChanged(w, h, oldw, oldh)
+                            if (w > 0 && h > 0 && (w != oldw || h != oldh)) {
+                                val child = getChildAt(0) as? FullScreenStudioVideoView
+                                child?.onParentBoundsChanged(w, h)
+                                post {
+                                    child?.onParentBoundsChanged(width, height)
+                                    requestLayout()
+                                }
+                            }
+                        }
+                    }.apply {
                         setBackgroundColor(android.graphics.Color.BLACK)
                         val customVideoView = FullScreenStudioVideoView(ctx).apply {
                             videoViewRef = this
@@ -1081,6 +1213,9 @@ fun VideoPlayerView(
                                         if (safeW >= 320 && safeH >= 180) {
                                             holder.setFixedSize(safeW, safeH)
                                         }
+                                    } else {
+                                        // Allow SurfaceView buffer to follow the rotated layout cleanly (fixes half-screen cut on rotation)
+                                        holder.setSizeFromLayout()
                                     }
                                 } catch (_: Exception) {
                                 }
@@ -1148,6 +1283,7 @@ fun VideoPlayerView(
                                 applyHardwarePlaybackSpeed(mp)
                                 isPlaying = true
                                 try {
+                                    loudnessEnhancer?.release()
                                     loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId)
                                     if (volumePercent > 100) {
                                         loudnessEnhancer?.setTargetGain((volumePercent - 100) * 18)
@@ -1158,6 +1294,11 @@ fun VideoPlayerView(
                             }
 
                             fun attachAndPrepareRawPlayer(rawMp: android.media.MediaPlayer) {
+                                try {
+                                    rawFallbackMediaPlayerRef?.release()
+                                } catch (_: Exception) {
+                                }
+                                rawFallbackMediaPlayerRef = rawMp
                                 fun bindAndPrepare() {
                                     try {
                                         applySafeSurfaceBufferCap(1920, 1080)
@@ -1241,16 +1382,20 @@ fun VideoPlayerView(
                                         }
                                     }
                                     if (pfd != null) {
-                                        val len = if (!videoPath.startsWith("content://")) File(videoPath).length() else -1L
-                                        if (len > 0L) {
-                                            rawMp.setDataSource(pfd.fileDescriptor, 0L, len)
-                                        } else {
-                                            rawMp.setDataSource(pfd.fileDescriptor)
+                                        try {
+                                            val len = pfd.statSize
+                                            if (len > 0L) {
+                                                rawMp.setDataSource(pfd.fileDescriptor, 0L, len)
+                                            } else {
+                                                rawMp.setDataSource(pfd.fileDescriptor)
+                                            }
+                                        } finally {
+                                            try { pfd.close() } catch (_: Exception) {}
                                         }
-                                        pfd.close()
                                         attachAndPrepareRawPlayer(rawMp)
                                         true
                                     } else {
+                                        try { rawMp.release() } catch (_: Exception) {}
                                         isSoftwareFallbackActive = true
                                         isPlaying = true
                                         false
@@ -1315,8 +1460,18 @@ fun VideoPlayerView(
                 },
                 update = { frameLayout ->
                     val vv = frameLayout.getChildAt(0) as? FullScreenStudioVideoView
-                    vv?.updateVideoGeometry(nativeVideoWidth, nativeVideoHeight, aspectRatioMode, zoomScale)
+                    val orientationKey = configOrientation * 100000 + configWidthDp * 100 + configHeightDp
+                    vv?.updateVideoGeometry(
+                        w = nativeVideoWidth,
+                        h = nativeVideoHeight,
+                        mode = aspectRatioMode,
+                        scale = zoomScale,
+                        orientationSignature = orientationKey
+                    )
                     vv?.scaleX = if (isMirrorFlipped) -1f else 1f
+                    frameLayout.post {
+                        vv?.onParentBoundsChanged(frameLayout.width, frameLayout.height)
+                    }
                 },
                 modifier = Modifier
                     .fillMaxSize()
@@ -1943,9 +2098,9 @@ fun VideoPlayerView(
                         },
                         onRotateOrientation = {
                             val activity = context as? Activity
-                            if (orientationLabel == "Landscape") {
+                            if (isCurrentlyLandscape) {
                                 orientationLabel = "Portrait"
-                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                             } else {
                                 orientationLabel = "Landscape"
                                 activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -2512,9 +2667,9 @@ fun VideoPlayerView(
                         },
                         Triple(Icons.Default.ScreenRotation, "Screen Rotation", orientationLabel) to {
                             val activity = context as? Activity
-                            if (orientationLabel == "Landscape") {
+                            if (isCurrentlyLandscape) {
                                 orientationLabel = "Portrait"
-                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                             } else {
                                 orientationLabel = "Landscape"
                                 activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -2880,25 +3035,61 @@ fun VideoPlayerView(
 private class FullScreenStudioVideoView(context: Context) : VideoView(context) {
     private var videoW: Int = 1920
     private var videoH: Int = 1080
-    private var aspectMode: String = "Full Screen"
+    private var aspectMode: String = "Original Fit"
     private var pinchScale: Float = 1.0f
+    private var lastOrientationSignature: Int = 0
+    private var containerBoundsW: Int = 0
+    private var containerBoundsH: Int = 0
 
-    fun updateVideoGeometry(w: Int, h: Int, mode: String, scale: Float) {
+    fun onParentBoundsChanged(parentW: Int, parentH: Int) {
+        if (parentW <= 0 || parentH <= 0) return
+        if (containerBoundsW != parentW || containerBoundsH != parentH) {
+            containerBoundsW = parentW
+            containerBoundsH = parentH
+            if (videoW <= 1920 && videoH <= 1920) {
+                try {
+                    holder.setSizeFromLayout()
+                } catch (_: Exception) {
+                }
+            }
+            requestLayout()
+            invalidate()
+        }
+    }
+
+    fun updateVideoGeometry(
+        w: Int,
+        h: Int,
+        mode: String,
+        scale: Float,
+        orientationSignature: Int = lastOrientationSignature
+    ) {
         val validW = if (w > 0) w else 1920
         val validH = if (h > 0) h else 1080
-        if (videoW != validW || videoH != validH || aspectMode != mode || pinchScale != scale) {
+        val clampedScale = scale.coerceIn(0.5f, 6.0f)
+        val orientationChanged = orientationSignature != lastOrientationSignature
+        if (videoW != validW || videoH != validH || aspectMode != mode || pinchScale != clampedScale || orientationChanged) {
             videoW = validW
             videoH = validH
             aspectMode = mode
-            pinchScale = scale.coerceIn(0.5f, 6.0f)
+            pinchScale = clampedScale
+            lastOrientationSignature = orientationSignature
+            if (orientationChanged && validW <= 1920 && validH <= 1920) {
+                try {
+                    holder.setSizeFromLayout()
+                } catch (_: Exception) {
+                }
+            }
             requestLayout()
             invalidate()
         }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val parentWidth = MeasureSpec.getSize(widthMeasureSpec).coerceAtLeast(1)
-        val parentHeight = MeasureSpec.getSize(heightMeasureSpec).coerceAtLeast(1)
+        val specW = MeasureSpec.getSize(widthMeasureSpec)
+        val specH = MeasureSpec.getSize(heightMeasureSpec)
+        val parentWidth = (if (specW > 0) specW else containerBoundsW).coerceAtLeast(1)
+        val parentHeight = (if (specH > 0) specH else containerBoundsH).coerceAtLeast(1)
 
         var measuredW = parentWidth
         var measuredH = parentHeight
@@ -2934,7 +3125,7 @@ private class FullScreenStudioVideoView(context: Context) : VideoView(context) {
             }
             "Stretch 16:9" -> {
                 val targetRatio = 16f / 9f
-                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat()
+                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat().coerceAtLeast(1f)
                 if (screenRatio > targetRatio) {
                     measuredH = parentHeight
                     measuredW = (parentHeight * targetRatio).toInt()
@@ -2950,7 +3141,7 @@ private class FullScreenStudioVideoView(context: Context) : VideoView(context) {
             }
             "Classic 4:3" -> {
                 val targetRatio = 4f / 3f
-                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat()
+                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat().coerceAtLeast(1f)
                 if (screenRatio > targetRatio) {
                     measuredH = parentHeight
                     measuredW = (parentHeight * targetRatio).toInt()

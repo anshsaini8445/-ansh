@@ -25,6 +25,13 @@ object PermanentDeleteHelper {
     private const val KEY_PERMANENTLY_DELETED_PATHS = "permanently_deleted_paths"
     private const val THIRTY_DAYS_MS = 30L * 24 * 60 * 60 * 1000L
 
+    @Volatile
+    private var cachedRecycledIds: Set<String>? = null
+    @Volatile
+    private var cachedPermDeletedIds: Set<String>? = null
+    @Volatile
+    private var cachedPermDeletedPaths: Set<String>? = null
+
     fun moveToRecycleBin(context: Context, item: MediaItem) {
         val current = getRecycledItems(context).toMutableList()
         if (current.none { it.mediaItem.id == item.id }) {
@@ -142,6 +149,8 @@ object PermanentDeleteHelper {
             .putStringSet(KEY_PERMANENTLY_DELETED_IDS, deletedIds)
             .putStringSet(KEY_PERMANENTLY_DELETED_PATHS, deletedPaths)
             .apply()
+        cachedPermDeletedIds = deletedIds.toSet()
+        cachedPermDeletedPaths = deletedPaths.toSet()
         com.example.data.scanner.DeepMediaScanner.invalidateMemoryCache()
     }
 
@@ -202,12 +211,20 @@ object PermanentDeleteHelper {
         return actuallyDeleted.size
     }
 
-    fun emptyRecycleBinPermanently(context: Context) {
+    /**
+     * Attempts to permanently delete all Recycle Bin items from device storage.
+     * Retains any items that require Android 11+ system delete confirmation and returns them.
+     */
+    fun emptyRecycleBinPermanently(context: Context): List<MediaItem> {
         val current = getRecycledItems(context)
+        val remaining = mutableListOf<RecycledMediaItem>()
         current.forEach { recycled ->
-            deletePermanently(context, recycled.mediaItem)
+            if (!deletePermanently(context, recycled.mediaItem)) {
+                remaining.add(recycled)
+            }
         }
-        saveRecycledItems(context, emptyList())
+        saveRecycledItems(context, remaining)
+        return remaining.map { it.mediaItem }
     }
 
     fun getRecycledItems(context: Context): List<RecycledMediaItem> {
@@ -244,14 +261,27 @@ object PermanentDeleteHelper {
     }
 
     fun isHiddenByTrash(context: Context, mediaId: String, mediaPath: String? = null): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val permDeletedIds = prefs.getStringSet(KEY_PERMANENTLY_DELETED_IDS, emptySet()) ?: emptySet()
-        if (mediaId in permDeletedIds) return true
-        if (!mediaPath.isNullOrBlank()) {
-            val permDeletedPaths = prefs.getStringSet(KEY_PERMANENTLY_DELETED_PATHS, emptySet()) ?: emptySet()
-            if (mediaPath in permDeletedPaths) return true
+        val permIds = cachedPermDeletedIds ?: run {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            (prefs.getStringSet(KEY_PERMANENTLY_DELETED_IDS, emptySet()) ?: emptySet()).toSet().also {
+                cachedPermDeletedIds = it
+            }
         }
-        return getRecycledItems(context).any { it.mediaItem.id == mediaId }
+        if (mediaId in permIds) return true
+        if (!mediaPath.isNullOrBlank()) {
+            val permPaths = cachedPermDeletedPaths ?: run {
+                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                (prefs.getStringSet(KEY_PERMANENTLY_DELETED_PATHS, emptySet()) ?: emptySet()).toSet().also {
+                    cachedPermDeletedPaths = it
+                }
+            }
+            if (mediaPath in permPaths) return true
+        }
+        val recycledIds = cachedRecycledIds ?: getRecycledItems(context)
+            .map { it.mediaItem.id }
+            .toSet()
+            .also { cachedRecycledIds = it }
+        return mediaId in recycledIds
     }
 
     private fun saveRecycledItems(context: Context, items: List<RecycledMediaItem>) {
@@ -279,5 +309,6 @@ object PermanentDeleteHelper {
             .edit()
             .putString(KEY_RECYCLED_ITEMS, array.toString())
             .apply()
+        cachedRecycledIds = items.map { it.mediaItem.id }.toSet()
     }
 }

@@ -37,6 +37,9 @@ import com.example.helpers.WifiDirectTransferEngine
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
@@ -66,6 +69,7 @@ fun MediaSevenActionDialog(
     onRenameCompleted: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val actionScope = rememberCoroutineScope()
     var showTrackDetailsSubView by remember { mutableStateOf(false) }
     var showPermanentDeleteConfirm by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -118,24 +122,70 @@ fun MediaSevenActionDialog(
                     onClick = {
                         val trimmed = renameText.trim()
                         if (trimmed.isNotEmpty()) {
-                            try {
-                                val srcFile = File(item.path)
-                                if (srcFile.exists() && srcFile.parentFile != null) {
-                                    val ext = srcFile.extension
-                                    val destFile = File(srcFile.parentFile, if (ext.isNotEmpty()) "$trimmed.$ext" else trimmed)
-                                    srcFile.renameTo(destFile)
+                            actionScope.launch {
+                                val renamedOk = withContext(Dispatchers.IO) {
+                                    var ok = false
+                                    try {
+                                        if (!item.path.startsWith("content://")) {
+                                            val srcFile = File(item.path)
+                                            if (srcFile.exists() && srcFile.parentFile != null) {
+                                                val ext = srcFile.extension
+                                                val safeName = trimmed.replace(Regex("[/\\\\:*?\"<>|]"), "_").trim()
+                                                if (safeName.isNotEmpty()) {
+                                                    val destFile = File(srcFile.parentFile, if (ext.isNotEmpty()) "$safeName.$ext" else safeName)
+                                                    ok = srcFile.renameTo(destFile)
+                                                    if (ok) {
+                                                        android.media.MediaScannerConnection.scanFile(
+                                                            context,
+                                                            arrayOf(srcFile.absolutePath, destFile.absolutePath),
+                                                            null,
+                                                            null
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Fallback: update MediaStore DISPLAY_NAME (supports Android 10+ Scoped Storage)
+                                        if (!ok) {
+                                            val msUri = PermanentDeleteHelper.resolveMediaStoreUri(context, item)
+                                            if (msUri != null) {
+                                                val ext = item.path.substringAfterLast('.', "").takeIf { it.length in 1..6 } ?: ""
+                                                val safeName = trimmed.replace(Regex("[/\\\\:*?\"<>|]"), "_").trim()
+                                                val values = android.content.ContentValues().apply {
+                                                    put(
+                                                        android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+                                                        if (ext.isNotEmpty() && !safeName.endsWith(".$ext", true)) "$safeName.$ext" else safeName
+                                                    )
+                                                }
+                                                ok = context.contentResolver.update(msUri, values, null, null) > 0
+                                            }
+                                        }
+                                    } catch (_: Exception) {
+                                        ok = false
+                                    }
+                                    ok
                                 }
-                            } catch (_: Exception) {
+                                if (renamedOk) {
+                                    onRenameCompleted?.invoke()
+                                    Toast.makeText(
+                                        context,
+                                        if (isHindi) "नाम बदल दिया गया: $trimmed" else "Renamed to $trimmed",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        if (isHindi) "नाम नहीं बदला जा सका (स्टोरेज परमिशन सीमित)" else "Could not rename file (storage permission restricted)",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                showRenameDialog = false
+                                onDismiss()
                             }
-                            onRenameCompleted?.invoke()
-                            Toast.makeText(
-                                context,
-                                if (isHindi) "नाम बदल दिया गया: $trimmed" else "Renamed to $trimmed",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                        } else {
+                            showRenameDialog = false
+                            onDismiss()
                         }
-                        showRenameDialog = false
-                        onDismiss()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = HybridEmerald)
                 ) {
@@ -351,35 +401,41 @@ fun MediaSevenActionDialog(
                     tint = HybridCoralRed,
                     testTag = "menu_action_permanent_delete",
                     onClick = {
-                        val deletedDirectly = PermanentDeleteHelper.deletePermanently(context, item)
-                        if (deletedDirectly) {
-                            onPermanentDeleteConfirmed(item)
-                            Toast.makeText(
-                                context,
-                                if (isHindi) "फ़ोन से हमेशा के लिए हटा दिया गया" else "Permanently Deleted from Phone Storage",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            onDismiss()
-                        } else {
-                            val pendingIntent = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, listOf(item))
-                            if (pendingIntent != null) {
-                                try {
-                                    systemDeleteLauncher.launch(
-                                        IntentSenderRequest.Builder(pendingIntent.intentSender).build()
-                                    )
-                                } catch (_: Exception) {
+                        actionScope.launch {
+                            val deletedDirectly = withContext(Dispatchers.IO) {
+                                PermanentDeleteHelper.deletePermanently(context, item)
+                            }
+                            if (deletedDirectly) {
+                                onPermanentDeleteConfirmed(item)
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "फ़ोन से हमेशा के लिए हटा दिया गया" else "Permanently Deleted from Phone Storage",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                onDismiss()
+                            } else {
+                                val pendingIntent = withContext(Dispatchers.IO) {
+                                    PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, listOf(item))
+                                }
+                                if (pendingIntent != null) {
+                                    try {
+                                        systemDeleteLauncher.launch(
+                                            IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                                        )
+                                    } catch (_: Exception) {
+                                        Toast.makeText(
+                                            context,
+                                            if (isHindi) "सिस्टम डिलीट परमिशन नहीं खुल सकी" else "Could not open system delete prompt",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                } else {
                                     Toast.makeText(
                                         context,
-                                        if (isHindi) "सिस्टम डिलीट परमिशन नहीं खुल सकी" else "Could not open system delete prompt",
+                                        if (isHindi) "फ़ाइल डिलीट नहीं हो सकी (रीसायकल बिन उपयोग करें)" else "Could not delete file directly (try Recycle Bin)",
                                         Toast.LENGTH_SHORT
                                     ).show()
                                 }
-                            } else {
-                                Toast.makeText(
-                                    context,
-                                    if (isHindi) "फ़ाइल डिलीट नहीं हो सकी (रीसायकल बिन उपयोग करें)" else "Could not delete file directly (try Recycle Bin)",
-                                    Toast.LENGTH_SHORT
-                                ).show()
                             }
                         }
                     }
@@ -515,9 +571,16 @@ private fun TrackCodecDetailsDialog(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
-    val fileObj = remember(item.path) { File(item.path) }
-    val exactBytes = remember(fileObj, item.size) {
-        if (fileObj.exists() && fileObj.length() > 0L) fileObj.length() else item.size
+    var exactBytes by remember(item.path, item.size) { mutableLongStateOf(item.size) }
+    LaunchedEffect(item.path, item.size) {
+        exactBytes = withContext(Dispatchers.IO) {
+            if (!item.path.startsWith("content://")) {
+                val fileObj = File(item.path)
+                if (fileObj.exists() && fileObj.length() > 0L) fileObj.length() else item.size
+            } else {
+                item.size
+            }
+        }
     }
     val bitrateKbps = remember(exactBytes, item.duration) {
         val secs = (item.duration / 1000L).coerceAtLeast(1L)

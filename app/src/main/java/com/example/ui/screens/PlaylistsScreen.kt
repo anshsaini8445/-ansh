@@ -121,7 +121,7 @@ fun PlaylistsScreen(
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(playlists) { playlist ->
+                        items(playlists, key = { it.id }) { playlist ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -171,7 +171,7 @@ fun PlaylistsScreen(
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(playlistItems) { song ->
+                        items(playlistItems, key = { it.id }) { song ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -273,7 +273,7 @@ fun PlaylistsScreen(
                         Text("All available audio tracks are already in this playlist.", color = Color.Gray)
                     } else {
                         LazyColumn {
-                            items(nonPlaylistSongs) { song ->
+                            items(nonPlaylistSongs, key = { it.id }) { song ->
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()

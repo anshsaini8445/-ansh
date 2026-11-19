@@ -8,10 +8,13 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -64,49 +67,92 @@ import kotlin.math.sin
  */
 class GoogleTtsVoiceEngine(context: Context) {
     private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
     private var isReady = false
-    private var pendingUtterance: Pair<String, Boolean>? = null
+    private var pendingUtterance: Triple<String, Boolean, (() -> Unit)?>? = null
+    private val utteranceCallbacks = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
 
     init {
         initGoogleTts()
     }
 
+    private fun attachProgressListener(engine: TextToSpeech) {
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+
+            override fun onDone(utteranceId: String?) {
+                if (utteranceId != null) {
+                    val cb = utteranceCallbacks.remove(utteranceId)
+                    if (cb != null) mainHandler.post { cb() }
+                }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                if (utteranceId != null) {
+                    val cb = utteranceCallbacks.remove(utteranceId)
+                    if (cb != null) mainHandler.post { cb() }
+                }
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                if (utteranceId != null) {
+                    val cb = utteranceCallbacks.remove(utteranceId)
+                    if (cb != null) mainHandler.post { cb() }
+                }
+            }
+        })
+    }
+
     private fun initGoogleTts() {
         try {
             // Connect to Google Text-to-Speech ("com.google.android.tts") first
-            tts = TextToSpeech(
+            var primaryEngine: TextToSpeech? = null
+            primaryEngine = TextToSpeech(
                 appContext,
                 { status ->
                     if (status == TextToSpeech.SUCCESS) {
                         isReady = true
+                        primaryEngine?.let { attachProgressListener(it) }
                         configureLanguage(isHindi = false)
-                        pendingUtterance?.let { (text, hindi) ->
+                        pendingUtterance?.let { (text, hindi, onDone) ->
                             pendingUtterance = null
-                            speakDhwani(text, hindi, playChime = false)
+                            speakDhwani(text, hindi, playChime = false, onDone = onDone)
                         }
                     } else {
-                        // Fallback to default system TTS engine if Google TTS package isn't initialized
+                        // Shut down failed primary instance cleanly before fallback
+                        runCatching { primaryEngine?.shutdown() }
                         runCatching {
-                            tts = TextToSpeech(appContext) { fallbackStatus ->
+                            var fallbackEngine: TextToSpeech? = null
+                            fallbackEngine = TextToSpeech(appContext) { fallbackStatus ->
                                 if (fallbackStatus == TextToSpeech.SUCCESS) {
                                     isReady = true
-                                    pendingUtterance?.let { (text, hindi) ->
+                                    fallbackEngine?.let { attachProgressListener(it) }
+                                    pendingUtterance?.let { (text, hindi, onDone) ->
                                         pendingUtterance = null
-                                        speakDhwani(text, hindi, playChime = false)
+                                        speakDhwani(text, hindi, playChime = false, onDone = onDone)
                                     }
+                                } else {
+                                    pendingUtterance?.third?.let { cb -> mainHandler.post { cb() } }
+                                    pendingUtterance = null
                                 }
                             }
+                            tts = fallbackEngine
                         }
                     }
                 },
                 "com.google.android.tts"
             )
+            tts = primaryEngine
         } catch (_: Exception) {
             runCatching {
-                tts = TextToSpeech(appContext) { status ->
+                var fallbackEngine: TextToSpeech? = null
+                fallbackEngine = TextToSpeech(appContext) { status ->
                     isReady = (status == TextToSpeech.SUCCESS)
+                    if (isReady) fallbackEngine?.let { attachProgressListener(it) }
                 }
+                tts = fallbackEngine
             }
         }
     }
@@ -125,8 +171,8 @@ class GoogleTtsVoiceEngine(context: Context) {
     }
 
     /**
-     * Plays a crisp Google-style voice assistant chime ("Dhwani") so the user gets immediate
-     * audible confirmation when tapping the Mic or TTS button.
+     * Plays a crisp voice assistant chime ("Dhwani") and always releases ToneGenerator
+     * native audio handles once the tone completes.
      */
     fun playVoiceChime(isStartPrompt: Boolean = true) {
         try {
@@ -137,39 +183,83 @@ class GoogleTtsVoiceEngine(context: Context) {
                 ToneGenerator.TONE_PROP_ACK
             }
             toneGen.startTone(toneType, 140)
+            mainHandler.postDelayed({
+                runCatching { toneGen.release() }
+            }, 220L)
         } catch (_: Exception) {
         }
     }
 
     /**
      * Speaks out the given text clearly using Google Text-to-Speech ("Dhwani").
+     * Optionally invokes [onDone] on the main thread when speech finishes (or fails/times out).
      */
-    fun speakDhwani(text: String, isHindi: Boolean = false, playChime: Boolean = true) {
-        if (text.isBlank()) return
+    fun speakDhwani(
+        text: String,
+        isHindi: Boolean = false,
+        playChime: Boolean = true,
+        onDone: (() -> Unit)? = null
+    ) {
+        if (text.isBlank()) {
+            onDone?.let { mainHandler.post(it) }
+            return
+        }
         if (playChime) {
             playVoiceChime(isStartPrompt = false)
         }
         val engine = tts
         if (!isReady || engine == null) {
-            pendingUtterance = text to isHindi
+            pendingUtterance = Triple(text, isHindi, onDone)
+            if (onDone != null) {
+                // Safety cap if engine takes too long to initialize so mic/UI never stalls
+                mainHandler.postDelayed({
+                    if (pendingUtterance?.third === onDone) {
+                        pendingUtterance = null
+                        onDone()
+                    }
+                }, 1400L)
+            }
             return
         }
         try {
             configureLanguage(isHindi)
+            val utteranceId = "hybrid_tts_${System.currentTimeMillis()}_${text.hashCode()}"
+            if (onDone != null) {
+                utteranceCallbacks[utteranceId] = onDone
+                // Safety cap in case an OEM TTS engine never fires onDone
+                mainHandler.postDelayed({
+                    val remaining = utteranceCallbacks.remove(utteranceId)
+                    if (remaining != null) remaining()
+                }, 4200L)
+            }
             val params = Bundle().apply {
                 putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             }
-            engine.speak(
+            val res = engine.speak(
                 text,
                 TextToSpeech.QUEUE_FLUSH,
                 params,
-                "hybrid_tts_${System.currentTimeMillis()}"
+                utteranceId
             )
+            if (res != TextToSpeech.SUCCESS && onDone != null) {
+                val cb = utteranceCallbacks.remove(utteranceId)
+                if (cb != null) mainHandler.post(cb)
+            }
         } catch (_: Exception) {
+            onDone?.let { mainHandler.post(it) }
         }
     }
 
+    fun stopSpeaking() {
+        runCatching { tts?.stop() }
+        val pending = utteranceCallbacks.values.toList()
+        utteranceCallbacks.clear()
+        pending.forEach { cb -> mainHandler.post { cb() } }
+    }
+
     fun shutdown() {
+        utteranceCallbacks.clear()
+        pendingUtterance = null
         runCatching {
             tts?.stop()
             tts?.shutdown()
@@ -258,14 +348,9 @@ fun VoiceAndTtsSearchBarActions(
     ) { granted ->
         ttsEngine.playVoiceChime(isStartPrompt = true)
         if (granted) {
+            // LiveBolkarVoiceSearchDialog sequences the TTS prompt BEFORE starting SpeechRecognizer
             showLiveVoiceSheet = true
-            ttsEngine.speakDhwani(
-                text = if (isHindi) "बोलिए, क्या खोजना है?" else "Speak now to search",
-                isHindi = isHindi,
-                playChime = false
-            )
         } else {
-            // Even if mic permission is declined, launch Google's system voice recognizer intent or open sheet
             showLiveVoiceSheet = true
             launchSystemGoogleVoiceDialog()
         }
@@ -351,7 +436,12 @@ fun VoiceAndTtsSearchBarActions(
                             else "Google Voice and Text to Speech ready. Tap mic to speak."
                         }
                     }
-                    ttsEngine.speakDhwani(speechMessage, isHindi = isHindi, playChime = true)
+                    ttsEngine.speakDhwani(
+                        text = speechMessage,
+                        isHindi = isHindi,
+                        playChime = true,
+                        onDone = { isSpeakingPulse = false }
+                    )
                     Toast.makeText(
                         context,
                         "🔊 $speechMessage",
@@ -391,11 +481,6 @@ fun VoiceAndTtsSearchBarActions(
                     if (hasMicPerm) {
                         ttsEngine.playVoiceChime(isStartPrompt = true)
                         showLiveVoiceSheet = true
-                        ttsEngine.speakDhwani(
-                            text = if (isHindi) "बोलिए, कौन सा वीडियो या गाना खोजना है?" else "Listening. Speak video or song name",
-                            isHindi = isHindi,
-                            playChime = false
-                        )
                     } else {
                         micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
@@ -552,8 +637,23 @@ private fun LiveBolkarVoiceSearchDialog(
     }
 
     DisposableEffect(Unit) {
-        startInAppListening()
+        var disposed = false
+        statusLabel = if (isHindi) "🔊 तैयार हो रहा है..." else "🔊 Preparing mic..."
+        isListeningActive = false
+        // Sequence Google TTS prompt completion BEFORE opening the microphone so SpeechRecognizer never hears the app's own voice
+        ttsEngine.speakDhwani(
+            text = if (isHindi) "बोलिए" else "Speak now",
+            isHindi = isHindi,
+            playChime = false,
+            onDone = {
+                if (!disposed) {
+                    startInAppListening()
+                }
+            }
+        )
         onDispose {
+            disposed = true
+            ttsEngine.stopSpeaking()
             runCatching {
                 recognizerRef?.stopListening()
                 recognizerRef?.destroy()
@@ -633,6 +733,7 @@ private fun LiveBolkarVoiceSearchDialog(
                         .clip(RoundedCornerShape(18.dp))
                         .background(Color(0xFF101C34))
                         .clickable {
+                            ttsEngine.stopSpeaking()
                             ttsEngine.playVoiceChime(isStartPrompt = true)
                             startInAppListening()
                         },

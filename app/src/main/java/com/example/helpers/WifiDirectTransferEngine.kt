@@ -140,7 +140,28 @@ object WifiDirectTransferEngine {
             }
         } catch (_: Exception) {
         }
-        return candidates.maxByOrNull { it.first }?.second ?: "192.168.43.1"
+        return candidates.maxByOrNull { it.first }?.second ?: ""
+    }
+
+    /**
+     * Returns true if a real non-loopback Wi-Fi, Hotspot (ap/swlan), or Wi-Fi Direct (p2p) IPv4 interface is currently UP.
+     */
+    fun hasActiveLocalTransferInterface(context: Context? = null): Boolean {
+        val realIp = getLocalWifiIpAddress(context)
+        return realIp.isNotBlank() && realIp != "0.0.0.0" && realIp != "127.0.0.1"
+    }
+
+    fun openAppPermissionSettings(context: Context) {
+        try {
+            val intent = Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", context.packageName, null)
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+        }
     }
 
     /**
@@ -239,17 +260,21 @@ object WifiDirectTransferEngine {
     }
 
     /**
-     * Checks whether Wi-Fi or Mobile Hotspot is currently active.
+     * Accurately checks whether Wi-Fi or Mobile Hotspot is currently active (never fakes true when offline).
      */
     fun isWifiOrHotspotEnabled(context: Context): Boolean {
         return try {
             val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             val wifiOn = wm?.isWifiEnabled == true
-            val currentIp = getLocalWifiIpAddress(context)
-            val hotspotActive = currentIp.startsWith("192.168.43.") || currentIp.startsWith("192.168.49.")
-            wifiOn || hotspotActive
+            if (wifiOn) return true
+            // Check genuine active Hotspot / Wi-Fi Direct interfaces (ap*, swlan*, p2p*, 192.168.43.*, 192.168.49.*)
+            val realIp = getLocalWifiIpAddress(context)
+            realIp.startsWith("192.168.43.") ||
+                realIp.startsWith("192.168.49.") ||
+                realIp.startsWith("192.168.") ||
+                realIp.startsWith("10.")
         } catch (_: Exception) {
-            true
+            false
         }
     }
 
@@ -845,13 +870,18 @@ object WifiDirectTransferEngine {
         onFileSaved: (File) -> Unit
     ) = withContext(Dispatchers.IO) {
         var server: ServerSocket? = null
-        val localIp = getLocalWifiIpAddress()
+        val localIp = getLocalWifiIpAddress(context).ifBlank { "192.168.43.1" }
         try {
             server = ServerSocket()
             server.reuseAddress = true
+            server.soTimeout = 1000
             server.bind(InetSocketAddress(port))
             while (isActive) {
-                val client = server.accept()
+                val client = try {
+                    server.accept()
+                } catch (_: java.net.SocketTimeoutException) {
+                    continue
+                }
                 try {
                     client.tcpNoDelay = true
                     client.receiveBufferSize = CHUNK_BUFFER_SIZE
@@ -893,14 +923,29 @@ object WifiDirectTransferEngine {
                     val count = input.readInt().coerceIn(1, 500)
                     val buffer = ByteArray(CHUNK_BUFFER_SIZE)
                     for (i in 0 until count) {
-                        val fileName = input.readUTF()
+                        val rawName = input.readUTF()
                         val totalSize = input.readLong().coerceAtLeast(1L)
-                        val outFile = File(destDir, fileName)
+                        // Sanitize incoming filename to prevent path traversal and auto-deduplicate collisions
+                        val cleanLeaf = File(rawName.replace('\\', '/')).name
+                            .replace(Regex("[\\r\\n\\t:*?\"<>|]"), "_")
+                            .trim()
+                            .ifBlank { "received_file_${System.currentTimeMillis()}" }
+                        var outFile = File(destDir, cleanLeaf)
+                        if (outFile.exists()) {
+                            val base = outFile.nameWithoutExtension
+                            val ext = outFile.extension.let { if (it.isNotEmpty()) ".$it" else "" }
+                            var suffix = 1
+                            while (outFile.exists() && suffix < 1000) {
+                                outFile = File(destDir, "${base}_($suffix)$ext")
+                                suffix++
+                            }
+                        }
+                        val fileName = outFile.name
                         var received = 0L
                         var lastUiUpdateMs = 0L
                         val startNs = System.nanoTime()
                         FileOutputStream(outFile).use { fos ->
-                            while (received < totalSize) {
+                            while (received < totalSize && isActive) {
                                 val toRead = minOf(buffer.size.toLong(), totalSize - received).toInt()
                                 val r = input.read(buffer, 0, toRead)
                                 if (r <= 0) break
@@ -951,22 +996,31 @@ object WifiDirectTransferEngine {
         senderDeviceName: String,
         itemsProvider: () -> List<MediaItem>,
         port: Int = HTTP_SHARE_PORT,
+        context: Context? = null,
         onBrowserClientConnected: (clientIp: String, fileName: String) -> Unit = { _, _ -> }
     ) = withContext(Dispatchers.IO) {
         var server: ServerSocket? = null
         try {
             server = ServerSocket()
             server.reuseAddress = true
+            server.soTimeout = 1000
             server.bind(InetSocketAddress(port))
-            while (isActive) {
-                val client = server.accept()
-                kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                    handleHttpBrowserClient(
-                        client = client,
-                        senderDeviceName = senderDeviceName,
-                        items = itemsProvider(),
-                        onBrowserClientConnected = onBrowserClientConnected
-                    )
+            kotlinx.coroutines.coroutineScope {
+                while (isActive) {
+                    val client = try {
+                        server.accept()
+                    } catch (_: java.net.SocketTimeoutException) {
+                        continue
+                    }
+                    launch(Dispatchers.IO) {
+                        handleHttpBrowserClient(
+                            context = context,
+                            client = client,
+                            senderDeviceName = senderDeviceName,
+                            items = itemsProvider(),
+                            onBrowserClientConnected = onBrowserClientConnected
+                        )
+                    }
                 }
             }
         } catch (_: Exception) {
@@ -976,6 +1030,7 @@ object WifiDirectTransferEngine {
     }
 
     private suspend fun handleHttpBrowserClient(
+        context: Context?,
         client: Socket,
         senderDeviceName: String,
         items: List<MediaItem>,
@@ -998,32 +1053,46 @@ object WifiDirectTransferEngine {
             if (path.startsWith("/download/")) {
                 val idx = path.removePrefix("/download/").substringBefore('?').toIntOrNull() ?: -1
                 val media = items.getOrNull(idx)
-                val file = media?.let { File(it.path) }
-                if (media != null && file != null && file.exists()) {
-                    withContext(Dispatchers.Main) {
-                        onBrowserClientConnected(clientIp, media.cleanTitle)
-                    }
+                if (media != null) {
                     val mime = if (media.isVideo) "video/mp4" else "audio/mpeg"
-                    val safeName = file.name.replace("\"", "")
-                    val headers = buildString {
-                        append("HTTP/1.1 200 OK\r\n")
-                        append("Content-Type: $mime\r\n")
-                        append("Content-Length: ${file.length()}\r\n")
-                        append("Content-Disposition: attachment; filename=\"$safeName\"\r\n")
-                        append("Access-Control-Allow-Origin: *\r\n")
-                        append("Connection: close\r\n\r\n")
-                    }
-                    out.write(headers.toByteArray(Charsets.UTF_8))
-                    val buf = ByteArray(CHUNK_BUFFER_SIZE)
-                    FileInputStream(file).use { fis ->
-                        while (true) {
-                            val r = fis.read(buf)
-                            if (r <= 0) break
-                            out.write(buf, 0, r)
+                    val isContentUri = media.path.startsWith("content://")
+                    val directFile = if (!isContentUri) File(media.path).takeIf { it.exists() && it.canRead() } else null
+                    val streamPair: Pair<java.io.InputStream, Long>? = when {
+                        directFile != null -> FileInputStream(directFile) to directFile.length()
+                        isContentUri && context != null -> {
+                            val uri = android.net.Uri.parse(media.path)
+                            val ins = runCatching { context.contentResolver.openInputStream(uri) }.getOrNull()
+                            if (ins != null) ins to media.size.coerceAtLeast(0L) else null
                         }
+                        else -> null
                     }
-                    out.flush()
-                    return
+                    if (streamPair != null) {
+                        val (inputStream, contentLen) = streamPair
+                        withContext(Dispatchers.Main) {
+                            onBrowserClientConnected(clientIp, media.cleanTitle)
+                        }
+                        val safeName = (directFile?.name ?: "${media.cleanTitle.replace(Regex("[^a-zA-Z0-9 _.-]"), "_")}.${if (media.isVideo) "mp4" else "mp3"}")
+                            .replace("\"", "")
+                        val headers = buildString {
+                            append("HTTP/1.1 200 OK\r\n")
+                            append("Content-Type: $mime\r\n")
+                            if (contentLen > 0L) append("Content-Length: $contentLen\r\n")
+                            append("Content-Disposition: attachment; filename=\"$safeName\"\r\n")
+                            append("Access-Control-Allow-Origin: *\r\n")
+                            append("Connection: close\r\n\r\n")
+                        }
+                        out.write(headers.toByteArray(Charsets.UTF_8))
+                        val buf = ByteArray(CHUNK_BUFFER_SIZE)
+                        inputStream.use { fis ->
+                            while (true) {
+                                val r = fis.read(buf)
+                                if (r <= 0) break
+                                out.write(buf, 0, r)
+                            }
+                        }
+                        out.flush()
+                        return
+                    }
                 }
             }
 

@@ -29,6 +29,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.LruCache
 import android.view.KeyEvent
+import androidx.core.content.ContextCompat
 import com.example.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +63,8 @@ object MediaNotificationHelper {
     const val ACTION_MEDIA_PREV = "com.example.action.MEDIA_PREV"
     const val ACTION_MEDIA_REWIND_10S = "com.example.action.MEDIA_REWIND_10S"
     const val ACTION_MEDIA_PLAY_PAUSE = "com.example.action.MEDIA_PLAY_PAUSE"
+    const val ACTION_MEDIA_PLAY = "com.example.action.MEDIA_PLAY"
+    const val ACTION_MEDIA_PAUSE = "com.example.action.MEDIA_PAUSE"
     const val ACTION_MEDIA_FFWD_10S = "com.example.action.MEDIA_FFWD_10S"
     const val ACTION_MEDIA_NEXT = "com.example.action.MEDIA_NEXT"
     const val ACTION_MEDIA_REPEAT = "com.example.action.MEDIA_REPEAT"
@@ -69,6 +72,8 @@ object MediaNotificationHelper {
 
     interface ControlDelegate {
         fun onNotificationPlayPause()
+        fun onNotificationPlay() { onNotificationPlayPause() }
+        fun onNotificationPause() { onNotificationPlayPause() }
         fun onNotificationRewind10s()
         fun onNotificationFastForward10s()
         fun onNotificationNext()
@@ -80,27 +85,46 @@ object MediaNotificationHelper {
     }
 
     private var delegateRef: WeakReference<ControlDelegate>? = null
+    @Volatile
+    private var persistentAudioDelegate: ControlDelegate? = null
     private var mediaSession: MediaSession? = null
     private val artworkCache = LruCache<String, Bitmap>(32)
+    private val fallbackArtworkCache = LruCache<String, Bitmap>(24)
     private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlightArtworkKeys: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
     @Volatile
     private var lastNotification: Notification? = null
     @Volatile
+    internal var lastIsPlaying: Boolean = false
+    @Volatile
     private var lastShownKey: String = ""
 
+    fun setPersistentAudioDelegate(delegate: ControlDelegate?) {
+        persistentAudioDelegate = delegate
+        if (delegate != null && delegateRef?.get() == null) {
+            delegateRef = WeakReference(delegate)
+        }
+    }
+
     fun setControlDelegate(delegate: ControlDelegate?) {
-        delegateRef = if (delegate != null) WeakReference(delegate) else null
+        delegateRef = if (delegate != null) {
+            WeakReference(delegate)
+        } else {
+            // Fall back to the persistent background audio engine when a transient foreground video view disposes
+            persistentAudioDelegate?.let { WeakReference(it) }
+        }
     }
 
     fun getControlDelegate(): ControlDelegate? {
-        return delegateRef?.get()
+        return delegateRef?.get() ?: persistentAudioDelegate
     }
 
     fun dispatchAction(context: Context, action: String?) {
-        val delegate = delegateRef?.get() ?: return
+        val delegate = getControlDelegate() ?: return
         when (action) {
             ACTION_MEDIA_SHUFFLE -> delegate.onNotificationToggleShuffle()
+            ACTION_MEDIA_PLAY -> delegate.onNotificationPlay()
+            ACTION_MEDIA_PAUSE -> delegate.onNotificationPause()
             ACTION_MEDIA_PLAY_PAUSE -> delegate.onNotificationPlayPause()
             ACTION_MEDIA_REWIND_10S -> delegate.onNotificationRewind10s()
             ACTION_MEDIA_FFWD_10S -> delegate.onNotificationFastForward10s()
@@ -143,35 +167,35 @@ object MediaNotificationHelper {
             isActive = true
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
-                    delegateRef?.get()?.onNotificationPlayPause()
+                    getControlDelegate()?.onNotificationPlay()
                 }
 
                 override fun onPause() {
-                    delegateRef?.get()?.onNotificationPlayPause()
+                    getControlDelegate()?.onNotificationPause()
                 }
 
                 override fun onSkipToNext() {
-                    delegateRef?.get()?.onNotificationNext()
+                    getControlDelegate()?.onNotificationNext()
                 }
 
                 override fun onSkipToPrevious() {
-                    delegateRef?.get()?.onNotificationPrevious()
+                    getControlDelegate()?.onNotificationPrevious()
                 }
 
                 override fun onFastForward() {
-                    delegateRef?.get()?.onNotificationFastForward10s()
+                    getControlDelegate()?.onNotificationFastForward10s()
                 }
 
                 override fun onRewind() {
-                    delegateRef?.get()?.onNotificationRewind10s()
+                    getControlDelegate()?.onNotificationRewind10s()
                 }
 
                 override fun onSeekTo(pos: Long) {
-                    delegateRef?.get()?.onNotificationSeekTo(pos)
+                    getControlDelegate()?.onNotificationSeekTo(pos)
                 }
 
                 override fun onStop() {
-                    delegateRef?.get()?.onNotificationStop()
+                    getControlDelegate()?.onNotificationStop()
                     cancelNotification(context.applicationContext)
                     AudioService.stopServiceCompletely(context.applicationContext)
                 }
@@ -189,31 +213,37 @@ object MediaNotificationHelper {
                     }
                     if (keyEvent?.action == KeyEvent.ACTION_DOWN) {
                         when (keyEvent.keyCode) {
-                            KeyEvent.KEYCODE_MEDIA_PLAY,
-                            KeyEvent.KEYCODE_MEDIA_PAUSE,
+                            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                                getControlDelegate()?.onNotificationPlay()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                                getControlDelegate()?.onNotificationPause()
+                                return true
+                            }
                             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                             KeyEvent.KEYCODE_HEADSETHOOK -> {
-                                delegateRef?.get()?.onNotificationPlayPause()
+                                getControlDelegate()?.onNotificationPlayPause()
                                 return true
                             }
                             KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                                delegateRef?.get()?.onNotificationNext()
+                                getControlDelegate()?.onNotificationNext()
                                 return true
                             }
                             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                                delegateRef?.get()?.onNotificationPrevious()
+                                getControlDelegate()?.onNotificationPrevious()
                                 return true
                             }
                             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                                delegateRef?.get()?.onNotificationFastForward10s()
+                                getControlDelegate()?.onNotificationFastForward10s()
                                 return true
                             }
                             KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                                delegateRef?.get()?.onNotificationRewind10s()
+                                getControlDelegate()?.onNotificationRewind10s()
                                 return true
                             }
                             KeyEvent.KEYCODE_MEDIA_STOP -> {
-                                delegateRef?.get()?.onNotificationStop()
+                                getControlDelegate()?.onNotificationStop()
                                 cancelNotification(context.applicationContext)
                                 AudioService.stopServiceCompletely(context.applicationContext)
                                 return true
@@ -248,7 +278,13 @@ object MediaNotificationHelper {
             return cached
         }
 
-        val fallback = createFallbackGradientArtwork(title, isVideo)
+        val fallbackInitial = title.trim().firstOrNull()?.uppercaseChar()?.toString()
+            ?: if (isVideo) "▶" else "♪"
+        val fallbackKey = "$isVideo|$fallbackInitial"
+        val fallback = fallbackArtworkCache.get(fallbackKey)?.takeIf { !it.isRecycled }
+            ?: createFallbackGradientArtwork(title, isVideo).also {
+                fallbackArtworkCache.put(fallbackKey, it)
+            }
 
         if (path.isNotBlank() && !path.startsWith("http") && inFlightArtworkKeys.add(cacheKey)) {
             val appCtx = context.applicationContext
@@ -263,10 +299,25 @@ object MediaNotificationHelper {
                     }
                     val embedded = retriever.embeddedPicture
                     if (embedded != null && embedded.isNotEmpty()) {
-                        extracted = BitmapFactory.decodeByteArray(embedded, 0, embedded.size)
+                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(embedded, 0, embedded.size, opts)
+                        val maxDim = maxOf(opts.outWidth, opts.outHeight)
+                        var sample = 1
+                        while (maxDim / sample > 512) sample *= 2
+                        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
+                        extracted = BitmapFactory.decodeByteArray(embedded, 0, embedded.size, decodeOpts)
                     }
                     if (extracted == null && isVideo) {
-                        extracted = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        extracted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            retriever.getScaledFrameAtTime(
+                                1_000_000L,
+                                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                256,
+                                256
+                            )
+                        } else {
+                            retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        }
                     }
                 } catch (_: Exception) {
                 } finally {
@@ -278,8 +329,17 @@ object MediaNotificationHelper {
 
                 if (extracted != null) {
                     val scaled = try {
-                        Bitmap.createScaledBitmap(extracted, 256, 256, true)
+                        if (extracted.width == 256 && extracted.height == 256) {
+                            extracted
+                        } else {
+                            Bitmap.createScaledBitmap(extracted, 256, 256, true).also { newBmp ->
+                                if (newBmp !== extracted && !extracted.isRecycled) {
+                                    extracted.recycle()
+                                }
+                            }
+                        }
                     } catch (_: Exception) {
+                        if (!extracted.isRecycled) extracted.recycle()
                         null
                     }
                     if (scaled != null) {
@@ -656,6 +716,7 @@ object MediaNotificationHelper {
             contentIntentActivity = contentIntentActivity
         )
         lastNotification = notification
+        lastIsPlaying = isPlaying
         if (!AudioService.syncForegroundWithNotification(notification, isPlaying)) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.notify(NOTIFICATION_ID, notification)
@@ -687,10 +748,13 @@ object MediaNotificationHelper {
     fun cancelNotification(context: Context) {
         lastShownKey = ""
         lastNotification = null
+        lastIsPlaying = false
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(NOTIFICATION_ID)
         try {
             mediaSession?.isActive = false
+            mediaSession?.release()
+            mediaSession = null
         } catch (_: Exception) {
         }
     }
@@ -715,8 +779,12 @@ class MediaNotificationReceiver : BroadcastReceiver() {
             }
             if (keyEvent?.action == KeyEvent.ACTION_DOWN) {
                 when (keyEvent.keyCode) {
-                    KeyEvent.KEYCODE_MEDIA_PLAY,
-                    KeyEvent.KEYCODE_MEDIA_PAUSE,
+                    KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                        MediaNotificationHelper.dispatchAction(context, MediaNotificationHelper.ACTION_MEDIA_PLAY)
+                    }
+                    KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                        MediaNotificationHelper.dispatchAction(context, MediaNotificationHelper.ACTION_MEDIA_PAUSE)
+                    }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                     KeyEvent.KEYCODE_HEADSETHOOK -> {
                         MediaNotificationHelper.dispatchAction(context, MediaNotificationHelper.ACTION_MEDIA_PLAY_PAUSE)
@@ -759,7 +827,8 @@ class AudioService : Service() {
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                MediaNotificationHelper.getControlDelegate()?.onNotificationPlayPause()
+                // Explicitly PAUSE (never toggle) so unplugging headphones while paused never blasts audio
+                MediaNotificationHelper.getControlDelegate()?.onNotificationPause()
             }
         }
     }
@@ -813,7 +882,7 @@ class AudioService : Service() {
         activeInstance = this
         try {
             val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-            registerReceiver(noisyReceiver, filter)
+            ContextCompat.registerReceiver(this, noisyReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
             noisyReceiverRegistered = true
         } catch (_: Exception) {
         }
@@ -855,8 +924,11 @@ class AudioService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        // Immediately satisfy Android 8+/14+ startForegroundService() contract even if MediaPlayer is still preparing
+        // Immediately satisfy Android 8+/14+ startForegroundService() contract without overwriting live notification
         promoteNotificationToForeground(MediaNotificationHelper.buildBootstrapNotification(this))
+        if (MediaNotificationHelper.lastIsPlaying) {
+            acquireWakeLockIfNeeded()
+        }
         if (action != null) {
             MediaNotificationHelper.dispatchAction(this, action)
         }
@@ -907,8 +979,15 @@ class AudioService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        if (wakeLock?.isHeld != true) {
+        if (MediaNotificationHelper.lastIsPlaying) {
+            // Keep background song / video-audio playing seamlessly when Hybrid Player is swiped from Recent Apps
+            acquireWakeLockIfNeeded()
+            promoteNotificationToForeground(MediaNotificationHelper.buildBootstrapNotification(this))
+        } else {
+            // Playback is paused or idle: clean up service and notification so nothing lingers in background
+            MediaNotificationHelper.getControlDelegate()?.onNotificationStop()
             MediaNotificationHelper.cancelNotification(this)
+            stopForegroundCompletely()
             stopSelf()
         }
     }

@@ -217,18 +217,22 @@ fun CleanJunkHubScreen(
     var refreshTrigger by remember { mutableStateOf(0) }
 
     var stats by remember { mutableStateOf(StorageStatsInfo(0L, 0L, 0L)) }
+    val cleanerScope = rememberCoroutineScope()
     var cacheSizeBytes by remember { mutableLongStateOf(0L) }
     var duplicateCount by remember { mutableIntStateOf(0) }
+    var recycledItems by remember { mutableStateOf<List<RecycledMediaItem>>(emptyList()) }
 
     LaunchedEffect(allVideos, isCleaned, refreshTrigger) {
         withContext(Dispatchers.IO) {
             val realStats = HybridCleanerHubHelper.getRealStorageStats(context, allVideos)
             val realCache = HybridCleanerHubHelper.getRealCacheBytes(context)
             val dups = HybridCleanerHubHelper.findDuplicateVideos(allVideos).size
+            val recycled = PermanentDeleteHelper.getRecycledItems(context)
             withContext(Dispatchers.Main) {
                 stats = realStats
                 cacheSizeBytes = realCache
                 duplicateCount = dups
+                recycledItems = recycled
             }
         }
     }
@@ -238,10 +242,6 @@ fun CleanJunkHubScreen(
         animationSpec = tween(900),
         label = "gauge_sweep"
     )
-
-    val recycledItems = remember(refreshTrigger) {
-        PermanentDeleteHelper.getRecycledItems(context)
-    }
 
     Scaffold(
         topBar = {
@@ -287,14 +287,22 @@ fun CleanJunkHubScreen(
                     refreshTrigger++
                 },
                 onRestoreFromTrash = { id ->
-                    PermanentDeleteHelper.restoreFromRecycleBin(context, id)
-                    refreshTrigger++
-                    Toast.makeText(context, "Restored to Library", Toast.LENGTH_SHORT).show()
+                    cleanerScope.launch {
+                        withContext(Dispatchers.IO) {
+                            PermanentDeleteHelper.restoreFromRecycleBin(context, id)
+                        }
+                        refreshTrigger++
+                        Toast.makeText(context, "Restored to Library", Toast.LENGTH_SHORT).show()
+                    }
                 },
                 onPermanentDelete = { item ->
-                    PermanentDeleteHelper.deletePermanently(context, item)
-                    refreshTrigger++
-                    Toast.makeText(context, "Deleted Permanently", Toast.LENGTH_SHORT).show()
+                    cleanerScope.launch {
+                        withContext(Dispatchers.IO) {
+                            PermanentDeleteHelper.deletePermanently(context, item)
+                        }
+                        refreshTrigger++
+                        Toast.makeText(context, "Deleted Permanently", Toast.LENGTH_SHORT).show()
+                    }
                 },
                 onPlayVideo = onPlayVideo,
                 modifier = Modifier.padding(innerPadding)

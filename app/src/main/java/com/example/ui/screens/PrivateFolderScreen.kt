@@ -10,8 +10,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
@@ -34,6 +37,7 @@ import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.VideoPlayerView
 import com.example.ui.theme.*
 import com.example.viewmodel.PlayerViewModel
+import kotlinx.coroutines.launch
 
 private enum class VaultCategoryTab {
     ALL, VIDEOS, AUDIO
@@ -71,9 +75,17 @@ fun PrivateFolderScreen(
     var showAddMediaToVaultDialog by remember { mutableStateOf(false) }
     var vaultCategoryTab by remember { mutableStateOf(VaultCategoryTab.ALL) }
 
+    val coroutineScope = rememberCoroutineScope()
     // Built-in Full Video Player & Full Audio Player inside the Private Vault!
     var activeVaultVideo by remember { mutableStateOf<MediaItem?>(null) }
+    var activeVaultVideoInitialPosMs by remember { mutableLongStateOf(0L) }
     var showVaultFullAudioPlayer by remember { mutableStateOf(false) }
+
+    // Hardware Back from Vault screen always auto-locks the Privacy Vault
+    BackHandler {
+        viewModel.lockVault()
+        onBackClick()
+    }
 
     // Apply FLAG_SECURE to block screenshots while inside Privacy Vault
     DisposableEffect(globalFlagSecure) {
@@ -90,6 +102,7 @@ fun PrivateFolderScreen(
         if (!isUnlocked) {
             pinDigits = ""
             activeVaultVideo = null
+            activeVaultVideoInitialPosMs = 0L
             showVaultFullAudioPlayer = false
         }
     }
@@ -105,7 +118,7 @@ fun PrivateFolderScreen(
         }
         VideoPlayerView(
             videoPath = currentVideo.path,
-            initialPositionMs = 0L,
+            initialPositionMs = activeVaultVideoInitialPosMs,
             onProgressUpdate = { posMs ->
                 viewModel.saveVideoProgress(currentVideo.id, posMs)
             },
@@ -113,7 +126,12 @@ fun PrivateFolderScreen(
             accentColor = accentColor,
             videoTitle = currentVideo.cleanTitle,
             allVideos = vaultVideos.ifEmpty { listOf(currentVideo) },
-            onSelectVideo = { nextVid -> activeVaultVideo = nextVid },
+            onSelectVideo = { nextVid ->
+                coroutineScope.launch {
+                    activeVaultVideoInitialPosMs = viewModel.getVideoProgress(nextVid.id)
+                    activeVaultVideo = nextVid
+                }
+            },
             onBackgroundAudioPlay = {
                 viewModel.playVideoInBackground(currentVideo, 0L)
                 activeVaultVideo = null
@@ -389,7 +407,10 @@ fun PrivateFolderScreen(
                                     onClick = {
                                         if (item.isVideo) {
                                             viewModel.pauseMusicForVideoPlayback()
-                                            activeVaultVideo = item
+                                            coroutineScope.launch {
+                                                activeVaultVideoInitialPosMs = viewModel.getVideoProgress(item.id)
+                                                activeVaultVideo = item
+                                            }
                                         } else {
                                             viewModel.playMusic(item)
                                             showVaultFullAudioPlayer = true
@@ -430,7 +451,10 @@ fun PrivateFolderScreen(
                                             onClick = {
                                                 if (item.isVideo) {
                                                     viewModel.pauseMusicForVideoPlayback()
-                                                    activeVaultVideo = item
+                                                    coroutineScope.launch {
+                                                        activeVaultVideoInitialPosMs = viewModel.getVideoProgress(item.id)
+                                                        activeVaultVideo = item
+                                                    }
                                                 } else {
                                                     viewModel.playMusic(item)
                                                     showVaultFullAudioPlayer = true
@@ -550,7 +574,10 @@ fun PrivateFolderScreen(
                     modifier = Modifier.heightIn(max = 260.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(intruderLogs) { entry ->
+                    itemsIndexed(
+                        items = intruderLogs,
+                        key = { idx, entry -> "intruder_${idx}_${entry.timestamp}" }
+                    ) { _, entry ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -619,6 +646,7 @@ private fun VaultPinPadSection(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center

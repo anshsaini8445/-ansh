@@ -352,7 +352,7 @@ fun ThemeStudio60Dialog(
                         fontWeight = FontWeight.Bold
                     )
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(LiquidThemeCatalog.QUICK_COLOR_SWATCHES) { swatch ->
+                        items(LiquidThemeCatalog.QUICK_COLOR_SWATCHES, key = { "pri_${it.value}" }) { swatch ->
                             val isSelected = customPrimary == swatch
                             Box(
                                 modifier = Modifier
@@ -376,7 +376,7 @@ fun ThemeStudio60Dialog(
                         fontWeight = FontWeight.Bold
                     )
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(LiquidThemeCatalog.QUICK_COLOR_SWATCHES.reversed()) { swatch ->
+                        items(LiquidThemeCatalog.QUICK_COLOR_SWATCHES.reversed(), key = { "sec_${it.value}" }) { swatch ->
                             val isSelected = customSecondary == swatch
                             Box(
                                 modifier = Modifier

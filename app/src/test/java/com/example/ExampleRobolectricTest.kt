@@ -32,8 +32,9 @@ class ExampleRobolectricTest {
     fun `mainActivity launches without crash and displays saved 3D fluffy puppy and teddy mascots in Me tab`() {
         val fluffyMascots = CompanionBreed.FLUFFY_CASSETTE_MASCOTS
         assertTrue(fluffyMascots.size >= 10)
-        assertTrue(fluffyMascots.any { it.isTeddyBear && it.cassetteLabel == "HONEY TAPE" })
-        assertTrue(fluffyMascots.any { !it.isTeddyBear && it.cassetteLabel == "SKY PUPPY" })
+        assertTrue(CompanionBreed.entries.size >= 20)
+        assertTrue(fluffyMascots.any { it.isTeddyBear && it.cassetteLabel == "HONEY TEDDY 3D" })
+        assertTrue(fluffyMascots.any { !it.isTeddyBear && it.cassetteLabel == "PUPPY 3D DJ" })
         assertEquals(fluffyMascots.size, fluffyMascots.map { it.cassetteLabel }.distinct().size)
 
         composeTestRule.waitForIdle()

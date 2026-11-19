@@ -171,43 +171,49 @@ fun AudioLibraryScreen(
         }
     }
 
+    val batchDeleteScope = rememberCoroutineScope()
+
     fun executeBatchPermanentDelete(itemsToDelete: List<MediaItem>) {
         if (itemsToDelete.isEmpty()) return
-        val unDeleted = mutableListOf<MediaItem>()
-        itemsToDelete.forEach { item ->
-            val deletedDirect = PermanentDeleteHelper.deletePermanently(context, item)
-            if (!deletedDirect) {
-                unDeleted.add(item)
-            }
-        }
-        if (unDeleted.size < itemsToDelete.size) {
-            viewModel.loadMedia()
-        }
-        if (unDeleted.isNotEmpty()) {
-            val intentSender = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, unDeleted)
-            if (intentSender != null) {
-                pendingBatchDeleteItems = unDeleted
-                try {
-                    batchDeleteLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
-                    return
-                } catch (_: Exception) {
-                    pendingBatchDeleteItems = emptyList()
+        batchDeleteScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val unDeleted = mutableListOf<MediaItem>()
+            itemsToDelete.forEach { item ->
+                val deletedDirect = PermanentDeleteHelper.deletePermanently(context, item)
+                if (!deletedDirect) {
+                    unDeleted.add(item)
                 }
             }
-            Toast.makeText(
-                context,
-                if (isHindi) "कुछ गाने डिलीट नहीं हो सके" else "Some tracks could not be deleted directly",
-                Toast.LENGTH_SHORT
-            ).show()
-            return
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                if (unDeleted.size < itemsToDelete.size) {
+                    viewModel.loadMedia()
+                }
+                if (unDeleted.isNotEmpty()) {
+                    val intentSender = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, unDeleted)
+                    if (intentSender != null) {
+                        pendingBatchDeleteItems = unDeleted
+                        try {
+                            batchDeleteLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+                            return@withContext
+                        } catch (_: Exception) {
+                            pendingBatchDeleteItems = emptyList()
+                        }
+                    }
+                    Toast.makeText(
+                        context,
+                        if (isHindi) "कुछ गाने डिलीट नहीं हो सके" else "Some tracks could not be deleted directly",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@withContext
+                }
+                Toast.makeText(
+                    context,
+                    if (isHindi) "${itemsToDelete.size} गाने हमेशा के लिए हटाए गए" else "Deleted ${itemsToDelete.size} songs permanently",
+                    Toast.LENGTH_SHORT
+                ).show()
+                selectedTrackIds.clear()
+                multiSelectMode = false
+            }
         }
-        Toast.makeText(
-            context,
-            if (isHindi) "${itemsToDelete.size} गाने हमेशा के लिए हटाए गए" else "Deleted ${itemsToDelete.size} songs permanently",
-            Toast.LENGTH_SHORT
-        ).show()
-        selectedTrackIds.clear()
-        multiSelectMode = false
     }
 
     val videoSongsFolderKey = "__VIDEO_SONGS_FOLDER__"

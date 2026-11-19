@@ -101,7 +101,8 @@
             android:name="com.example.helpers.AudioService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:foregroundServiceType="mediaPlayback"
+            android:stopWithTask="false" />
 
         <receiver
             android:name="com.example.helpers.MediaNotificationReceiver"

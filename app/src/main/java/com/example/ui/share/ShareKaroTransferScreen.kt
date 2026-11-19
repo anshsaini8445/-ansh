@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
@@ -131,7 +132,7 @@ fun ShareKaroTransferScreen(
     val localDeviceName = remember {
         "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
     }
-    var localIpAddress by remember { mutableStateOf(WifiDirectTransferEngine.getLocalWifiIpAddress(context)) }
+    var localIpAddress by remember { mutableStateOf("192.168.43.1") }
     val localPairingCode = remember(localIpAddress) {
         localIpAddress.substringAfterLast('.', "1")
     }
@@ -147,6 +148,39 @@ fun ShareKaroTransferScreen(
     var connectionErrorText by remember { mutableStateOf<String?>(null) }
     var opticalPatternDetectedCount by remember { mutableIntStateOf(0) }
 
+    var isReceivingSession by remember { mutableStateOf(false) }
+    var showPermissionRecoveryDialog by remember { mutableStateOf(false) }
+
+    // Keep receiver session flag synced with stage transitions
+    LaunchedEffect(stage) {
+        when (stage) {
+            HybridShareStage.RECEIVE_LIVE_QR -> isReceivingSession = true
+            HybridShareStage.HOME_CHOICE,
+            HybridShareStage.SEND_MEDIA_PICKER,
+            HybridShareStage.SEND_CONNECT_RADAR -> isReceivingSession = false
+            HybridShareStage.CONNECTED_TRANSFER -> {
+                // Preserve existing isReceivingSession so receiver TCP socket stays alive during transfer!
+            }
+        }
+    }
+
+    // Stage-aware hardware Back navigation so pressing Back steps cleanly instead of exiting Share Hub
+    BackHandler(enabled = stage != HybridShareStage.HOME_CHOICE) {
+        when (stage) {
+            HybridShareStage.SEND_MEDIA_PICKER -> stage = HybridShareStage.HOME_CHOICE
+            HybridShareStage.SEND_CONNECT_RADAR -> stage = HybridShareStage.SEND_MEDIA_PICKER
+            HybridShareStage.RECEIVE_LIVE_QR -> {
+                isReceivingSession = false
+                stage = HybridShareStage.HOME_CHOICE
+            }
+            HybridShareStage.CONNECTED_TRANSFER -> {
+                isReceivingSession = false
+                stage = HybridShareStage.HOME_CHOICE
+            }
+            HybridShareStage.HOME_CHOICE -> onBackClick()
+        }
+    }
+
     // =========================================================================
     // LIVE 4-PILLAR PERMISSION & HARDWARE RADIO MONITOR
     // (Bluetooth + Wi-Fi/Nearby + Location/GPS + Camera)
@@ -156,7 +190,7 @@ fun ShareKaroTransferScreen(
     var isBtRadioOn by remember { mutableStateOf(WifiDirectTransferEngine.isBluetoothRadioEnabled(context)) }
 
     var hasWifiPerm by remember { mutableStateOf(WifiDirectTransferEngine.hasWifiPermissions(context)) }
-    var isWifiRadioOn by remember { mutableStateOf(WifiDirectTransferEngine.isWifiOrHotspotEnabled(context)) }
+    var isWifiRadioOn by remember { mutableStateOf(false) }
 
     var hasLocationPerm by remember { mutableStateOf(WifiDirectTransferEngine.hasLocationPermissions(context)) }
     var isLocationServiceOn by remember { mutableStateOf(WifiDirectTransferEngine.isLocationServiceEnabled(context)) }
@@ -172,16 +206,22 @@ fun ShareKaroTransferScreen(
         hasBtPerm = WifiDirectTransferEngine.hasBluetoothPermissions(context)
         isBtRadioOn = WifiDirectTransferEngine.isBluetoothRadioEnabled(context)
         hasWifiPerm = WifiDirectTransferEngine.hasWifiPermissions(context)
-        isWifiRadioOn = WifiDirectTransferEngine.isWifiOrHotspotEnabled(context)
         hasLocationPerm = WifiDirectTransferEngine.hasLocationPermissions(context)
         isLocationServiceOn = WifiDirectTransferEngine.isLocationServiceEnabled(context)
         hasCameraPermission = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
-        val latestIp = WifiDirectTransferEngine.getLocalWifiIpAddress(context)
-        if (latestIp.isNotBlank()) {
-            localIpAddress = latestIp
+        scope.launch {
+            val (wifiOn, latestIp) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val wOn = WifiDirectTransferEngine.isWifiOrHotspotEnabled(context)
+                val ip = WifiDirectTransferEngine.getLocalWifiIpAddress(context)
+                wOn to ip
+            }
+            isWifiRadioOn = wifiOn
+            if (latestIp.isNotBlank()) {
+                localIpAddress = latestIp
+            }
         }
     }
 
@@ -203,13 +243,29 @@ fun ShareKaroTransferScreen(
 
     // Unified Multi-Permission Launcher for Bluetooth, Wi-Fi, Location & Camera
     var pendingActionAfterPermissions by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingRequiresCamera by remember { mutableStateOf(false) }
     val multiPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
         refreshAllPermissionsAndRadios()
         val action = pendingActionAfterPermissions
+        val needCam = pendingRequiresCamera
         pendingActionAfterPermissions = null
-        action?.invoke()
+        pendingRequiresCamera = false
+        val stillMissing = WifiDirectTransferEngine.getMissingHybridSharePermissions(context).filter { perm ->
+            needCam || perm != Manifest.permission.CAMERA
+        }
+        if (stillMissing.isEmpty()) {
+            action?.invoke()
+        } else if (action != null) {
+            showPermissionRecoveryDialog = true
+            Toast.makeText(
+                context,
+                if (isHindi) "अनुमति अस्वीकृत हुई — कृपया Settings से ब्लूटूथ, वाई-फ़ाई और लोकेशन चालू करें"
+                else "Permissions denied — please enable Bluetooth, Wi-Fi & Location in Settings",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -248,11 +304,11 @@ fun ShareKaroTransferScreen(
         }
     }
 
-    // Periodic 1.5s live monitor so turning off Bluetooth/Wi-Fi/Location in quick settings is detected immediately
+    // Periodic 2s live monitor on Dispatchers.IO so turning off Bluetooth/Wi-Fi/Location in quick settings is detected immediately
     LaunchedEffect(stage) {
         while (true) {
             refreshAllPermissionsAndRadios()
-            delay(1500L)
+            delay(2000L)
         }
     }
 
@@ -269,11 +325,62 @@ fun ShareKaroTransferScreen(
                 else "Please allow Bluetooth, Wi-Fi & Location permissions for Hybrid Share",
                 Toast.LENGTH_SHORT
             ).show()
+            pendingRequiresCamera = requireCameraToo
             pendingActionAfterPermissions = onReady
             multiPermissionLauncher.launch(missing)
         } else {
+            if (!isWifiRadioOn) {
+                Toast.makeText(
+                    context,
+                    if (isHindi) "तेज़ ट्रांसफर के लिए कृपया Wi-Fi या Hotspot चालू करें"
+                    else "Tip: Turn ON Wi-Fi or Hotspot for high-speed offline transfer",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
             onReady()
         }
+    }
+
+    if (showPermissionRecoveryDialog) {
+        AlertDialog(
+            onDismissRequest = { showPermissionRecoveryDialog = false },
+            containerColor = Color(0xFF0F172A),
+            title = {
+                Text(
+                    text = if (isHindi) "अनुमति आवश्यक (Permissions Needed)" else "Permissions Required for Hybrid Share",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Text(
+                    text = if (isHindi) {
+                        "ऑफ़लाइन रडार, Wi-Fi Direct और ब्लूटूथ शेयर के लिए लोकेशन, नजदीकी Wi-Fi और ब्लूटूथ अनुमति चालू करना ज़रूरी है।"
+                    } else {
+                        "Location, Nearby Wi-Fi, and Bluetooth permissions are required for Offline Radar discovery and direct transfers. Open App Settings to enable them."
+                    },
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showPermissionRecoveryDialog = false
+                        WifiDirectTransferEngine.openAppPermissionSettings(context)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black)
+                ) {
+                    Text(if (isHindi) "सेटिंग्स खोलें" else "Open App Settings", fontWeight = FontWeight.ExtraBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPermissionRecoveryDialog = false }) {
+                    Text(if (isHindi) "बंद करें" else "Cancel", color = Color.LightGray)
+                }
+            }
+        )
     }
 
     // Live transfer telemetry
@@ -386,66 +493,74 @@ fun ShareKaroTransferScreen(
         }
     }
 
-    // Background Services for Receive & Send Radar + HTTP Direct Server
-    LaunchedEffect(stage, localIpAddress) {
-        if (stage == HybridShareStage.RECEIVE_LIVE_QR) {
-            launch {
-                WifiDirectTransferEngine.broadcastReceiverPresence(
-                    deviceName = localDeviceName,
-                    localIp = localIpAddress,
-                    tcpPort = transferPort
-                )
-            }
-            launch {
-                WifiDirectTransferEngine.startReceiverSocketServer(
-                    context = context,
-                    receiverDeviceName = localDeviceName,
-                    port = transferPort,
-                    onClientConnected = { clientNameAndIp ->
-                        connectedDeviceName = clientNameAndIp
-                        currentSpeedMbps = 0f
-                        stage = HybridShareStage.CONNECTED_TRANSFER
-                        Toast.makeText(
-                            context,
-                            if (isHindi) "सफलतापूर्वक कनेक्ट हो गया: $clientNameAndIp" else "Connected Successfully: $clientNameAndIp",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    onFileProgress = { fileName, transferred, total, speedMbps ->
-                        val progress = if (total > 0L) (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 1f
-                        currentSpeedMbps = speedMbps
-                        val idx = transferItems.indexOfFirst { it.id == fileName }
-                        val entry = TransferQueueEntry(
-                            id = fileName,
-                            title = fileName,
-                            sizeText = String.format(Locale.US, "%.1f MB", total / (1024.0 * 1024.0)),
-                            isVideo = fileName.endsWith(".mp4", true) || fileName.endsWith(".mkv", true) || fileName.endsWith(".webm", true),
-                            progress = progress,
-                            statusText = if (progress >= 1f) "Saved • 100%" else "Receiving • ${(progress * 100).toInt()}%"
-                        )
-                        if (idx >= 0) {
-                            transferItems[idx] = entry
-                        } else {
-                            transferItems.add(entry)
-                        }
-                    },
-                    onFileSaved = { savedFile ->
-                        Toast.makeText(
-                            context,
-                            if (isHindi) "गैलरी में सेव हो गया: ${savedFile.name}" else "Saved to Downloads/HybridShare: ${savedFile.name}",
-                            Toast.LENGTH_SHORT
-                        ).show()
+    // 1. Receiver TCP Server: tied to isReceivingSession (NOT stage!) so switching to CONNECTED_TRANSFER never kills the active socket!
+    LaunchedEffect(isReceivingSession) {
+        if (isReceivingSession) {
+            WifiDirectTransferEngine.startReceiverSocketServer(
+                context = context,
+                receiverDeviceName = localDeviceName,
+                port = transferPort,
+                onClientConnected = { clientNameAndIp ->
+                    connectedDeviceName = clientNameAndIp
+                    currentSpeedMbps = 0f
+                    stage = HybridShareStage.CONNECTED_TRANSFER
+                    Toast.makeText(
+                        context,
+                        if (isHindi) "सफलतापूर्वक कनेक्ट हो गया: $clientNameAndIp" else "Connected Successfully: $clientNameAndIp",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFileProgress = { fileName, transferred, total, speedMbps ->
+                    val progress = if (total > 0L) (transferred.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 1f
+                    currentSpeedMbps = speedMbps
+                    val idx = transferItems.indexOfFirst { it.id == fileName }
+                    val entry = TransferQueueEntry(
+                        id = fileName,
+                        title = fileName,
+                        sizeText = String.format(Locale.US, "%.1f MB", total / (1024.0 * 1024.0)),
+                        isVideo = fileName.endsWith(".mp4", true) || fileName.endsWith(".mkv", true) || fileName.endsWith(".webm", true),
+                        progress = progress,
+                        statusText = if (progress >= 1f) "Saved • 100%" else "Receiving • ${(progress * 100).toInt()}%"
+                    )
+                    if (idx >= 0) {
+                        transferItems[idx] = entry
+                    } else {
+                        transferItems.add(entry)
                     }
-                )
-            }
-        } else if (stage == HybridShareStage.SEND_CONNECT_RADAR) {
+                },
+                onFileSaved = { savedFile ->
+                    Toast.makeText(
+                        context,
+                        if (isHindi) "गैलरी में सेव हो गया: ${savedFile.name}" else "Saved to Downloads/HybridShare: ${savedFile.name}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+        }
+    }
+
+    // 2. Receiver UDP Presence Broadcast (runs only while waiting on Live QR screen)
+    LaunchedEffect(stage == HybridShareStage.RECEIVE_LIVE_QR, localIpAddress) {
+        if (stage == HybridShareStage.RECEIVE_LIVE_QR) {
+            WifiDirectTransferEngine.broadcastReceiverPresence(
+                deviceName = localDeviceName,
+                localIp = localIpAddress,
+                tcpPort = transferPort
+            )
+        }
+    }
+
+    // 3. Sender Radar & Embedded Browser HTTP Direct Server
+    LaunchedEffect(stage == HybridShareStage.SEND_CONNECT_RADAR, localIpAddress) {
+        if (stage == HybridShareStage.SEND_CONNECT_RADAR) {
             connectionErrorText = null
-            // 1. Start Embedded HTTP Server on Port 49220 so ANY phone can also download via Browser QR
+            // 1. Start Embedded HTTP Server on Port 49220 so ANY phone can also download via Browser QR (supports content:// URIs)
             launch {
                 WifiDirectTransferEngine.startHttpDirectShareServer(
                     senderDeviceName = localDeviceName,
                     itemsProvider = { allMedia.filter { it.id in selectedIds } },
                     port = httpSharePort,
+                    context = context,
                     onBrowserClientConnected = { clientIp, fileName ->
                         Toast.makeText(
                             context,
@@ -2249,6 +2364,7 @@ private fun LiveCameraQrBarcodeScannerView(
                                 it.setSurfaceProvider(previewView.surfaceProvider)
                             }
                             var lastTriggerMs = 0L
+                            var consecutiveQrHits = 0
                             val imageAnalysis = ImageAnalysis.Builder()
                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                 .build()
@@ -2262,27 +2378,49 @@ private fun LiveCameraQrBarcodeScannerView(
                                             if (buf != null && w > 64 && h > 64) {
                                                 val rowStride = plane.rowStride
                                                 val midY = h / 2
+                                                val midX = w / 2
                                                 val startX = w / 4
                                                 val endX = (w * 3) / 4
-                                                var transitions = 0
-                                                var lastBright = false
+                                                val startY = h / 4
+                                                val endY = (h * 3) / 4
+                                                var horizTransitions = 0
+                                                var lastBrightH = false
                                                 for (x in startX until endX step 2) {
                                                     val idx = midY * rowStride + x
                                                     if (idx in 0 until buf.limit()) {
                                                         val lum = buf.get(idx).toInt() and 0xFF
                                                         val isBright = lum > 128
-                                                        if (isBright != lastBright) {
-                                                            transitions++
-                                                            lastBright = isBright
+                                                        if (isBright != lastBrightH) {
+                                                            horizTransitions++
+                                                            lastBrightH = isBright
+                                                        }
+                                                    }
+                                                }
+                                                var vertTransitions = 0
+                                                var lastBrightV = false
+                                                for (y in startY until endY step 2) {
+                                                    val idx = y * rowStride + midX
+                                                    if (idx in 0 until buf.limit()) {
+                                                        val lum = buf.get(idx).toInt() and 0xFF
+                                                        val isBright = lum > 128
+                                                        if (isBright != lastBrightV) {
+                                                            vertTransitions++
+                                                            lastBrightV = isBright
                                                         }
                                                     }
                                                 }
                                                 val now = System.currentTimeMillis()
-                                                if (transitions >= 18 && now - lastTriggerMs > 1800L) {
-                                                    lastTriggerMs = now
-                                                    previewView.post {
-                                                        currentOnDetected()
+                                                if (horizTransitions >= 20 && vertTransitions >= 16) {
+                                                    consecutiveQrHits++
+                                                    if (consecutiveQrHits >= 2 && now - lastTriggerMs > 2400L) {
+                                                        consecutiveQrHits = 0
+                                                        lastTriggerMs = now
+                                                        previewView.post {
+                                                            currentOnDetected()
+                                                        }
                                                     }
+                                                } else {
+                                                    consecutiveQrHits = 0
                                                 }
                                             }
                                         } catch (_: Exception) {

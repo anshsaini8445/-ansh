@@ -1,5 +1,6 @@
 package com.example.ui.pdf
 
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -55,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.components.LiquidGlassBox
 import com.example.ui.components.LiquidGlassIconOrb
 import com.example.ui.theme.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -452,6 +454,9 @@ private fun FullScreenPdfRendererView(
         }
     }
 
+    val latestZoomScale by rememberUpdatedState(zoomScale)
+    val latestPanOffset by rememberUpdatedState(panOffset)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -462,7 +467,7 @@ private fun FullScreenPdfRendererView(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = {
-                        if (zoomScale > 1.05f) {
+                        if (latestZoomScale > 1.05f) {
                             onUpdateZoomPan(1f, Offset.Zero)
                         } else {
                             onUpdateZoomPan(2.2f, Offset.Zero)
@@ -475,11 +480,11 @@ private fun FullScreenPdfRendererView(
             }
             .pointerInput(Unit) {
                 detectTransformGestures { _, pan, zoom, _ ->
-                    val newScale = (zoomScale * zoom).coerceIn(1f, 4f)
+                    val newScale = (latestZoomScale * zoom).coerceIn(1f, 4f)
                     val newPan = if (newScale > 1.02f) {
                         Offset(
-                            x = (panOffset.x + pan.x).coerceIn(-900f, 900f),
-                            y = (panOffset.y + pan.y).coerceIn(-1400f, 1400f)
+                            x = (latestPanOffset.x + pan.x).coerceIn(-900f, 900f),
+                            y = (latestPanOffset.y + pan.y).coerceIn(-1400f, 1400f)
                         )
                     } else {
                         Offset.Zero
@@ -740,17 +745,23 @@ private fun scanDevicePdfFiles(context: Context): List<DevicePdfItem> {
             val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
             val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
 
+            val filesBaseUri = MediaStore.Files.getContentUri("external")
             while (cursor.moveToNext()) {
-                val path = cursor.getString(dataCol) ?: continue
-                val file = File(path)
-                if (file.exists() && file.length() > 0 && seenPaths.add(path)) {
+                val rowId = cursor.getLong(idCol)
+                val path = cursor.getString(dataCol) ?: ""
+                val contentUri = ContentUris.withAppendedId(filesBaseUri, rowId)
+                val dedupKey = path.ifBlank { contentUri.toString() }
+                val file = if (path.isNotBlank()) File(path) else null
+                val mediaSize = cursor.getLong(sizeCol)
+                val effectiveSize = if (file != null && file.exists()) mediaSize.coerceAtLeast(file.length()) else mediaSize
+                if ((effectiveSize > 0L || file?.exists() == true) && seenPaths.add(dedupKey)) {
                     results.add(
                         DevicePdfItem(
-                            id = cursor.getLong(idCol).toString(),
-                            title = cursor.getString(nameCol) ?: file.name,
-                            path = path,
-                            uri = Uri.fromFile(file),
-                            sizeBytes = cursor.getLong(sizeCol).coerceAtLeast(file.length()),
+                            id = rowId.toString(),
+                            title = cursor.getString(nameCol) ?: file?.name ?: "Document_$rowId.pdf",
+                            path = path.ifBlank { contentUri.toString() },
+                            uri = contentUri,
+                            sizeBytes = effectiveSize.coerceAtLeast(1024L),
                             lastModifiedMs = cursor.getLong(dateCol) * 1000L
                         )
                     )
@@ -902,13 +913,17 @@ private class PdfPageSession private constructor(
     val pageCount: Int = renderer.pageCount
     private val mutex = Mutex()
     private val cache = LruCache<Int, Bitmap>(8)
+    @Volatile
+    private var isClosed: Boolean = false
 
-    fun getCachedBitmap(index: Int): Bitmap? = cache.get(index)
+    fun getCachedBitmap(index: Int): Bitmap? = if (isClosed) null else cache.get(index)
 
     suspend fun renderPage(index: Int): Bitmap? = withContext(Dispatchers.IO) {
+        if (isClosed) return@withContext null
         cache.get(index)?.let { return@withContext it }
         mutex.withLock {
-            cache.get(index)?.let { return@withContext it }
+            if (isClosed) return@withLock null
+            cache.get(index)?.let { return@withLock it }
             if (index !in 0 until pageCount) return@withLock null
             try {
                 renderer.openPage(index).use { page ->
@@ -928,16 +943,24 @@ private class PdfPageSession private constructor(
     }
 
     fun close() {
+        if (isClosed) return
+        isClosed = true
         try { cache.evictAll() } catch (_: Exception) {}
-        try { renderer.close() } catch (_: Exception) {}
-        try { pfd.close() } catch (_: Exception) {}
+        CoroutineScope(Dispatchers.IO).launch {
+            mutex.withLock {
+                try { renderer.close() } catch (_: Exception) {}
+                try { pfd.close() } catch (_: Exception) {}
+            }
+        }
     }
 
     companion object {
         fun open(context: Context, item: DevicePdfItem): PdfPageSession? {
             return try {
                 val pfd = when {
-                    File(item.path).exists() -> ParcelFileDescriptor.open(File(item.path), ParcelFileDescriptor.MODE_READ_ONLY)
+                    !item.path.startsWith("content://") && File(item.path).exists() ->
+                        runCatching { ParcelFileDescriptor.open(File(item.path), ParcelFileDescriptor.MODE_READ_ONLY) }.getOrNull()
+                            ?: item.uri?.let { context.contentResolver.openFileDescriptor(it, "r") }
                     item.uri != null -> context.contentResolver.openFileDescriptor(item.uri, "r")
                     else -> null
                 } ?: return null

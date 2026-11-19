@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -7,6 +8,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -60,6 +62,9 @@ import com.example.ui.theme.HybridEmerald
 import com.example.ui.theme.HybridGold
 import com.example.ui.theme.StudioThemes
 import com.example.viewmodel.PlayerViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class MeSubScreen {
     MAIN_LIST,
@@ -312,8 +317,11 @@ fun MeToolkitScreen(
             // MAIN ME SECTION
             // =========================================================================
             MeSubScreen.MAIN_LIST -> {
-                val recycledCount = remember(subScreen) {
-                    PermanentDeleteHelper.getRecycledItems(context).size
+                var recycledCount by remember { mutableIntStateOf(0) }
+                LaunchedEffect(subScreen) {
+                    recycledCount = withContext(Dispatchers.IO) {
+                        PermanentDeleteHelper.getRecycledItems(context).size
+                    }
                 }
 
                 LazyColumn(
@@ -461,10 +469,99 @@ fun MeToolkitScreen(
                         }
                     }
 
+                    // 1B. PROMINENT 1-TAP SIMPLE MODE CARD (RIGHT UNDER HYBRID PLAYER BANNER)
+                    item(key = "me_top_simple_mode_card") {
+                        LiquidGlassBox(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("me_top_simple_mode_card"),
+                            cornerRadius = 20.dp,
+                            tintColor = if (simpleModeEnabled) Color(0xFF38BDF8) else Color(0xFF64748B),
+                            glassAlpha = if (simpleModeEnabled) 0.24f else 0.16f,
+                            isActive = simpleModeEnabled,
+                            onClick = { subScreen = MeSubScreen.SIMPLE_MODE_FOLDER }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                if (simpleModeEnabled) Color(0xFF38BDF8).copy(alpha = 0.22f)
+                                                else Color.White.copy(alpha = 0.08f)
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Tune,
+                                            contentDescription = "Simple Mode",
+                                            tint = if (simpleModeEnabled) Color(0xFF38BDF8) else Color.White,
+                                            modifier = Modifier.size(21.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = if (isHindi) "सरल मोड (Simple Mode)" else "Simple Mode (1-Tap Clean UI)",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 14.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (simpleModeEnabled) {
+                                                if (isHindi) "चालू • सादा डार्क-स्लेट लुक ($simpleModeStyle)" else "ON • Clean dark-slate mode ($simpleModeStyle)"
+                                            } else {
+                                                if (isHindi) "नियॉन और मैस्कॉट हटाकर सुपर-फास्ट सादा लुक पाएं" else "Remove neon glow & mascots for an ultra-clean fast look"
+                                            },
+                                            color = if (simpleModeEnabled) Color(0xFF7DD3FC) else Color.White.copy(alpha = 0.72f),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Switch(
+                                    checked = simpleModeEnabled,
+                                    onCheckedChange = { enabled ->
+                                        viewModel.setSimpleModeEnabled(enabled)
+                                        Toast.makeText(
+                                            context,
+                                            if (enabled) {
+                                                if (isHindi) "✅ सरल मोड चालू हो गया" else "✅ Simple Mode Enabled"
+                                            } else {
+                                                if (isHindi) "✨ फुल हाइब्रिड मोड वापस चालू" else "✨ Full Hybrid Mode Restored"
+                                            },
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.Black,
+                                        checkedTrackColor = Color(0xFF38BDF8)
+                                    ),
+                                    modifier = Modifier.testTag("me_top_simple_mode_switch")
+                                )
+                            }
+                        }
+                    }
+
                     // =====================================================================
-                    // 100% REAL PHOTOREALISTIC 3D PLUSH LION, TEDDY & CHICK MASCOTS SHOWCASE
+                    // 100% REAL 3D PLUSH MASCOTS SHOWCASE (Hidden automatically in Simple Mode!)
                     // =====================================================================
-                    item {
+                    if (!simpleModeEnabled) {
+                    item(key = "me_saved_mascots_section") {
                         val studioMascots = remember { CompanionBreed.entries }
                         LiquidGlassBox(
                             modifier = Modifier
@@ -777,6 +874,7 @@ fun MeToolkitScreen(
                                 }
                             }
                         }
+                    }
                     }
 
                     // ROW 1: Hybrid Share | Private Vault
@@ -1171,7 +1269,7 @@ fun MeToolkitScreen(
                         )
                     )
 
-                    items(simpleStyles.size) { idx ->
+                    items(simpleStyles.size, key = { idx -> simpleStyles[idx].first }) { idx ->
                         val (styleId, title, desc) = simpleStyles[idx]
                         val selected = simpleModeEnabled && simpleModeStyle == styleId
                         Row(
@@ -1535,7 +1633,7 @@ fun MeToolkitScreen(
                         contentPadding = PaddingValues(bottom = 28.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(breeds.size) { index ->
+                        items(breeds.size, key = { index -> breeds[index].name }) { index ->
                             val breed = breeds[index]
                             val isSelected = breed.displayName == selectedCompanionName || breed.name == selectedCompanionName
                             LiquidGlassBox(
@@ -1688,10 +1786,49 @@ fun MeToolkitScreen(
             // SUB-SCREEN: 30-DAY RECYCLE BIN
             // =========================================================================
             MeSubScreen.RECYCLE_BIN -> {
-                var recycledItems by remember {
-                    mutableStateOf(PermanentDeleteHelper.getRecycledItems(context))
+                val binScope = rememberCoroutineScope()
+                var recycledItems by remember { mutableStateOf<List<com.example.data.model.RecycledMediaItem>>(emptyList()) }
+                var isLoadingBin by remember { mutableStateOf(true) }
+                var pendingSystemDeleteItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+
+                val systemBinDeleteLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartIntentSenderForResult()
+                ) { result ->
+                    if (result.resultCode == Activity.RESULT_OK && pendingSystemDeleteItems.isNotEmpty()) {
+                        val confirmed = pendingSystemDeleteItems
+                        pendingSystemDeleteItems = emptyList()
+                        binScope.launch {
+                            withContext(Dispatchers.IO) {
+                                PermanentDeleteHelper.markItemsPermanentlyDeleted(context, confirmed)
+                            }
+                            recycledItems = withContext(Dispatchers.IO) {
+                                PermanentDeleteHelper.getRecycledItems(context)
+                            }
+                            viewModel.loadMedia()
+                            Toast.makeText(
+                                context,
+                                if (isHindi) "${confirmed.size} फ़ाइल हमेशा के लिए हटाई गईं" else "Permanently deleted ${confirmed.size} file(s)",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    } else {
+                        pendingSystemDeleteItems = emptyList()
+                    }
                 }
-                if (recycledItems.isEmpty()) {
+
+                LaunchedEffect(Unit) {
+                    isLoadingBin = true
+                    recycledItems = withContext(Dispatchers.IO) {
+                        PermanentDeleteHelper.getRecycledItems(context)
+                    }
+                    isLoadingBin = false
+                }
+
+                if (isLoadingBin) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = accent)
+                    }
+                } else if (recycledItems.isEmpty()) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -1703,52 +1840,185 @@ fun MeToolkitScreen(
                         )
                     }
                 } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(bottom = 24.dp),
-                        modifier = Modifier.fillMaxSize()
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(recycledItems, key = { it.mediaItem.id }) { entry ->
-                            LiquidGlassBox(
-                                modifier = Modifier.fillMaxWidth(),
-                                cornerRadius = 18.dp,
-                                tintColor = accent
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = entry.mediaItem.cleanTitle,
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${entry.mediaItem.formattedSize} • ${entry.daysRemaining} days left",
-                                            color = Color.White.copy(alpha = 0.65f),
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
+                        // Top Action Row: Restore All & Empty Bin Permanently
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    binScope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            PermanentDeleteHelper.restoreAll(context)
+                                        }
+                                        recycledItems = emptyList()
+                                        viewModel.loadMedia()
+                                        Toast.makeText(
+                                            context,
+                                            if (isHindi) "सभी फ़ाइलें वापस आ गईं" else "Restored all items from Recycle Bin",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     }
-                                    Button(
-                                        onClick = {
-                                            PermanentDeleteHelper.restoreFromRecycleBin(context, entry.mediaItem.id)
-                                            recycledItems = PermanentDeleteHelper.getRecycledItems(context)
-                                            viewModel.loadMedia()
-                                            Toast.makeText(context, "Restored ${entry.mediaItem.cleanTitle}", Toast.LENGTH_SHORT).show()
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = accent,
-                                            contentColor = Color.Black
-                                        )
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Icon(Icons.Default.RestoreFromTrash, contentDescription = null, tint = accent, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isHindi) "सब रीस्टोर" else "Restore All",
+                                    color = accent,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            Button(
+                                onClick = {
+                                    binScope.launch {
+                                        val remaining = withContext(Dispatchers.IO) {
+                                            PermanentDeleteHelper.emptyRecycleBinPermanently(context)
+                                        }
+                                        recycledItems = withContext(Dispatchers.IO) {
+                                            PermanentDeleteHelper.getRecycledItems(context)
+                                        }
+                                        viewModel.loadMedia()
+                                        if (remaining.isNotEmpty()) {
+                                            val pendingIntent = PermanentDeleteHelper.createSystemPermanentDeleteRequest(context, remaining)
+                                            if (pendingIntent != null) {
+                                                pendingSystemDeleteItems = remaining
+                                                runCatching {
+                                                    systemBinDeleteLauncher.launch(
+                                                        IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                                                    )
+                                                }.onFailure { pendingSystemDeleteItems = emptyList() }
+                                            }
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                if (isHindi) "रीसायकल बिन पूरी तरह खाली हो गया" else "Recycle Bin emptied permanently",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFFF5252),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isHindi) "बिन खाली करें" else "Empty Bin",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 24.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            items(recycledItems, key = { it.mediaItem.id }) { entry ->
+                                LiquidGlassBox(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    cornerRadius = 18.dp,
+                                    tintColor = accent
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Default.RestoreFromTrash, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Restore", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = entry.mediaItem.cleanTitle,
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${entry.mediaItem.formattedSize} • ${entry.daysRemaining} days left",
+                                                color = Color.White.copy(alpha = 0.65f),
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                binScope.launch {
+                                                    withContext(Dispatchers.IO) {
+                                                        PermanentDeleteHelper.restoreFromRecycleBin(context, entry.mediaItem.id)
+                                                    }
+                                                    recycledItems = withContext(Dispatchers.IO) {
+                                                        PermanentDeleteHelper.getRecycledItems(context)
+                                                    }
+                                                    viewModel.loadMedia()
+                                                    Toast.makeText(context, "Restored ${entry.mediaItem.cleanTitle}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = accent,
+                                                contentColor = Color.Black
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Icon(Icons.Default.RestoreFromTrash, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Restore", fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
+                                        }
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        IconButton(
+                                            onClick = {
+                                                binScope.launch {
+                                                    val deleted = withContext(Dispatchers.IO) {
+                                                        PermanentDeleteHelper.deletePermanently(context, entry.mediaItem)
+                                                    }
+                                                    if (deleted) {
+                                                        recycledItems = withContext(Dispatchers.IO) {
+                                                            PermanentDeleteHelper.getRecycledItems(context)
+                                                        }
+                                                        viewModel.loadMedia()
+                                                        Toast.makeText(
+                                                            context,
+                                                            if (isHindi) "हमेशा के लिए हटाया गया" else "Deleted Permanently",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    } else {
+                                                        val pendingIntent = PermanentDeleteHelper.createSystemPermanentDeleteRequest(
+                                                            context,
+                                                            listOf(entry.mediaItem)
+                                                        )
+                                                        if (pendingIntent != null) {
+                                                            pendingSystemDeleteItems = listOf(entry.mediaItem)
+                                                            runCatching {
+                                                                systemBinDeleteLauncher.launch(
+                                                                    IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                                                                )
+                                                            }.onFailure { pendingSystemDeleteItems = emptyList() }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            modifier = Modifier.size(38.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteForever,
+                                                contentDescription = "Delete Permanently",
+                                                tint = Color(0xFFFF5252),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
