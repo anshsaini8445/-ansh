@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -345,31 +346,89 @@ fun VideoSectionScreen(
                         .fillMaxWidth()
                         .height(56.dp)
                         .padding(horizontal = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_app_custom_logo),
-                        contentDescription = "Hybrid Player",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(
-                                1.5.dp,
-                                Brush.linearGradient(listOf(Color(0xFFFF2A4B), HybridEmerald)),
-                                RoundedCornerShape(12.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_app_custom_logo),
+                            contentDescription = "Hybrid Player",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(
+                                    1.5.dp,
+                                    Brush.linearGradient(listOf(Color(0xFFFF2A4B), HybridEmerald)),
+                                    RoundedCornerShape(12.dp)
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
+                            color = Color.White,
+                            fontSize = 21.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.2.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // Clean top-right toolbar icons so sub-tabs below never get clipped
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                if (selectedIds.isNotEmpty()) {
+                                    selectedIds.clear()
+                                } else if (sortedVideos.isNotEmpty()) {
+                                    selectedIds.add(sortedVideos.first().id)
+                                }
+                            },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("video_multi_select_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Checklist,
+                                contentDescription = if (isHindi) "कई वीडियो चुनें" else "Multi-Select Videos",
+                                tint = if (isMultiSelectMode) HybridCoralRed else HybridTextSecondary,
+                                modifier = Modifier.size(20.dp)
                             )
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(
-                        text = if (isHindi) "हाइब्रिड प्लेयर" else "Hybrid Player",
-                        color = Color.White,
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.2.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                        }
+                        IconButton(
+                            onClick = { showSortDialog = true },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("video_sort_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SwapVert,
+                                contentDescription = if (isHindi) "क्रमबद्ध करें" else "Sort by",
+                                tint = HybridTextSecondary,
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.toggleVideoViewMode() },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("video_view_toggle_btn")
+                        ) {
+                            Icon(
+                                imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
+                                contentDescription = if (isHindi) "व्यू बदलें" else "Toggle View",
+                                tint = HybridTextSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -519,117 +578,66 @@ fun VideoSectionScreen(
                 }
             }
 
-            // --- 3. CLEAR LABELED SUB-TABS ROW (Video | Folder | Status | Favourite + Multi-Select + Sort + Grid) ---
+            // --- 3. FULL-WIDTH BALANCED SUB-TABS ROW (Video | Status | Folder | Fav — ZERO CLIPPING) ---
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(46.dp)
+                    .height(44.dp)
                     .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .weight(1f)
-                        .horizontalScroll(androidx.compose.foundation.rememberScrollState())
-                ) {
-                    val tabs = listOf(
-                        Triple("Video", if (isHindi) "वीडियो" else "Video", Icons.Default.SmartDisplay),
-                        Triple("Status", if (isHindi) "स्टेटस" else "Status", Icons.Default.SlowMotionVideo),
-                        Triple("Folder", if (isHindi) "फ़ोल्डर" else "Folder", Icons.Default.Folder),
-                        Triple("Favourite", if (isHindi) "पसंदीदा" else "Favourite", Icons.Default.Favorite)
-                    )
+                val tabs = listOf(
+                    Triple("Video", if (isHindi) "वीडियो" else "Video", Icons.Default.SmartDisplay),
+                    Triple("Status", if (isHindi) "स्टेटस" else "Status", Icons.Default.SlowMotionVideo),
+                    Triple("Folder", if (isHindi) "फ़ोल्डर" else "Folder", Icons.Default.Folder),
+                    Triple("Favourite", if (isHindi) "पसंदीदा" else "Favourite", Icons.Default.Favorite)
+                )
 
-                    tabs.forEach { (tabKey, tabLabel, tabIcon) ->
-                        val isSelected = activeSubTab == tabKey
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    switchSubTab(tabKey)
-                                    openedFolderName = null
-                                    isViewingFavouriteFolder = false
-                                    if (tabKey == "Status") {
-                                        initialStatusReelIndex = 0
-                                    }
+                tabs.forEach { (tabKey, tabLabel, tabIcon) ->
+                    val isSelected = activeSubTab == tabKey
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                switchSubTab(tabKey)
+                                openedFolderName = null
+                                isViewingFavouriteFolder = false
+                                if (tabKey == "Status") {
+                                    initialStatusReelIndex = 0
                                 }
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = tabIcon,
-                                    contentDescription = tabLabel,
-                                    tint = if (isSelected) personaMode.primaryAccent else HybridTextSecondary,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Text(
-                                    text = tabLabel,
-                                    color = if (isSelected) Color.White else HybridTextSecondary,
-                                    fontSize = 13.sp,
-                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                    maxLines = 1
-                                )
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Box(
-                                modifier = Modifier
-                                    .width(32.dp)
-                                    .height(3.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(if (isSelected) personaMode.primaryAccent else Color.Transparent)
+                            .padding(vertical = 4.dp)
+                            .testTag("video_subtab_${tabKey.lowercase()}")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = tabIcon,
+                                contentDescription = tabLabel,
+                                tint = if (isSelected) personaMode.primaryAccent else HybridTextSecondary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = tabLabel,
+                                color = if (isSelected) Color.White else HybridTextSecondary,
+                                fontSize = 12.5.sp,
+                                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                    }
-                }
-
-                // Multi-Select Checklist, Sort & View Toggle Icons (42dp clean touch targets)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(0.dp)
-                ) {
-                    IconButton(
-                        onClick = {
-                            if (selectedIds.isNotEmpty()) {
-                                selectedIds.clear()
-                            } else if (sortedVideos.isNotEmpty()) {
-                                selectedIds.add(sortedVideos.first().id)
-                            }
-                        },
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Checklist,
-                            contentDescription = if (isHindi) "कई वीडियो चुनें" else "Multi-Select Videos",
-                            tint = if (isMultiSelectMode) HybridCoralRed else HybridTextSecondary,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = { showSortDialog = true },
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SwapVert,
-                            contentDescription = if (isHindi) "क्रमबद्ध करें" else "Sort by",
-                            tint = HybridTextSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = { viewModel.toggleVideoViewMode() },
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
-                            contentDescription = if (isHindi) "व्यू बदलें" else "Toggle View",
-                            tint = HybridTextSecondary,
-                            modifier = Modifier.size(19.dp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(28.dp)
+                                .height(2.5.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(if (isSelected) personaMode.primaryAccent else Color.Transparent)
                         )
                     }
                 }
@@ -854,18 +862,47 @@ fun VideoSectionScreen(
                             }
 
                             // 3. REMAINING DEVICE MEDIA FOLDERS
-                            items(groupedFolders.entries.toList(), key = { "folder_${it.key}" }) { (folderName, folderVideos) ->
-                                FolderFourThumbnailCard(
-                                    folderName = folderName,
-                                    isHindi = isHindi,
-                                    folderVideos = folderVideos,
-                                    onOpenFolder = {
-                                        isViewingFavouriteFolder = false
-                                        openedFolderName = folderName
-                                        switchSubTab("Video")
-                                    },
-                                    onPlayDirectVideo = onPlayVideo
-                                )
+                            if (groupedFolders.isEmpty()) {
+                                item(key = "empty_video_folders_hint") {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(HybridCardBg)
+                                            .padding(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = if (isHindi) "कोई वीडियो फ़ोल्डर नहीं मिला" else "No device video folders found",
+                                            color = HybridTextSecondary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(onClick = { viewModel.loadMedia() }) {
+                                            Text(
+                                                text = if (isHindi) "रिफ्रेश" else "Refresh",
+                                                color = HybridEmerald,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                items(groupedFolders.entries.toList(), key = { "folder_${it.key}" }) { (folderName, folderVideos) ->
+                                    FolderFourThumbnailCard(
+                                        folderName = folderName,
+                                        isHindi = isHindi,
+                                        folderVideos = folderVideos,
+                                        onOpenFolder = {
+                                            isViewingFavouriteFolder = false
+                                            openedFolderName = folderName
+                                            switchSubTab("Video")
+                                        },
+                                        onPlayDirectVideo = onPlayVideo
+                                    )
+                                }
                             }
                         }
                     }
@@ -1987,7 +2024,7 @@ private fun StatusReelsVerticalPagerView(
                     }
                 }
 
-                val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+                val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner, video.id, isCurrentPage) {
                     val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
                         if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {

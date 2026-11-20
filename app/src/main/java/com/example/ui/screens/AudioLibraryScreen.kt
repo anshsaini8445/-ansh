@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
@@ -559,37 +560,66 @@ fun AudioLibraryScreen(
                 )
             }
 
-            // 2B. Live Audio DJ Studio Quick Strip (Shuffle Play, Equalizer, 200% Boost, Full Studio)
+            // 2B. Clean Compact Audio Action Row (Shuffle Play + EQ + Full Player + Share)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = if (isTablet) 20.dp else 12.dp, vertical = 3.dp)
-                    .horizontalScroll(rememberScrollState()),
+                    .padding(horizontal = if (isTablet) 20.dp else 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                AudioLabeledTabChip(
-                    label = if (isHindi) "🔀 शफल प्ले (${currentDisplayedTracks.size})" else "🔀 Shuffle Play (${currentDisplayedTracks.size})",
-                    selected = isPlaying,
-                    testTag = "audio_quick_shuffle_btn",
+                Surface(
                     onClick = {
                         viewModel.shufflePlayMusic()
                         Toast.makeText(
                             context,
-                            if (isHindi) "🎶 डीजे शफल चालू! गुड्डा डांस मोड एक्टिव!" else "🎶 DJ Shuffle ON! Mascot Dance Active!",
+                            if (isHindi) "शफल प्ले चालू" else "Shuffle Play Started",
                             Toast.LENGTH_SHORT
                         ).show()
+                    },
+                    color = HybridEmerald.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .border(1.dp, HybridEmerald.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                        .testTag("audio_quick_shuffle_btn")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.Shuffle, contentDescription = null, tint = HybridEmerald, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isHindi) "शफल प्ले (${currentDisplayedTracks.size})" else "Shuffle Play (${currentDisplayedTracks.size})",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                )
-                AudioLabeledTabChip(
-                    label = if (isHindi) "🎚️ 3D इक्वलाइज़र" else "🎚️ 3D Equalizer",
-                    selected = false,
+                }
+
+                LiquidGlassIconOrb(
+                    icon = Icons.Default.Equalizer,
+                    contentDescription = if (isHindi) "इक्वलाइज़र" else "Equalizer",
+                    tintColor = HybridGold,
+                    size = 38.dp,
+                    iconSize = 18.dp,
                     testTag = "audio_quick_eq_btn",
                     onClick = onOpenEqualizer
                 )
-                AudioLabeledTabChip(
-                    label = if (isHindi) "🎧 फुल स्टूडियो प्लेयर" else "🎧 Full Studio Player",
-                    selected = false,
+                LiquidGlassIconOrb(
+                    icon = Icons.Default.Headphones,
+                    contentDescription = if (isHindi) "फुल प्लेयर" else "Full Player",
+                    tintColor = HybridCyan,
+                    size = 38.dp,
+                    iconSize = 18.dp,
                     testTag = "audio_quick_studio_btn",
                     onClick = {
                         if (nowPlaying == null) {
@@ -598,9 +628,12 @@ fun AudioLibraryScreen(
                         onOpenFullMusicPlayer()
                     }
                 )
-                AudioLabeledTabChip(
-                    label = if (isHindi) "⚡ हाइब्रिड शेयर" else "⚡ Hybrid Share",
-                    selected = false,
+                LiquidGlassIconOrb(
+                    icon = Icons.Default.WifiTethering,
+                    contentDescription = if (isHindi) "हाइब्रिड शेयर" else "Hybrid Share",
+                    tintColor = HybridEmerald,
+                    size = 38.dp,
+                    iconSize = 18.dp,
                     testTag = "audio_quick_share_btn",
                     onClick = onOpenTurboShare
                 )
@@ -680,14 +713,23 @@ fun AudioLibraryScreen(
                         }
 
                         // All Real Device Audio Folders
-                        items(groupedAudioFolders, key = { it.key }) { (folderName, tracks) ->
-                            AudioFolderRowCard(
-                                folderTitle = folderName,
-                                subtitle = if (isHindi) "${tracks.size} गाने" else "${tracks.size} Songs",
-                                icon = Icons.Default.Folder,
-                                accent = HybridEmerald,
-                                onClick = { selectedFolderName = folderName }
-                            )
+                        if (groupedAudioFolders.isEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                EmptyAudioLibraryState(
+                                    isHindi = isHindi,
+                                    onRescan = { viewModel.loadMedia() }
+                                )
+                            }
+                        } else {
+                            items(groupedAudioFolders, key = { it.key }) { (folderName, tracks) ->
+                                AudioFolderRowCard(
+                                    folderTitle = folderName,
+                                    subtitle = if (isHindi) "${tracks.size} गाने" else "${tracks.size} Songs",
+                                    icon = Icons.Default.Folder,
+                                    accent = HybridEmerald,
+                                    onClick = { selectedFolderName = folderName }
+                                )
+                            }
                         }
                     }
                 }
@@ -725,7 +767,7 @@ fun AudioLibraryScreen(
                             AudioFolderRowCard(
                                 folderTitle = if (isHindi) "+ नई प्लेलिस्ट बनाएं" else "+ Create New Playlist",
                                 subtitle = if (isHindi) "अपनी कस्टम प्लेलिस्ट जोड़ें" else "Add custom music playlist",
-                                icon = Icons.Default.PlaylistAdd,
+                                icon = Icons.AutoMirrored.Filled.PlaylistAdd,
                                 accent = HybridGold,
                                 onClick = { showCreatePlaylistDialog = true }
                             )
@@ -1788,7 +1830,8 @@ private fun CleanAudioTrackRow(
     onLongClick: () -> Unit = {},
     onOpenMenu: () -> Unit
 ) {
-    val isMascotHovered = MascotSongDropTargetRegistry.hoveredTrackId == track.id
+    val isMascotDragging = MascotSongDropTargetRegistry.isMascotDraggingState
+    val isMascotHovered = isMascotDragging && MascotSongDropTargetRegistry.hoveredTrackId == track.id
     val hoverHoldPct = if (isMascotHovered) (MascotSongDropTargetRegistry.holdProgress * 100).toInt() else 0
     val accent = when {
         isMascotHovered -> HybridGold
@@ -1796,19 +1839,46 @@ private fun CleanAudioTrackRow(
         isCurrent -> HybridEmerald
         else -> Color.White
     }
-    DisposableEffect(track.id) {
-        onDispose {
-            MascotSongDropTargetRegistry.unregisterSongRow(track.id)
+    if (isMascotDragging) {
+        DisposableEffect(track.id) {
+            onDispose {
+                MascotSongDropTargetRegistry.unregisterSongRow(track.id)
+            }
         }
     }
-    LiquidGlassBox(
+    val rowShape = remember { RoundedCornerShape(16.dp) }
+    val rowBgColor = when {
+        isMascotHovered -> HybridGold.copy(alpha = 0.24f)
+        isSelected -> HybridCoralRed.copy(alpha = 0.22f)
+        isCurrent -> HybridEmerald.copy(alpha = 0.16f)
+        else -> Color(0xCC0E1524)
+    }
+    val rowBorderColor = when {
+        isMascotHovered -> HybridGold.copy(alpha = 0.85f)
+        isSelected -> HybridCoralRed.copy(alpha = 0.78f)
+        isCurrent -> HybridEmerald.copy(alpha = 0.65f)
+        else -> Color.White.copy(alpha = 0.12f)
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .onGloballyPositioned { coords ->
-                if (coords.isAttached) {
-                    MascotSongDropTargetRegistry.registerSongRow(track, coords.boundsInRoot())
-                }
-            }
+            .then(
+                if (isMascotDragging) {
+                    Modifier.onGloballyPositioned { coords ->
+                        if (MascotSongDropTargetRegistry.isMascotDragging && coords.isAttached) {
+                            MascotSongDropTargetRegistry.registerSongRow(track, coords.boundsInRoot())
+                        }
+                    }
+                } else Modifier
+            )
+            .clip(rowShape)
+            .background(rowBgColor)
+            .border(
+                width = if (isSelected || isMascotHovered || isCurrent) 1.3.dp else 0.8.dp,
+                color = rowBorderColor,
+                shape = rowShape
+            )
             .timedMediaTouchHold(
                 onClick = onPlay,
                 onHold2sPlay = {
@@ -1821,11 +1891,7 @@ private fun CleanAudioTrackRow(
                 },
                 hasLeadingCheckbox = multiSelectMode
             )
-            .testTag("audio_track_row_${track.id}"),
-        cornerRadius = 16.dp,
-        tintColor = accent,
-        glassAlpha = if (isMascotHovered) 0.36f else if (isCurrent || isSelected) 0.28f else 0.14f,
-        isActive = isSelected || isMascotHovered
+            .testTag("audio_track_row_${track.id}")
     ) {
         Row(
             modifier = Modifier

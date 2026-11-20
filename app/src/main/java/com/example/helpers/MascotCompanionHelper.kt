@@ -46,8 +46,11 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -505,6 +508,9 @@ object MascotSongDropTargetRegistry {
     var hoveredTrackId by mutableStateOf<String?>(null)
     var hoveredTrackTitle by mutableStateOf("")
     var holdProgress by mutableFloatStateOf(0f)
+    @Volatile
+    var isMascotDragging: Boolean = false
+    var isMascotDraggingState by mutableStateOf(false)
 
     @Volatile
     private var autoScrollHandler: ((Float) -> Unit)? = null
@@ -512,7 +518,18 @@ object MascotSongDropTargetRegistry {
     @Volatile
     private var playSongHandler: ((MediaItem) -> Unit)? = null
 
+    fun setDraggingActive(active: Boolean) {
+        isMascotDragging = active
+        isMascotDraggingState = active
+        if (!active) {
+            hoveredTrackId = null
+            hoveredTrackTitle = ""
+            holdProgress = 0f
+        }
+    }
+
     fun registerSongRow(track: MediaItem, boundsInRoot: androidx.compose.ui.geometry.Rect) {
+        if (!isMascotDragging) return
         if (boundsInRoot.width > 10f && boundsInRoot.height > 10f) {
             songBoundsMap[track.id] = track to boundsInRoot
         }
@@ -568,13 +585,15 @@ object MascotSongDropTargetRegistry {
 }
 
 fun Modifier.mascotSongDropTarget(item: MediaItem): Modifier = composed {
+    val dragActive = MascotSongDropTargetRegistry.isMascotDraggingState
+    if (!dragActive) return@composed this
     DisposableEffect(item.id) {
         onDispose {
             MascotSongDropTargetRegistry.unregisterSongRow(item.id)
         }
     }
     this.onGloballyPositioned { coords ->
-        if (coords.isAttached) {
+        if (MascotSongDropTargetRegistry.isMascotDragging && coords.isAttached) {
             MascotSongDropTargetRegistry.registerSongRow(item, coords.boundsInRoot())
         }
     }
@@ -639,7 +658,7 @@ data class ArticulatedMascotParts(
     val rightFootLayerBmp: ImageBitmap
 )
 
-private object MascotTransparentBitmapCache {
+internal object MascotTransparentBitmapCache {
     private val studioCardCache = ConcurrentHashMap<Int, ImageBitmap>()
     private val transparentCutoutCache = ConcurrentHashMap<Int, ImageBitmap>()
     private val articulatedPartsCache = ConcurrentHashMap<Int, ArticulatedMascotParts>()
@@ -675,6 +694,9 @@ private object MascotTransparentBitmapCache {
         transparentCutoutCache[breed.drawableResId]?.let { return@withContext it }
         getOrLoadArticulatedMascot(context, breed)?.fullCutoutBmp
     }
+
+    fun getCachedArticulatedMascot(breed: CompanionBreed): ArticulatedMascotParts? =
+        articulatedPartsCache[breed.drawableResId]
 
     suspend fun getOrLoadArticulatedMascot(
         context: Context,
@@ -1044,7 +1066,7 @@ private object MascotTransparentBitmapCache {
     }
 }
 
-private data class PlushFaceRig(
+internal data class PlushFaceRig(
     val leftEyeX: Float,
     val leftEyeY: Float,
     val rightEyeX: Float,
@@ -1058,7 +1080,7 @@ private data class PlushFaceRig(
     val holdsCassette: Boolean = false
 )
 
-private fun getFaceRigForBreed(breed: CompanionBreed): PlushFaceRig = when (breed.drawableResId) {
+internal fun getFaceRigForBreed(breed: CompanionBreed): PlushFaceRig = when (breed.drawableResId) {
     R.drawable.img_mascot_golden_lion -> PlushFaceRig(
         leftEyeX = 0.362f, leftEyeY = 0.362f,
         rightEyeX = 0.556f, rightEyeY = 0.362f,
@@ -1155,23 +1177,6 @@ private fun getFaceRigForBreed(breed: CompanionBreed): PlushFaceRig = when (bree
 }
 
 /**
- * 100% Real-Time 3D Volumetric Multi-Jointed Plush & Fur Jumping Character Engine:
- * - ZERO static 2D photo stretching! Every single breed is rendered as a true multi-part 3D plush puppet
- *   with 6-stop 3D spherical lighting, rim-glow highlights, procedural fluffy fur tufts around the silhouette,
- *   and 14 independently articulated 3D body parts:
- *   1) Compressing 3D Subwoofer / Trampoline Speaker Pad under the feet with bass-reactive cone & shockwaves
- *   2) Two-segment 3D legs (Hip -> Bending Knee -> 3D Plush Foot with 3 pink toe pads) that squat deep on the
- *      speaker pad and kick joyfully in mid-air or stride front-to-back while walking
- *   3) 3D Plush Torso with breathing belly patch, fluffy perimeter fur tufts, gold chains, or spinning Cassette Deck
- *   4) Two-segment 3D arms (Shoulder -> Elbow -> 3D Plush Paw with 4 pink toe beans & palm pad) that throw HIGH
- *      above the head ("YAY!" cheer jump), pump in Bhangra style, or wave to the beat
- *   5) 3D Spherical Head with breed-specific 3D anatomy (18-lobe Lion Mane, 2-joint floppy Bunny Ears, hanging
- *      floppy Puppy Ears, Panda patches, Chick crown feathers & beak, Penguin tuxedo & Royal Crown, or Devil-Horn Bucket Hat)
- *   6) 3D Studio DJ Headphones with headband arc, pivoting yokes, and bass-thumping RGB neon earcups
- *   7) Deep 3D Galaxy Eyes with moving iris/pupil, dual star catchlights, smooth fur eyelid blinks, happy `^ ^` jump eyes,
- *      and a beat-synced singing 3D mouth with teeth and tongue!
- */
-/**
  * Zero-recomposition mutable motion state holder for 60/120fps VSync mascot rendering.
  * Values are read exclusively inside Canvas draw phase, Modifier.offset { }, and Modifier.graphicsLayer { }.
  */
@@ -1221,6 +1226,24 @@ fun DeformingJumping3DPlushMascot(
     liveMotion: MascotLiveMotionState? = null,
     modifier: Modifier = Modifier
 ) {
+    RealPlush3DAnimatedMascot(
+        breed = breed,
+        parts = parts,
+        animTick = animTick,
+        walkStridePhase = walkStridePhase,
+        isMusicPlaying = isMusicPlaying,
+        isActivelyWalking = isActivelyWalking,
+        happyJumpTicks = happyJumpTicks,
+        landingSquashTicks = landingSquashTicks,
+        danceMode = danceMode,
+        customFurColor = customFurColor,
+        isLiftedInAir = isLiftedInAir,
+        danceTransition = danceTransition,
+        liveMotion = liveMotion,
+        modifier = modifier
+    )
+    return
+    @Suppress("UNREACHABLE_CODE")
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
@@ -2722,6 +2745,16 @@ fun RealisticCompanionOverlay(
 
         var isDragging by remember { mutableStateOf(false) }
         var physicsWakeToken by remember { mutableIntStateOf(0) }
+        val isPhysicsLoopRunningRef = remember { BooleanArray(1) }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                MascotSongDropTargetRegistry.setDraggingActive(false)
+            }
+        }
+        LaunchedEffect(isDragging) {
+            MascotSongDropTargetRegistry.setDraggingActive(isDragging)
+        }
 
         // Hardware gravity vector (in screen-pixel space: +X = right, +Y = down, -Y = upside-down up!)
         val sensorGravXRef = remember { floatArrayOf(0f) }
@@ -2842,10 +2875,9 @@ fun RealisticCompanionOverlay(
                         sensorGravXRef[0] = screenGx
                         sensorGravYRef[0] = screenGy
 
-                        // Wake physics loop immediately if user tilts phone significantly or flips upside-down!
-                        val isTiltedOrUpsideDown = abs(screenGx) > 2.4f || screenGy < 6.8f
-                        val changedSignificantly = abs(screenGx - prevGx) > 1.2f || abs(screenGy - prevGy) > 1.2f
-                        if (isTiltedOrUpsideDown || changedSignificantly) {
+                        // Wake physics loop ONLY when it is currently sleeping (0 recompositions while already running!)
+                        val isTiltedOrUpsideDown = abs(screenGx) > 2.8f || screenGy < 5.8f
+                        if (!isPhysicsLoopRunningRef[0] && isTiltedOrUpsideDown) {
                             physicsWakeToken++
                         }
                     }
@@ -2856,7 +2888,7 @@ fun RealisticCompanionOverlay(
                 fun registerSensor() {
                     if (!isRegistered && sensorManager != null && activeSensor != null) {
                         try {
-                            sensorManager.registerListener(listener, activeSensor, SensorManager.SENSOR_DELAY_GAME)
+                            sensorManager.registerListener(listener, activeSensor, SensorManager.SENSOR_DELAY_UI)
                             isRegistered = true
                         } catch (_: Throwable) {
                         }
@@ -3016,7 +3048,8 @@ fun RealisticCompanionOverlay(
 
             var lastFrameNs = 0L
             var prevGravityFlipped = false
-
+            isPhysicsLoopRunningRef[0] = true
+            try {
             while (true) {
                 val gxRaw = if (gravityPhysicsEnabled) sensorGravXRef[0] else 0f
                 val gyRaw = if (gravityPhysicsEnabled) sensorGravYRef[0] else 9.81f
@@ -3260,6 +3293,9 @@ fun RealisticCompanionOverlay(
                     motion.isLiftedInAir = true
                     motion.isUpsideDownOrFalling = isPhoneUpsideDown
                 }
+            }
+            } finally {
+                isPhysicsLoopRunningRef[0] = false
             }
         }
 

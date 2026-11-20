@@ -49,7 +49,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -76,11 +76,12 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 private enum class HybridShareStage {
-    HOME_CHOICE,          // Entry screen: SEND or RECEIVE + Live 4-Pillar Permission & Radio Hub
-    SEND_MEDIA_PICKER,    // Step 1 of Send: Pick Videos & Songs with Bolkar Voice Search
-    SEND_CONNECT_RADAR,   // Step 2 of Send: Live Camera Barcode/QR Scanner + Active Subnet Radar + Direct HTTP QR
-    RECEIVE_LIVE_QR,      // Step 1 of Receive: Live ISO QR + 1D Barcode + Active TCP/UDP Server
-    CONNECTED_TRANSFER    // Connected high-speed transfer screen with MB/s & item progress list
+    HOME_CHOICE,          // Clean entry screen: SEND & RECEIVE hero cards
+    PERMISSION_GATE,      // Focused permission checklist that auto-hides once granted
+    SEND_MEDIA_PICKER,    // Step 1 of Send: Pick Videos & Songs
+    SEND_CONNECT_RADAR,   // Step 2 of Send: Instant Generated QR & Barcode + Scan / Nearby / Code tabs
+    RECEIVE_LIVE_QR,      // Step 1 of Receive: Clean Generated QR & 1D Barcode + Live TCP/UDP Server
+    CONNECTED_TRANSFER    // High-speed direct transfer progress screen
 }
 
 private data class TransferQueueEntry(
@@ -140,7 +141,7 @@ fun ShareKaroTransferScreen(
     val httpSharePort = WifiDirectTransferEngine.HTTP_SHARE_PORT
 
     var connectedDeviceName by remember { mutableStateOf("") }
-    // Mode in SEND_CONNECT_RADAR: 0 = Live Camera QR/Barcode Scanner, 1 = Pairing Code / IP, 2 = Browser HTTP QR
+    // Mode in SEND_CONNECT_RADAR: 0 = Generated Send QR & Barcode (instant!), 1 = Live Camera & Radar, 2 = Code / IP
     var connectMethodTab by remember { mutableIntStateOf(0) }
     var scannedCodeInput by remember { mutableStateOf("") }
     var isConnectingHandshake by remember { mutableStateOf(false) }
@@ -150,12 +151,14 @@ fun ShareKaroTransferScreen(
 
     var isReceivingSession by remember { mutableStateOf(false) }
     var showPermissionRecoveryDialog by remember { mutableStateOf(false) }
+    var pendingTargetStageAfterPerm by remember { mutableStateOf<HybridShareStage?>(null) }
 
     // Keep receiver session flag synced with stage transitions
     LaunchedEffect(stage) {
         when (stage) {
             HybridShareStage.RECEIVE_LIVE_QR -> isReceivingSession = true
             HybridShareStage.HOME_CHOICE,
+            HybridShareStage.PERMISSION_GATE,
             HybridShareStage.SEND_MEDIA_PICKER,
             HybridShareStage.SEND_CONNECT_RADAR -> isReceivingSession = false
             HybridShareStage.CONNECTED_TRANSFER -> {
@@ -167,6 +170,14 @@ fun ShareKaroTransferScreen(
     // Stage-aware hardware Back navigation so pressing Back steps cleanly instead of exiting Share Hub
     BackHandler(enabled = stage != HybridShareStage.HOME_CHOICE) {
         when (stage) {
+            HybridShareStage.PERMISSION_GATE -> {
+                stage = if (pendingTargetStageAfterPerm == HybridShareStage.SEND_CONNECT_RADAR) {
+                    HybridShareStage.SEND_MEDIA_PICKER
+                } else {
+                    HybridShareStage.HOME_CHOICE
+                }
+                pendingTargetStageAfterPerm = null
+            }
             HybridShareStage.SEND_MEDIA_PICKER -> stage = HybridShareStage.HOME_CHOICE
             HybridShareStage.SEND_CONNECT_RADAR -> stage = HybridShareStage.SEND_MEDIA_PICKER
             HybridShareStage.RECEIVE_LIVE_QR -> {
@@ -295,49 +306,45 @@ fun ShareKaroTransferScreen(
         }
     }
 
-    // Auto-request missing permissions on entry if any permission (Bluetooth, Wi-Fi, Location, Camera) is OFF
+    // Silent radio/IP refresh on entry — never blast intrusive permission popups before user acts
     LaunchedEffect(Unit) {
         refreshAllPermissionsAndRadios()
-        val missing = WifiDirectTransferEngine.getMissingHybridSharePermissions(context)
-        if (missing.isNotEmpty()) {
-            multiPermissionLauncher.launch(missing)
+    }
+
+    // AUTO-HIDE PERMISSION GATE: The instant required permissions are granted, hide permissions & open Barcode/QR!
+    LaunchedEffect(stage, hasBtPerm, hasWifiPerm, hasLocationPerm) {
+        if (stage == HybridShareStage.PERMISSION_GATE && hasBtPerm && hasWifiPerm && hasLocationPerm) {
+            val target = pendingTargetStageAfterPerm ?: HybridShareStage.RECEIVE_LIVE_QR
+            pendingTargetStageAfterPerm = null
+            if (target == HybridShareStage.SEND_CONNECT_RADAR) {
+                connectMethodTab = 0
+            }
+            stage = target
         }
     }
 
-    // Periodic 2s live monitor on Dispatchers.IO so turning off Bluetooth/Wi-Fi/Location in quick settings is detected immediately
+    // Periodic 2.5s live monitor on Dispatchers.IO so IP & radio toggles stay fresh
     LaunchedEffect(stage) {
         while (true) {
             refreshAllPermissionsAndRadios()
-            delay(2000L)
+            delay(2500L)
         }
     }
 
-    fun ensurePermissionsBeforeAction(requireCameraToo: Boolean = false, onReady: () -> Unit) {
+    // Clean step-by-step gate: skips straight to QR/Barcode if permissions are already granted,
+    // otherwise shows focused PERMISSION_GATE which auto-hides the moment permissions are allowed.
+    fun enterStageWithPermissionGate(targetStage: HybridShareStage) {
         refreshAllPermissionsAndRadios()
-        val missing = WifiDirectTransferEngine.getMissingHybridSharePermissions(context).filter { perm ->
-            requireCameraToo || perm != Manifest.permission.CAMERA
-        }.toTypedArray()
-
-        if (missing.isNotEmpty()) {
-            Toast.makeText(
-                context,
-                if (isHindi) "हाइब्रिड शेयर के लिए ब्लूटूथ, वाई-फ़ाई और लोकेशन अनुमति दें"
-                else "Please allow Bluetooth, Wi-Fi & Location permissions for Hybrid Share",
-                Toast.LENGTH_SHORT
-            ).show()
-            pendingRequiresCamera = requireCameraToo
-            pendingActionAfterPermissions = onReady
-            multiPermissionLauncher.launch(missing)
-        } else {
-            if (!isWifiRadioOn) {
-                Toast.makeText(
-                    context,
-                    if (isHindi) "तेज़ ट्रांसफर के लिए कृपया Wi-Fi या Hotspot चालू करें"
-                    else "Tip: Turn ON Wi-Fi or Hotspot for high-speed offline transfer",
-                    Toast.LENGTH_SHORT
-                ).show()
+        val missing = WifiDirectTransferEngine.getMissingHybridSharePermissions(context)
+            .filter { it != Manifest.permission.CAMERA }
+        if (missing.isEmpty()) {
+            if (targetStage == HybridShareStage.SEND_CONNECT_RADAR) {
+                connectMethodTab = 0
             }
-            onReady()
+            stage = targetStage
+        } else {
+            pendingTargetStageAfterPerm = targetStage
+            stage = HybridShareStage.PERMISSION_GATE
         }
     }
 
@@ -598,8 +605,6 @@ fun ShareKaroTransferScreen(
         }
     }
 
-    val allPermissionsAndRadiosReady = hasBtPerm && isBtRadioOn && hasWifiPerm && isWifiRadioOn && hasLocationPerm && isLocationServiceOn
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -614,15 +619,15 @@ fun ShareKaroTransferScreen(
             )
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 14.dp)
+            .padding(horizontal = 16.dp)
     ) {
         // =====================================================================
-        // TOP CYBER HEADER BAR
+        // CLEAN MINIMAL TOP HEADER (NO CLUTTERED ICON PILE OR PERMANENT STRIP)
         // =====================================================================
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 8.dp),
+                .padding(vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -638,584 +643,565 @@ fun ShareKaroTransferScreen(
                     onClick = {
                         when (stage) {
                             HybridShareStage.HOME_CHOICE -> onBackClick()
+                            HybridShareStage.PERMISSION_GATE -> {
+                                stage = if (pendingTargetStageAfterPerm == HybridShareStage.SEND_CONNECT_RADAR) {
+                                    HybridShareStage.SEND_MEDIA_PICKER
+                                } else {
+                                    HybridShareStage.HOME_CHOICE
+                                }
+                                pendingTargetStageAfterPerm = null
+                            }
                             HybridShareStage.SEND_MEDIA_PICKER -> stage = HybridShareStage.HOME_CHOICE
                             HybridShareStage.SEND_CONNECT_RADAR -> stage = HybridShareStage.SEND_MEDIA_PICKER
-                            HybridShareStage.RECEIVE_LIVE_QR -> stage = HybridShareStage.HOME_CHOICE
-                            HybridShareStage.CONNECTED_TRANSFER -> stage = HybridShareStage.HOME_CHOICE
+                            HybridShareStage.RECEIVE_LIVE_QR -> {
+                                isReceivingSession = false
+                                stage = HybridShareStage.HOME_CHOICE
+                            }
+                            HybridShareStage.CONNECTED_TRANSFER -> {
+                                isReceivingSession = false
+                                stage = HybridShareStage.HOME_CHOICE
+                            }
                         }
                     }
                 )
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = if (isHindi) "हाइब्रिड शेयर प्रो" else "Hybrid Share Pro",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            color = secondary.copy(alpha = 0.20f),
-                            shape = RoundedCornerShape(50),
-                            modifier = Modifier.border(1.dp, secondary.copy(alpha = 0.7f), RoundedCornerShape(50))
-                        ) {
-                            Text(
-                                text = "CODE #$localPairingCode",
-                                color = secondary,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 9.5.sp,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
                     Text(
-                        text = "$localDeviceName • IP: $localIpAddress",
+                        text = when (stage) {
+                            HybridShareStage.HOME_CHOICE -> if (isHindi) "हाइब्रिड शेयर" else "Hybrid Share"
+                            HybridShareStage.PERMISSION_GATE -> if (isHindi) "आवश्यक अनुमतियाँ" else "Quick Setup"
+                            HybridShareStage.SEND_MEDIA_PICKER -> if (isHindi) "फ़ाइलें चुनें" else "Select Files"
+                            HybridShareStage.SEND_CONNECT_RADAR -> if (isHindi) "शेयर करने के लिए तैयार" else "Ready to Send"
+                            HybridShareStage.RECEIVE_LIVE_QR -> if (isHindi) "रिसीव करने के लिए तैयार" else "Ready to Receive"
+                            HybridShareStage.CONNECTED_TRANSFER -> if (isHindi) "लाइव ट्रांसफर" else "Live Transfer"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = localDeviceName,
                         style = MaterialTheme.typography.labelSmall,
-                        color = accent,
+                        color = Color.White.copy(alpha = 0.62f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                // 1-Tap Bluetooth Control Orb
+            if (selectedIds.isNotEmpty() && stage == HybridShareStage.SEND_MEDIA_PICKER) {
                 LiquidGlassIconOrb(
-                    icon = Icons.Default.Bluetooth,
-                    contentDescription = "Bluetooth",
-                    size = 38.dp,
+                    icon = Icons.Default.Share,
+                    contentDescription = "System Share",
+                    size = 40.dp,
                     iconSize = 18.dp,
-                    tintColor = if (hasBtPerm && isBtRadioOn) bluetoothBlue else Color(0xFFFF5252),
-                    glowColor = bluetoothBlue,
+                    tintColor = secondary,
+                    glowColor = secondary,
+                    testTag = "share_system_btn",
                     onClick = {
-                        if (!hasBtPerm) {
-                            multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredBluetoothPermissions())
-                        } else if (!isBtRadioOn) {
-                            promptTurnOnBluetoothRadio()
-                        } else {
-                            val chosen = allMedia.filter { it.id in selectedIds }
-                            if (chosen.isNotEmpty()) {
-                                WifiDirectTransferEngine.shareFilesViaBluetooth(context, chosen)
-                            } else {
-                                WifiDirectTransferEngine.openBluetoothSettings(context)
-                            }
-                        }
+                        val chosen = allMedia.filter { it.id in selectedIds }
+                        WifiDirectTransferEngine.shareRealFilesViaSystem(context, chosen)
                     }
                 )
-                // 1-Tap Hotspot / Wi-Fi Settings Orb
-                LiquidGlassIconOrb(
-                    icon = Icons.Default.WifiTethering,
-                    contentDescription = "Hotspot Setup",
-                    size = 38.dp,
-                    iconSize = 18.dp,
-                    tintColor = amberGold,
-                    glowColor = amberGold,
-                    onClick = {
-                        WifiDirectTransferEngine.openHotspotOrWifiSettings(context)
-                    }
-                )
-                if (selectedIds.isNotEmpty()) {
-                    LiquidGlassIconOrb(
-                        icon = Icons.Default.Share,
-                        contentDescription = "System Share",
-                        size = 38.dp,
-                        iconSize = 18.dp,
-                        tintColor = secondary,
-                        glowColor = secondary,
-                        testTag = "share_system_btn",
-                        onClick = {
-                            val chosen = allMedia.filter { it.id in selectedIds }
-                            WifiDirectTransferEngine.shareRealFilesViaSystem(context, chosen)
-                        }
-                    )
-                }
             }
         }
-
-        // =====================================================================
-        // LIVE 4-PILLAR PERMISSION & HARDWARE STATUS STRIP
-        // (Bluetooth • Wi-Fi • Location • Camera)
-        // Whenever any permission or toggle is OFF, user sees it immediately and can fix in 1 tap!
-        // =====================================================================
-        PermissionAndRadioStatusStrip(
-            isHindi = isHindi,
-            hasBtPerm = hasBtPerm,
-            isBtOn = isBtRadioOn,
-            hasWifiPerm = hasWifiPerm,
-            isWifiOn = isWifiRadioOn,
-            hasLocationPerm = hasLocationPerm,
-            isLocationOn = isLocationServiceOn,
-            hasCameraPerm = hasCameraPermission,
-            onFixBluetooth = {
-                if (!hasBtPerm) {
-                    pendingActionAfterPermissions = {
-                        if (!WifiDirectTransferEngine.isBluetoothRadioEnabled(context)) {
-                            promptTurnOnBluetoothRadio()
-                        }
-                    }
-                    multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredBluetoothPermissions())
-                } else {
-                    promptTurnOnBluetoothRadio()
-                }
-            },
-            onFixWifi = {
-                if (!hasWifiPerm) {
-                    pendingActionAfterPermissions = {
-                        if (!WifiDirectTransferEngine.isWifiOrHotspotEnabled(context)) {
-                            WifiDirectTransferEngine.openWifiPanelOrSettings(context)
-                        }
-                    }
-                    multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredWifiPermissions())
-                } else {
-                    WifiDirectTransferEngine.openWifiPanelOrSettings(context)
-                }
-            },
-            onFixLocation = {
-                if (!hasLocationPerm) {
-                    pendingActionAfterPermissions = {
-                        if (!WifiDirectTransferEngine.isLocationServiceEnabled(context)) {
-                            WifiDirectTransferEngine.openLocationSettings(context)
-                        }
-                    }
-                    multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredLocationPermissions())
-                } else {
-                    WifiDirectTransferEngine.openLocationSettings(context)
-                }
-            },
-            onFixCamera = {
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            },
-            onFixAllMissing = {
-                val missing = WifiDirectTransferEngine.getMissingHybridSharePermissions(context)
-                if (missing.isNotEmpty()) {
-                    pendingActionAfterPermissions = {
-                        if (!WifiDirectTransferEngine.isBluetoothRadioEnabled(context)) {
-                            promptTurnOnBluetoothRadio()
-                        } else if (!WifiDirectTransferEngine.isLocationServiceEnabled(context)) {
-                            WifiDirectTransferEngine.openLocationSettings(context)
-                        } else if (!WifiDirectTransferEngine.isWifiOrHotspotEnabled(context)) {
-                            WifiDirectTransferEngine.openWifiPanelOrSettings(context)
-                        }
-                    }
-                    multiPermissionLauncher.launch(missing)
-                } else if (!isBtRadioOn) {
-                    promptTurnOnBluetoothRadio()
-                } else if (!isLocationServiceOn) {
-                    WifiDirectTransferEngine.openLocationSettings(context)
-                } else if (!isWifiRadioOn) {
-                    WifiDirectTransferEngine.openWifiPanelOrSettings(context)
-                }
-            }
-        )
 
         Spacer(modifier = Modifier.height(8.dp))
 
         when (stage) {
             // =====================================================================
-            // 1. HOME SCREEN: PREMIUM CYBER SEND & RECEIVE HUB + MULTI-TECH DOCK
+            // 1. ULTRA-CLEAN HOME SCREEN: SEND & RECEIVE ONLY (ZERO CLUTTER)
             // =====================================================================
             HybridShareStage.HOME_CHOICE -> {
                 val pulseTransition = rememberInfiniteTransition(label = "share_hero_pulse")
                 val orbPulse by pulseTransition.animateFloat(
                     initialValue = 0.94f,
-                    targetValue = 1.08f,
+                    targetValue = 1.07f,
                     animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 1200, easing = LinearEasing),
+                        animation = tween(durationMillis = 1350, easing = LinearEasing),
                         repeatMode = RepeatMode.Reverse
                     ),
                     label = "orb_pulse"
                 )
 
                 Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = if (isHindi) "ऑफ़लाइन सुपर-फास्ट शेयरिंग" else "Offline High-Speed Transfer",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 20.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (isHindi) "बिना इंटरनेट • 45 MB/s तक • सुरक्षित QR व बारकोड" else "No internet needed • Up to 45 MB/s • Instant QR & Barcode",
+                            color = Color.White.copy(alpha = 0.65f),
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(28.dp))
+
+                        // Spacious Dual Flagship Cards: SEND & RECEIVE
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            // SEND CARD -> Goes directly to clean File Picker
+                            LiquidGlassBox(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(236.dp)
+                                    .testTag("share_send_big_btn"),
+                                cornerRadius = 28.dp,
+                                tintColor = accent,
+                                glassAlpha = 0.22f,
+                                isActive = true,
+                                onClick = {
+                                    stage = HybridShareStage.SEND_MEDIA_PICKER
+                                }
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.SpaceEvenly
+                                ) {
+                                    Box(
+                                        modifier = Modifier.size(90.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Canvas(modifier = Modifier.fillMaxSize()) {
+                                            drawCircle(
+                                                color = accent.copy(alpha = 0.20f),
+                                                radius = (size.minDimension / 2f) * orbPulse
+                                            )
+                                            drawCircle(
+                                                color = accent.copy(alpha = 0.50f),
+                                                radius = (size.minDimension / 2f) * 0.84f,
+                                                style = Stroke(width = 2.dp.toPx())
+                                            )
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .size(68.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    Brush.linearGradient(
+                                                        listOf(accent, Color(0xFF2979FF))
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ArrowUpward,
+                                                contentDescription = "Send",
+                                                tint = Color.Black,
+                                                modifier = Modifier.size(34.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = if (isHindi) "भेजें" else "SEND",
+                                            style = MaterialTheme.typography.titleLarge,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Black
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "${videos.size} $videosLabel • ${audios.size} $musicLabel",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = accent,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            }
+
+                            // RECEIVE CARD -> Checks permissions cleanly (auto-hides on grant) -> Opens Live Barcode/QR
+                            LiquidGlassBox(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(236.dp)
+                                    .testTag("share_receive_big_btn"),
+                                cornerRadius = 28.dp,
+                                tintColor = secondary,
+                                glassAlpha = 0.22f,
+                                isActive = true,
+                                onClick = {
+                                    enterStageWithPermissionGate(HybridShareStage.RECEIVE_LIVE_QR)
+                                }
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.SpaceEvenly
+                                ) {
+                                    Box(
+                                        modifier = Modifier.size(90.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Canvas(modifier = Modifier.fillMaxSize()) {
+                                            drawCircle(
+                                                color = secondary.copy(alpha = 0.20f),
+                                                radius = (size.minDimension / 2f) * orbPulse
+                                            )
+                                            drawCircle(
+                                                color = secondary.copy(alpha = 0.50f),
+                                                radius = (size.minDimension / 2f) * 0.84f,
+                                                style = Stroke(width = 2.dp.toPx())
+                                            )
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .size(68.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    Brush.linearGradient(
+                                                        listOf(secondary, Color(0xFF00BFA5))
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ArrowDownward,
+                                                contentDescription = "Receive",
+                                                tint = Color.Black,
+                                                modifier = Modifier.size(34.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = if (isHindi) "प्राप्त करें" else "RECEIVE",
+                                            style = MaterialTheme.typography.titleLarge,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Black
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = if (isHindi) "QR व बारकोड बनाएँ" else "Instant QR & Barcode",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = secondary,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Minimal Compact Footer Actions (Bluetooth & Hotspot only)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            onClick = {
+                                if (!hasBtPerm) {
+                                    multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredBluetoothPermissions())
+                                } else if (!isBtRadioOn) {
+                                    promptTurnOnBluetoothRadio()
+                                } else {
+                                    stage = HybridShareStage.SEND_MEDIA_PICKER
+                                }
+                            },
+                            color = Color.White.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .border(1.dp, bluetoothBlue.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Bluetooth,
+                                    contentDescription = "Bluetooth",
+                                    tint = bluetoothBlue,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isHindi) "ब्लूटूथ" else "Bluetooth",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+
+                        Surface(
+                            onClick = { WifiDirectTransferEngine.openHotspotOrWifiSettings(context) },
+                            color = Color.White.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .border(1.dp, amberGold.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.WifiTethering,
+                                    contentDescription = "Hotspot",
+                                    tint = amberGold,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isHindi) "हॉटस्पॉट / Wi-Fi" else "Hotspot / Wi-Fi",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // =====================================================================
+            // 1B. FOCUSED PERMISSION STEP (AUTO-HIDES IMMEDIATELY ONCE GRANTED!)
+            // =====================================================================
+            HybridShareStage.PERMISSION_GATE -> {
+                val targetIsSend = pendingTargetStageAfterPerm == HybridShareStage.SEND_CONNECT_RADAR
+                val gateAccent = if (targetIsSend) accent else secondary
+
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    // Dual Hero Cards: SEND & RECEIVE
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        // SEND HERO CARD
-                        LiquidGlassBox(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(212.dp)
-                                .testTag("share_send_big_btn"),
-                            cornerRadius = 26.dp,
-                            tintColor = accent,
-                            glassAlpha = 0.24f,
-                            isActive = true,
-                            onClick = {
-                                ensurePermissionsBeforeAction(requireCameraToo = false) {
-                                    stage = HybridShareStage.SEND_MEDIA_PICKER
-                                }
-                            }
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(14.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Surface(
-                                    color = accent.copy(alpha = 0.18f),
-                                    shape = RoundedCornerShape(50)
-                                ) {
-                                    Text(
-                                        text = if (isHindi) "⚡ 45 MB/s तेज़" else "⚡ UP TO 45 MB/s",
-                                        color = accent,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 9.5.sp,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
-
-                                Box(
-                                    modifier = Modifier.size(80.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Canvas(modifier = Modifier.fillMaxSize()) {
-                                        drawCircle(
-                                            color = accent.copy(alpha = 0.22f),
-                                            radius = (size.minDimension / 2f) * orbPulse
-                                        )
-                                        drawCircle(
-                                            color = accent.copy(alpha = 0.55f),
-                                            radius = (size.minDimension / 2f) * 0.84f,
-                                            style = Stroke(width = 2.dp.toPx())
-                                        )
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(62.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                Brush.linearGradient(
-                                                    listOf(accent, Color(0xFF2979FF))
-                                                )
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.CloudUpload,
-                                            contentDescription = "Send",
-                                            tint = Color.Black,
-                                            modifier = Modifier.size(34.dp)
-                                        )
-                                    }
-                                }
-
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(
-                                        text = if (isHindi) "भेजें (SEND)" else "SEND FILES",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Black
-                                    )
-                                    Text(
-                                        text = if (isHindi) "Wi-Fi रडार • ब्लूटूथ • QR" else "Wi-Fi Radar • Bluetooth • QR",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = accent,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "${videos.size} $videosLabel • ${audios.size} $musicLabel",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.White.copy(alpha = 0.72f),
-                                        fontSize = 10.5.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        // RECEIVE HERO CARD
-                        LiquidGlassBox(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(212.dp)
-                                .testTag("share_receive_big_btn"),
-                            cornerRadius = 26.dp,
-                            tintColor = secondary,
-                            glassAlpha = 0.24f,
-                            isActive = true,
-                            onClick = {
-                                ensurePermissionsBeforeAction(requireCameraToo = false) {
-                                    stage = HybridShareStage.RECEIVE_LIVE_QR
-                                }
-                            }
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(14.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Surface(
-                                    color = secondary.copy(alpha = 0.18f),
-                                    shape = RoundedCornerShape(50)
-                                ) {
-                                    Text(
-                                        text = if (isHindi) "📡 ऑटो रडार" else "📡 AUTO RADAR",
-                                        color = secondary,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 9.5.sp,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
-
-                                Box(
-                                    modifier = Modifier.size(80.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Canvas(modifier = Modifier.fillMaxSize()) {
-                                        drawCircle(
-                                            color = secondary.copy(alpha = 0.22f),
-                                            radius = (size.minDimension / 2f) * orbPulse
-                                        )
-                                        drawCircle(
-                                            color = secondary.copy(alpha = 0.55f),
-                                            radius = (size.minDimension / 2f) * 0.84f,
-                                            style = Stroke(width = 2.dp.toPx())
-                                        )
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(62.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                Brush.linearGradient(
-                                                    listOf(secondary, Color(0xFF00BFA5))
-                                                )
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.CloudDownload,
-                                            contentDescription = "Receive",
-                                            tint = Color.Black,
-                                            modifier = Modifier.size(34.dp)
-                                        )
-                                    }
-                                }
-
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(
-                                        text = if (isHindi) "प्राप्त करें (RECEIVE)" else "RECEIVE",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Black
-                                    )
-                                    Text(
-                                        text = if (isHindi) "लाइव बारकोड • कोड #$localPairingCode" else "Live Barcode • Code #$localPairingCode",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = secondary,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = if (isHindi) "तुरंत रडार पर दिखेगा" else "Instant Radar Discovery",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.White.copy(alpha = 0.72f),
-                                        fontSize = 10.5.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Quick Hardware Controls Row (Bluetooth Transfer, Wi-Fi Panel, Hotspot, Location)
                     LiquidGlassBox(
                         modifier = Modifier.fillMaxWidth(),
-                        cornerRadius = 22.dp,
-                        tintColor = bluetoothBlue,
-                        glassAlpha = 0.18f
+                        cornerRadius = 26.dp,
+                        tintColor = gateAccent,
+                        glassAlpha = 0.20f,
+                        isActive = true
                     ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                .padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                            Box(
+                                modifier = Modifier
+                                    .size(58.dp)
+                                    .clip(CircleShape)
+                                    .background(gateAccent.copy(alpha = 0.18f)),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = if (isHindi) "🎛️ क्विक कनेक्टिविटी और ब्लूटूथ कंट्रोल" else "🎛️ Quick Connectivity & Bluetooth Controls",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 13.5.sp
-                                )
-                                Text(
-                                    text = if (allPermissionsAndRadiosReady) {
-                                        if (isHindi) "✅ सभी चालू" else "✅ All Active"
-                                    } else {
-                                        if (isHindi) "⚠️ नीचे ऑन करें" else "⚠️ Tap to Enable"
-                                    },
-                                    color = if (allPermissionsAndRadiosReady) secondary else amberGold,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
+                                Icon(
+                                    imageVector = Icons.Default.VerifiedUser,
+                                    contentDescription = null,
+                                    tint = gateAccent,
+                                    modifier = Modifier.size(30.dp)
                                 )
                             }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = if (isHindi) "बारकोड बनाने से पहले अनुमति दें" else "Allow Access to Generate Barcode",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 17.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isHindi) {
+                                    "अनुमति मिलते ही यह स्क्रीन अपने-आप छिप जाएगी और आपका QR/बारकोड तुरंत बन जाएगा"
+                                } else {
+                                    "Once allowed, this step disappears automatically and your QR & Barcode opens immediately"
+                                },
+                                color = Color.White.copy(alpha = 0.72f),
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Spacer(modifier = Modifier.height(18.dp))
+
+                            @Composable
+                            fun CleanPermRow(
+                                icon: ImageVector,
+                                title: String,
+                                subtitle: String,
+                                granted: Boolean,
+                                onTap: () -> Unit
                             ) {
-                                Button(
-                                    onClick = {
-                                        if (!hasBtPerm) {
-                                            pendingActionAfterPermissions = {
-                                                if (!WifiDirectTransferEngine.isBluetoothRadioEnabled(context)) {
-                                                    promptTurnOnBluetoothRadio()
-                                                }
-                                            }
-                                            multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredBluetoothPermissions())
-                                        } else if (!isBtRadioOn) {
-                                            promptTurnOnBluetoothRadio()
-                                        } else {
-                                            stage = HybridShareStage.SEND_MEDIA_PICKER
-                                            Toast.makeText(
-                                                context,
-                                                if (isHindi) "ब्लूटूथ तैयार है! भेजने के लिए फ़ाइलें चुनें" else "Bluetooth Ready! Select files to send via Bluetooth",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = bluetoothBlue,
-                                        contentColor = Color.White
-                                    ),
-                                    shape = RoundedCornerShape(14.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(17.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = if (isHindi) "ब्लूटूथ शेयर" else "Bluetooth Share",
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 11.5.sp,
-                                        maxLines = 1
-                                    )
-                                }
-
-                                Button(
-                                    onClick = { WifiDirectTransferEngine.openHotspotOrWifiSettings(context) },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = amberGold,
-                                        contentColor = Color.Black
-                                    ),
-                                    shape = RoundedCornerShape(14.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.WifiTethering, contentDescription = null, modifier = Modifier.size(17.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = if (isHindi) "हॉटस्पॉट खोलें" else "Open Hotspot",
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 11.5.sp,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // 4-in-1 Sharing Technologies Showcase Card
-                    LiquidGlassBox(
-                        modifier = Modifier.fillMaxWidth(),
-                        cornerRadius = 22.dp,
-                        tintColor = accent,
-                        glassAlpha = 0.16f
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(9.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = if (isHindi) "⚡ 4-इन-1 अल्ट्रा शेयरिंग इंजन" else "⚡ 4-in-1 Ultra Sharing Engine",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 13.5.sp
-                                )
-                                TextButton(
-                                    onClick = {
-                                        refreshAllPermissionsAndRadios()
-                                        Toast.makeText(context, "Active IP: $localIpAddress (Code #$localPairingCode)", Toast.LENGTH_SHORT).show()
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, tint = accent, modifier = Modifier.size(15.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(if (isHindi) "रिफ्रेश" else "Refresh IP", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-
-                            val techItems = if (isHindi) {
-                                listOf(
-                                    "📷 लाइव कैमरा बारकोड/QR स्कैनर" to "लेने वाले (Receive) फ़ोन का बारकोड भेजने वाले (Send) फ़ोन के कैमरे से लाइव स्कैन करें",
-                                    "📡 254-IP एक्टिव सबनेट रडार" to "एक ही Wi-Fi या Hotspot पर जुड़े किसी भी फ़ोन को 1.5 सेकंड में अपने-आप खोजता है",
-                                    "🔵 डायरेक्ट ब्लूटूथ + क्विक शेयर" to "ब्लूटूथ परमिशन और रेडियो की ऑटो-जांच के साथ सीधे ब्लूटूथ से फ़ाइलें भेजें",
-                                    "🌐 डायरेक्ट ब्राउज़र डाउनलोड (बिना ऐप)" to "दूसरे फ़ोन में ऐप न होने पर भी QR स्कैन करके Chrome/Safari में सीधे डाउनलोड करें"
-                                )
-                            } else {
-                                listOf(
-                                    "📷 Live Camera Barcode & QR Scanner" to "Scan the Receiver phone's live Barcode/QR directly with the Sender's camera",
-                                    "📡 254-IP Active Subnet Radar Sweep" to "Automatically discovers any Receiver phone on the same Wi-Fi or Hotspot in 1.5s",
-                                    "🔵 Direct Bluetooth + Quick Share Bridge" to "Auto-verifies Bluetooth permissions & radio to send files over Bluetooth",
-                                    "🌐 Direct Browser HTTP Portal (No App Needed)" to "Other phone can scan QR with any camera to download files in Chrome/Safari"
-                                )
-                            }
-
-                            techItems.forEach { (title, desc) ->
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.Top
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(Color.White.copy(alpha = if (granted) 0.06f else 0.11f))
+                                        .clickable(enabled = !granted, onClick = onTap)
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.CheckCircle,
+                                        imageVector = icon,
                                         contentDescription = null,
-                                        tint = secondary,
-                                        modifier = Modifier
-                                            .size(16.dp)
-                                            .padding(top = 2.dp)
+                                        tint = if (granted) secondary else gateAccent,
+                                        modifier = Modifier.size(22.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Column {
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = title,
                                             color = Color.White,
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 12.sp
+                                            fontSize = 13.5.sp
                                         )
                                         Text(
-                                            text = desc,
-                                            color = Color.White.copy(alpha = 0.68f),
-                                            fontSize = 10.5.sp
+                                            text = subtitle,
+                                            color = Color.White.copy(alpha = 0.65f),
+                                            fontSize = 11.sp
                                         )
+                                    }
+                                    if (granted) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = "Allowed",
+                                            tint = secondary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    } else {
+                                        Surface(
+                                            color = gateAccent.copy(alpha = 0.22f),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Text(
+                                                text = if (isHindi) "चालू करें" else "Allow",
+                                                color = gateAccent,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 11.sp,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
+
+                            CleanPermRow(
+                                icon = Icons.Default.Wifi,
+                                title = if (isHindi) "Wi-Fi और नज़दीकी डिवाइस" else "Wi-Fi & Nearby Devices",
+                                subtitle = if (isHindi) "तेज़ डायरेक्ट कनेक्शन के लिए" else "For direct high-speed Wi-Fi transfer",
+                                granted = hasWifiPerm,
+                                onTap = {
+                                    multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredWifiPermissions())
+                                }
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            CleanPermRow(
+                                icon = Icons.Default.LocationOn,
+                                title = if (isHindi) "लोकेशन (नज़दीकी खोज)" else "Location (Nearby Discovery)",
+                                subtitle = if (isHindi) "पास के फ़ोन खोजने के लिए आवश्यक" else "Required by Android to detect nearby phones",
+                                granted = hasLocationPerm,
+                                onTap = {
+                                    multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredLocationPermissions())
+                                }
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            CleanPermRow(
+                                icon = Icons.Default.Bluetooth,
+                                title = if (isHindi) "ब्लूटूथ पेयरिंग" else "Bluetooth Pairing",
+                                subtitle = if (isHindi) "तुरंत हैंडशेक और ब्लूटूथ शेयर के लिए" else "For instant pairing & Bluetooth fallback",
+                                granted = hasBtPerm,
+                                onTap = {
+                                    multiPermissionLauncher.launch(WifiDirectTransferEngine.getRequiredBluetoothPermissions())
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            Button(
+                                onClick = {
+                                    val missing = WifiDirectTransferEngine.getMissingHybridSharePermissions(context)
+                                        .filter { it != Manifest.permission.CAMERA }
+                                        .toTypedArray()
+                                    if (missing.isEmpty()) {
+                                        val target = pendingTargetStageAfterPerm ?: HybridShareStage.RECEIVE_LIVE_QR
+                                        pendingTargetStageAfterPerm = null
+                                        if (target == HybridShareStage.SEND_CONNECT_RADAR) connectMethodTab = 0
+                                        stage = target
+                                    } else {
+                                        pendingRequiresCamera = false
+                                        pendingActionAfterPermissions = {
+                                            val target = pendingTargetStageAfterPerm ?: HybridShareStage.RECEIVE_LIVE_QR
+                                            pendingTargetStageAfterPerm = null
+                                            if (target == HybridShareStage.SEND_CONNECT_RADAR) connectMethodTab = 0
+                                            stage = target
+                                        }
+                                        multiPermissionLauncher.launch(missing)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = gateAccent,
+                                    contentColor = Color.Black
+                                ),
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp)
+                                    .testTag("share_allow_permissions_btn")
+                            ) {
+                                Text(
+                                    text = if (isHindi) "अनुमति दें और बारकोड बनाएँ" else "Allow & Generate Barcode",
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 14.sp
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            TextButton(
+                                onClick = {
+                                    val target = pendingTargetStageAfterPerm ?: HybridShareStage.RECEIVE_LIVE_QR
+                                    pendingTargetStageAfterPerm = null
+                                    if (target == HybridShareStage.SEND_CONNECT_RADAR) connectMethodTab = 0
+                                    stage = target
+                                }
+                            ) {
+                                Text(
+                                    text = if (isHindi) "सीधे QR / बारकोड पर जाएँ →" else "Continue to QR & Barcode →",
+                                    color = Color.White.copy(alpha = 0.65f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
 
@@ -1440,9 +1426,7 @@ fun ShareKaroTransferScreen(
                     Button(
                         onClick = {
                             if (selectedIds.isNotEmpty()) {
-                                ensurePermissionsBeforeAction(requireCameraToo = false) {
-                                    stage = HybridShareStage.SEND_CONNECT_RADAR
-                                }
+                                enterStageWithPermissionGate(HybridShareStage.SEND_CONNECT_RADAR)
                             } else {
                                 Toast.makeText(context, "Select at least 1 video or song", Toast.LENGTH_SHORT).show()
                             }
@@ -1458,12 +1442,12 @@ fun ShareKaroTransferScreen(
                             .height(50.dp)
                             .testTag("proceed_send_radar_btn")
                     ) {
-                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(19.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "${if (isHindi) "स्कैन / रडार" else "Radar / QR"} (${selectedIds.size})",
+                            text = "${if (isHindi) "भेजें" else "Send"} (${selectedIds.size})",
                             fontWeight = FontWeight.ExtraBold,
-                            fontSize = 12.5.sp
+                            fontSize = 13.5.sp
                         )
                     }
 
@@ -1507,7 +1491,8 @@ fun ShareKaroTransferScreen(
             }
 
             // =====================================================================
-            // 3. SEND STEP 2: LIVE CAMERA BARCODE/QR SCANNER + ACTIVE RADAR + HTTP PORTAL
+            // 3. SEND STEP 2: INSTANT GENERATED SEND QR & BARCODE FIRST!
+            //    (Permissions are already hidden; clean tabs for Scan/Nearby & Code)
             // =====================================================================
             HybridShareStage.SEND_CONNECT_RADAR -> {
                 Row(
@@ -1515,23 +1500,23 @@ fun ShareKaroTransferScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     val tabs = listOf(
-                        Triple(0, Icons.Default.QrCodeScanner, if (isHindi) "लाइव स्कैनर" else "Live Scanner"),
-                        Triple(1, Icons.Default.Pin, if (isHindi) "कोड / IP" else "Code / IP"),
-                        Triple(2, Icons.Default.Language, if (isHindi) "ब्राउज़र QR" else "Browser QR")
+                        Triple(0, Icons.Default.QrCode2, if (isHindi) "QR / बारकोड" else "QR & Barcode"),
+                        Triple(1, Icons.Default.QrCodeScanner, if (isHindi) "स्कैन / पास के फ़ोन" else "Scan / Nearby"),
+                        Triple(2, Icons.Default.Pin, if (isHindi) "कोड / IP" else "Code / IP")
                     )
                     tabs.forEach { (idx, icon, label) ->
                         val active = connectMethodTab == idx
                         LiquidGlassBox(
                             modifier = Modifier
                                 .weight(1f)
-                                .height(40.dp),
+                                .height(42.dp),
                             cornerRadius = 14.dp,
                             tintColor = if (active) accent else Color.White,
-                            glassAlpha = if (active) 0.30f else 0.10f,
+                            glassAlpha = if (active) 0.28f else 0.08f,
                             isActive = active,
                             onClick = {
                                 connectMethodTab = idx
-                                if (idx == 0 && !hasCameraPermission) {
+                                if (idx == 1 && !hasCameraPermission) {
                                     cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                                 }
                             }
@@ -1544,7 +1529,7 @@ fun ShareKaroTransferScreen(
                                 Icon(
                                     imageVector = icon,
                                     contentDescription = label,
-                                    tint = if (active) accent else Color.White.copy(alpha = 0.75f),
+                                    tint = if (active) accent else Color.White.copy(alpha = 0.72f),
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -1561,11 +1546,261 @@ fun ShareKaroTransferScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 when (connectMethodTab) {
-                    // TAB 0: LIVE CAMERAX BARCODE & QR SCANNER WITH REAL OPTICAL FRAME ANALYZER
+                    // TAB 0 (DEFAULT): INSTANT CLEAN GENERATED SEND QR CODE + 1D BARCODE!
                     0 -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            LiquidGlassBox(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 26.dp,
+                                tintColor = accent,
+                                glassAlpha = 0.18f,
+                                isActive = true
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(20.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Surface(
+                                        color = accent.copy(alpha = 0.16f),
+                                        shape = RoundedCornerShape(50)
+                                    ) {
+                                        Text(
+                                            text = if (isHindi) "${selectedIds.size} फ़ाइलें भेजने के लिए तैयार" else "${selectedIds.size} Files Ready to Share",
+                                            color = accent,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(14.dp))
+
+                                    // Crisp High-Contrast White QR + 1D Barcode Card
+                                    Column(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(20.dp))
+                                            .background(Color.White)
+                                            .padding(14.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Box(
+                                            modifier = Modifier.size(196.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            LiveQrMatrixCanvas(
+                                                matrix = httpQrMatrix,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Live1DBarcodeStripCanvas(
+                                            payload = httpDirectUrl,
+                                            modifier = Modifier
+                                                .width(196.dp)
+                                                .height(38.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "HYBRID-$localPairingCode • $httpDirectUrl",
+                                            color = Color.Black,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(14.dp))
+
+                                    Text(
+                                        text = if (isHindi) {
+                                            "दूसरे फ़ोन से इस QR / बारकोड को स्कैन करें और तुरंत फ़ाइलें प्राप्त करें"
+                                        } else {
+                                            "Scan this QR or Barcode from the receiver phone to receive immediately"
+                                        },
+                                        color = Color.White.copy(alpha = 0.78f),
+                                        fontSize = 12.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+
+                            // Clean Nearby Receiver Pills (ONLY appears when a receiver phone is actually discovered!)
+                            if (discoveredPeers.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Text(
+                                    text = if (isHindi) "पास के रिसीवर फ़ोन (टैप करके भेजें)" else "Nearby Receivers Detected (Tap to Send)",
+                                    color = secondary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                discoveredPeers.forEach { peer ->
+                                    Surface(
+                                        onClick = { connectAndSendToRealPeer(peer) },
+                                        color = secondary.copy(alpha = 0.14f),
+                                        shape = RoundedCornerShape(16.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 8.dp)
+                                            .border(1.dp, secondary.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.Smartphone, contentDescription = null, tint = secondary, modifier = Modifier.size(22.dp))
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(peer.deviceName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                                                Text(peer.ipAddress, color = Color.White.copy(alpha = 0.65f), fontSize = 11.sp)
+                                            }
+                                            Text(
+                                                text = if (isHindi) "भेजें →" else "Send →",
+                                                color = secondary,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 12.5.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // TAB 1: LIVE CAMERA QR/BARCODE SCANNER + NEARBY RADAR
+                    1 -> {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            LiquidGlassBox(
+                                modifier = Modifier.fillMaxWidth(),
+                                cornerRadius = 22.dp,
+                                tintColor = accent,
+                                isActive = true
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    if (!hasCameraPermission) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = if (isHindi) "लाइव QR / बारकोड स्कैनर" else "Live QR & Barcode Scanner",
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 14.sp
+                                                )
+                                                Text(
+                                                    text = if (isHindi) {
+                                                        "रिसीवर फ़ोन का QR स्कैन करने के लिए कैमरा चालू करें"
+                                                    } else {
+                                                        "Allow camera to scan the Receiver's QR or Barcode"
+                                                    },
+                                                    color = Color.White.copy(alpha = 0.72f),
+                                                    fontSize = 11.sp
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Button(
+                                                onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                                                shape = RoundedCornerShape(14.dp)
+                                            ) {
+                                                Text(if (isHindi) "कैमरा खोलें" else "Enable", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                            }
+                                        }
+                                    } else {
+                                        LiveCameraQrBarcodeScannerView(
+                                            accentColor = accent,
+                                            isHindi = isHindi,
+                                            discoveredPeers = discoveredPeers,
+                                            onOpticalBarcodeDetected = {
+                                                opticalPatternDetectedCount++
+                                                val readyPeer = discoveredPeers.firstOrNull()
+                                                if (readyPeer != null && !isConnectingHandshake) {
+                                                    connectAndSendToRealPeer(readyPeer)
+                                                } else {
+                                                    triggerActiveSubnetRadarSweep()
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (connectionErrorText != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = connectionErrorText!!,
+                                    color = Color(0xFFFF5252),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (isHindi) "पास के फ़ोन (${discoveredPeers.size})" else "Nearby Devices (${discoveredPeers.size})",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                TextButton(
+                                    onClick = { triggerActiveSubnetRadarSweep() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(Icons.Default.Radar, contentDescription = "Rescan", tint = accent, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isScanningSubnet) (if (isHindi) "खोज जारी..." else "Scanning...") else (if (isHindi) "री-स्कैन" else "Rescan"),
+                                        color = accent,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.5.sp
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                DeviceNameRadarView(
+                                    discoveredPeers = discoveredPeers,
+                                    isHindi = isHindi,
+                                    accentColor = accent,
+                                    onPeerClick = { peer -> connectAndSendToRealPeer(peer) }
+                                )
+                            }
+                        }
+                    }
+
+                    // TAB 2: PAIRING CODE OR IP INPUT
+                    else -> {
                         LiquidGlassBox(
                             modifier = Modifier.fillMaxWidth(),
                             cornerRadius = 22.dp,
@@ -1575,99 +1810,25 @@ fun ShareKaroTransferScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(12.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                if (!hasCameraPermission) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = if (isHindi) "📷 लाइव बारकोड और QR कैमरा स्कैनर" else "📷 Live Barcode & QR Camera Scanner",
-                                                color = Color.White,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                fontSize = 14.sp
-                                            )
-                                            Text(
-                                                text = if (isHindi) {
-                                                    "लेने वाले (Receive) फ़ोन का लाइव बारकोड/QR स्कैन करने के लिए कैमरा चालू करें"
-                                                } else {
-                                                    "Enable camera to scan the Receiver phone's live Barcode / QR code"
-                                                },
-                                                color = Color.White.copy(alpha = 0.75f),
-                                                fontSize = 11.sp
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Button(
-                                            onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = accent,
-                                                contentColor = Color.Black
-                                            ),
-                                            shape = RoundedCornerShape(14.dp)
-                                        ) {
-                                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = if (isHindi) "कैमरा खोलें" else "Open Camera",
-                                                fontWeight = FontWeight.ExtraBold,
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    LiveCameraQrBarcodeScannerView(
-                                        accentColor = accent,
-                                        isHindi = isHindi,
-                                        discoveredPeers = discoveredPeers,
-                                        onOpticalBarcodeDetected = {
-                                            opticalPatternDetectedCount++
-                                            val readyPeer = discoveredPeers.firstOrNull()
-                                            if (readyPeer != null && !isConnectingHandshake) {
-                                                connectAndSendToRealPeer(readyPeer)
-                                            } else {
-                                                triggerActiveSubnetRadarSweep()
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // TAB 1: PAIRING CODE (e.g. 104) OR FULL IP INPUT
-                    1 -> {
-                        LiquidGlassBox(
-                            modifier = Modifier.fillMaxWidth(),
-                            cornerRadius = 20.dp,
-                            tintColor = accent,
-                            isActive = true
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp)
+                                    .padding(16.dp)
                             ) {
                                 Text(
-                                    text = if (isHindi) "🔢 रिसीवर पेयरिंग कोड या IP से तुरंत जुड़ें" else "🔢 Instant Connect via Receiver Pairing Code or IP",
+                                    text = if (isHindi) "रिसीवर पेयरिंग कोड या IP डालें" else "Enter Receiver Pairing Code or IP",
                                     color = Color.White,
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 13.5.sp
+                                    fontSize = 14.sp
                                 )
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = if (isHindi) {
-                                        "दूसरे फ़ोन की Receive स्क्रीन पर लिखा 1-3 अंकों का कोड (जैसे 1, 43, 104) या पूरा IP डालें"
+                                        "दूसरे फ़ोन की Receive स्क्रीन पर लिखा कोड (जैसे 43 या 104) दर्ज करें"
                                     } else {
-                                        "Enter the 1-3 digit Pairing Code shown on the Receiver phone (e.g. 1, 43, 104) or full IP"
+                                        "Type the 1-3 digit Pairing Code shown on the Receiver's screen (e.g. 43, 104)"
                                     },
-                                    color = Color.White.copy(alpha = 0.72f),
-                                    fontSize = 11.sp
+                                    color = Color.White.copy(alpha = 0.70f),
+                                    fontSize = 11.5.sp
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(12.dp))
                                 OutlinedTextField(
                                     value = scannedCodeInput,
                                     onValueChange = {
@@ -1676,9 +1837,7 @@ fun ShareKaroTransferScreen(
                                     },
                                     singleLine = true,
                                     label = {
-                                        Text(
-                                            if (isHindi) "रिसीवर कोड (जैसे 104) या IP (192.168...)" else "Receiver Code (e.g. 104) or IP Address"
-                                        )
+                                        Text(if (isHindi) "पेयरिंग कोड या IP" else "Pairing Code or IP Address")
                                     },
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = accent,
@@ -1697,7 +1856,7 @@ fun ShareKaroTransferScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(12.dp))
                                 Button(
                                     onClick = {
                                         val peer = WifiDirectTransferEngine.parsePairingInput(scannedCodeInput, localIpAddress)
@@ -1712,17 +1871,17 @@ fun ShareKaroTransferScreen(
                                         }
                                     },
                                     enabled = !isConnectingHandshake,
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = accent,
-                                        contentColor = Color.Black
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
+                                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
                                 ) {
                                     Text(
                                         text = if (isConnectingHandshake) {
-                                            if (isHindi) "कनेक्ट हो रहा है..." else "Connecting Handshake..."
+                                            if (isHindi) "कनेक्ट हो रहा है..." else "Connecting..."
                                         } else {
-                                            if (isHindi) "कनेक्ट करें और भेजें" else "Connect & Send Now"
+                                            if (isHindi) "कनेक्ट करें और भेजें" else "Connect & Send"
                                         },
                                         fontWeight = FontWeight.ExtraBold
                                     )
@@ -1730,187 +1889,57 @@ fun ShareKaroTransferScreen(
                             }
                         }
                     }
-
-                    // TAB 2: DIRECT BROWSER HTTP PORTAL QR (WORKS WITHOUT APP ON OTHER PHONE!)
-                    else -> {
-                        LiquidGlassBox(
-                            modifier = Modifier.fillMaxWidth(),
-                            cornerRadius = 20.dp,
-                            tintColor = secondary,
-                            isActive = true
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(112.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(Color.White)
-                                        .padding(6.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    LiveQrMatrixCanvas(
-                                        matrix = httpQrMatrix,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = if (isHindi) "🌐 बिना ऐप के किसी भी फ़ोन में डाउनलोड करें" else "🌐 Universal Browser QR (No App Needed)",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 13.sp
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = if (isHindi) {
-                                            "दूसरे फ़ोन के सामान्य कैमरे से यह QR स्कैन करें या ब्राउज़र में खोलें:"
-                                        } else {
-                                            "Scan this real QR with ANY phone camera or open in Chrome/Safari:"
-                                        },
-                                        color = Color.White.copy(alpha = 0.72f),
-                                        fontSize = 10.5.sp
-                                    )
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        text = httpDirectUrl,
-                                        color = secondary,
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 13.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (connectionErrorText != null && connectMethodTab != 1) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = connectionErrorText!!,
-                        color = Color(0xFFFF5252),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Radar Header Controls (Rescan 254 IPs + Bluetooth Fallback)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = if (isHindi) {
-                            "📡 एक्टिव रडार (${discoveredPeers.size} फ़ोन मिले)"
-                        } else {
-                            "📡 Active Subnet Radar (${discoveredPeers.size} Found)"
-                        },
-                        color = Color.White,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp
-                    )
-                    TextButton(
-                        onClick = { triggerActiveSubnetRadarSweep() },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Radar,
-                            contentDescription = "Rescan Radar",
-                            tint = accent,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (isScanningSubnet) {
-                                if (isHindi) "स्कैन हो रहा है..." else "Sweeping 254 IPs..."
-                            } else {
-                                if (isHindi) "रडार री-स्कैन करें" else "Rescan Radar"
-                            },
-                            color = accent,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.5.sp
-                        )
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    DeviceNameRadarView(
-                        discoveredPeers = discoveredPeers,
-                        isHindi = isHindi,
-                        accentColor = accent,
-                        onPeerClick = { peer ->
-                            connectAndSendToRealPeer(peer)
-                        }
-                    )
                 }
             }
 
             // =====================================================================
-            // 4. RECEIVE: LIVE ISO QR CODE + 1D BARCODE STRIP + PAIRING CODE + SERVER
+            // 4. RECEIVE: CLEAN GENERATED QR CODE + 1D BARCODE (ZERO CLUTTER!)
             // =====================================================================
             HybridShareStage.RECEIVE_LIVE_QR -> {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
                     LiquidGlassBox(
                         modifier = Modifier.fillMaxWidth(),
-                        cornerRadius = 24.dp,
+                        cornerRadius = 26.dp,
                         tintColor = secondary,
+                        glassAlpha = 0.18f,
                         isActive = true
                     ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(16.dp),
+                                .padding(20.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
+                            Surface(
+                                color = secondary.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(50)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.QrCode2,
-                                    contentDescription = null,
-                                    tint = secondary,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (isHindi) "लाइव रिसीव बारकोड, QR और पेयरिंग कोड" else "Live Receive Barcode, QR & Pairing Code",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold
+                                    text = if (isHindi) "पेयरिंग कोड #$localPairingCode" else "Pairing Code #$localPairingCode",
+                                    color = secondary,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
                                 )
                             }
-                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Spacer(modifier = Modifier.height(14.dp))
 
                             Column(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(18.dp))
+                                    .clip(RoundedCornerShape(20.dp))
                                     .background(Color.White)
-                                    .padding(12.dp),
+                                    .padding(14.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Box(
-                                    modifier = Modifier.size(172.dp),
+                                    modifier = Modifier.size(204.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     LiveQrMatrixCanvas(
@@ -1918,73 +1947,47 @@ fun ShareKaroTransferScreen(
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(10.dp))
                                 Live1DBarcodeStripCanvas(
                                     payload = liveQrPayload,
                                     modifier = Modifier
-                                        .width(172.dp)
-                                        .height(34.dp)
+                                        .width(204.dp)
+                                        .height(38.dp)
                                 )
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = "HYBRID-$localPairingCode • $localIpAddress",
                                     color = Color.Black,
-                                    fontWeight = FontWeight.Black,
+                                    fontWeight = FontWeight.Bold,
                                     fontSize = 10.sp
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = localDeviceName,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = secondary,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Surface(
-                                color = secondary.copy(alpha = 0.18f),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text(
-                                    text = if (isHindi) {
-                                        "पेयरिंग कोड: $localPairingCode  •  IP: $localIpAddress"
-                                    } else {
-                                        "Pairing Code: $localPairingCode  •  IP: $localIpAddress"
-                                    },
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
+
                             Text(
                                 text = if (isHindi) {
-                                    "भेजने वाले (Send) फ़ोन के लाइव स्कैनर से ऊपर का बारकोड/QR स्कैन करें या रडार पर '$localDeviceName' को टैप करें"
+                                    "भेजने वाले फ़ोन से यह QR / बारकोड स्कैन करें"
                                 } else {
-                                    "Scan the Barcode/QR above using Sender's Live Camera Scanner, or tap '$localDeviceName' on Sender's Radar"
+                                    "Scan this QR or Barcode from the Sender phone"
                                 },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.76f),
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isHindi) {
+                                    "कनेक्शन की प्रतीक्षा में... ($localDeviceName)"
+                                } else {
+                                    "Waiting for sender connection... ($localDeviceName)"
+                                },
+                                color = secondary,
+                                fontSize = 11.5.sp,
                                 textAlign = TextAlign.Center
                             )
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(210.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        ReceiverWaitingRadarView(
-                            localDeviceName = localDeviceName,
-                            localIpAddress = localIpAddress,
-                            isHindi = isHindi,
-                            accentColor = secondary
-                        )
                     }
                 }
             }

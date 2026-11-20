@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -91,7 +92,7 @@ fun GuaranteedAlbumArt(
 
     LaunchedEffect(mediaPath, isVideo) {
         if (imageBitmap == null && mediaPath.isNotBlank() && !AlbumArtBitmapCache.isKnownEmpty(mediaPath)) {
-            delay(30L) // Fast-scroll debounce: cancels immediately if item scrolls off-screen
+            delay(75L) // Fast-scroll settle debounce: cancels immediately while flinging so scrolling stays locked at 120fps
             val loaded = withContext(Dispatchers.IO) {
                 AlbumArtBitmapCache.get(mediaPath)?.let { return@withContext it }
                 if (AlbumArtBitmapCache.isKnownEmpty(mediaPath)) return@withContext null
@@ -259,11 +260,12 @@ fun LiquidGlassBox(
             }
         )
         .clip(shape)
-        .drawBehind {
+        .drawWithCache {
             val rPx = cornerRadius.toPx()
             val w = size.width
             val h = size.height
             val cr = CornerRadius(rPx, rPx)
+            val strokeW = if (isActive) 1.5.dp.toPx() else 1.dp.toPx()
 
             if (simpleMode) {
                 val cardSurface = when (simplePreset) {
@@ -272,43 +274,36 @@ fun LiquidGlassBox(
                     else -> if (isActive) Color(0xFF1E2430) else Color(0xFF161A22)
                 }
                 val borderCol = if (isActive) Color(0xFF38BDF8) else Color(0xFF28303F)
-                drawRoundRect(
-                    color = cardSurface,
-                    cornerRadius = cr
-                )
-                drawRoundRect(
-                    color = borderCol,
-                    cornerRadius = cr,
-                    style = Stroke(width = if (isActive) 1.3.dp.toPx() else 1.dp.toPx())
-                )
+                val simpleStroke = Stroke(width = if (isActive) 1.3.dp.toPx() else 1.dp.toPx())
+                onDrawBehind {
+                    drawRoundRect(color = cardSurface, cornerRadius = cr)
+                    drawRoundRect(color = borderCol, cornerRadius = cr, style = simpleStroke)
+                }
             } else {
                 val baseAlpha = glassAlpha.coerceIn(0.08f, 0.85f)
-                drawRoundRect(
-                    brush = Brush.linearGradient(
-                        colors = if (isActive) {
-                            listOf(
-                                primaryTint.copy(alpha = (baseAlpha + 0.15f).coerceAtMost(0.62f)),
-                                Color(0xD910192B),
-                                secondaryTint.copy(alpha = (baseAlpha + 0.08f).coerceAtMost(0.52f))
-                            )
-                        } else {
-                            listOf(
-                                primaryTint.copy(alpha = baseAlpha),
-                                Color(0xD90E1524),
-                                secondaryTint.copy(alpha = (baseAlpha * 0.62f).coerceAtLeast(0.08f))
-                            )
-                        },
-                        start = Offset.Zero,
-                        end = Offset(w, h)
-                    ),
-                    cornerRadius = cr
+                val bgBrush = Brush.linearGradient(
+                    colors = if (isActive) {
+                        listOf(
+                            primaryTint.copy(alpha = (baseAlpha + 0.15f).coerceAtMost(0.62f)),
+                            Color(0xD910192B),
+                            secondaryTint.copy(alpha = (baseAlpha + 0.08f).coerceAtMost(0.52f))
+                        )
+                    } else {
+                        listOf(
+                            primaryTint.copy(alpha = baseAlpha),
+                            Color(0xD90E1524),
+                            secondaryTint.copy(alpha = (baseAlpha * 0.62f).coerceAtLeast(0.08f))
+                        )
+                    },
+                    start = Offset.Zero,
+                    end = Offset(w, h)
                 )
-
-                drawRoundRect(
-                    color = if (isActive) primaryTint.copy(alpha = 0.82f) else primaryTint.copy(alpha = 0.36f),
-                    cornerRadius = cr,
-                    style = Stroke(width = if (isActive) 1.5.dp.toPx() else 1.dp.toPx())
-                )
+                val borderCol = if (isActive) primaryTint.copy(alpha = 0.82f) else primaryTint.copy(alpha = 0.36f)
+                val borderStroke = Stroke(width = strokeW)
+                onDrawBehind {
+                    drawRoundRect(brush = bgBrush, cornerRadius = cr)
+                    drawRoundRect(color = borderCol, cornerRadius = cr, style = borderStroke)
+                }
             }
         }
         .then(

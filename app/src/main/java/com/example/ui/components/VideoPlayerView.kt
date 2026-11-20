@@ -192,7 +192,7 @@ fun VideoPlayerView(
     val context = LocalContext.current
     val hostView = LocalView.current
     val coroutineScope = rememberCoroutineScope()
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val prefs = remember { context.getSharedPreferences("HYBRID_PLAYER_PREFS", Context.MODE_PRIVATE) }
 
@@ -310,6 +310,8 @@ fun VideoPlayerView(
     }
     var isStreamBuffering by remember(videoPath) { mutableStateOf(isNetworkStream) }
     var streamBufferPercent by remember(videoPath) { mutableStateOf(0) }
+    var streamErrorMessage by remember(videoPath) { mutableStateOf<String?>(null) }
+    var streamRetryNonce by remember(videoPath) { mutableIntStateOf(0) }
     val streamNetworkHeaders = remember {
         mapOf(
             "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
@@ -1178,7 +1180,7 @@ fun VideoPlayerView(
         val configOrientation = currentConfig.orientation
         val configWidthDp = currentConfig.screenWidthDp
         val configHeightDp = currentConfig.screenHeightDp
-        key(videoPath) {
+        key(videoPath, streamRetryNonce) {
             AndroidView(
                 factory = { ctx ->
                     object : android.widget.FrameLayout(ctx) {
@@ -1224,6 +1226,7 @@ fun VideoPlayerView(
                             fun configurePreparedPlayer(mp: android.media.MediaPlayer) {
                                 isSoftwareFallbackActive = false
                                 isStreamBuffering = false
+                                streamErrorMessage = null
                                 mediaPlayerRef = mp
                                 try {
                                     mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
@@ -1317,6 +1320,11 @@ fun VideoPlayerView(
                                         }
                                         rawMp.setOnErrorListener { mp, _, _ ->
                                             isStreamBuffering = false
+                                            if (isNetworkStream) {
+                                                isPlaying = false
+                                                streamErrorMessage = "Unable to connect to stream. Check your internet connection or stream URL."
+                                                return@setOnErrorListener true
+                                            }
                                             // If we already played up to the end of the downloaded partial stream, loop back to 0:00 cleanly!
                                             if (currentPosMs >= 900L || latestKnownPositionMs >= 900L) {
                                                 val reachedMs = maxOf(currentPosMs, latestKnownPositionMs)
@@ -1340,8 +1348,14 @@ fun VideoPlayerView(
                                         }
                                         rawMp.prepareAsync()
                                     } catch (_: Exception) {
-                                        isSoftwareFallbackActive = true
-                                        isPlaying = true
+                                        isStreamBuffering = false
+                                        if (isNetworkStream) {
+                                            isPlaying = false
+                                            streamErrorMessage = "Stream failed to initialize. Tap Retry to reconnect."
+                                        } else {
+                                            isSoftwareFallbackActive = true
+                                            isPlaying = true
+                                        }
                                     }
                                 }
 
@@ -1480,7 +1494,7 @@ fun VideoPlayerView(
         }
 
         // Live Network Stream Buffering & Telemetry HUD
-        if (isNetworkStream && isStreamBuffering) {
+        if (isNetworkStream && isStreamBuffering && streamErrorMessage == null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -1498,7 +1512,7 @@ fun VideoPlayerView(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = if (streamBufferPercent > 0) "⚡ Buffering HD Stream ($streamBufferPercent%)" else "⚡ Connecting Network Stream...",
+                        text = if (streamBufferPercent > 0) "Buffering Stream ($streamBufferPercent%)" else "Connecting Stream...",
                         color = Color.White,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 13.sp
@@ -1511,6 +1525,61 @@ fun VideoPlayerView(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+            }
+        }
+
+        // Clean Network Stream Error & 1-Tap Retry Card (Never stuck on infinite spinner!)
+        streamErrorMessage?.let { errMsg ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 28.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(Color(0xEB0B1322))
+                    .border(1.5.dp, Color(0xFFFF5252).copy(alpha = 0.65f), RoundedCornerShape(22.dp))
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.WifiOff,
+                        contentDescription = "Stream Error",
+                        tint = Color(0xFFFF5252),
+                        modifier = Modifier.size(34.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Stream Unavailable",
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = errMsg,
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = onBackClick) {
+                            Text("Back", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                        Button(
+                            onClick = {
+                                streamErrorMessage = null
+                                isStreamBuffering = true
+                                streamRetryNonce++
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = accentColor, contentColor = Color.Black)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Retry", fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
                 }
             }
         }

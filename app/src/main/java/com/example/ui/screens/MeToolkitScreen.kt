@@ -2035,17 +2035,28 @@ fun MeToolkitScreen(
             // SUB-SCREEN: NETWORK STREAM PRO STUDIO (DIRECT URL + 8 WORKING HD CHANNELS + HISTORY)
             // =========================================================================
             MeSubScreen.NETWORK_STREAM_STUDIO -> {
+                var streamCategory by remember { mutableStateOf("All") }
+                val filteredStreams = remember(streamCategory) {
+                    when (streamCategory) {
+                        "4K" -> VERIFIED_WORKING_HD_STREAMS.filter { it.badge.contains("4K", true) || it.badge.contains("HDR", true) }
+                        "Cinema" -> VERIFIED_WORKING_HD_STREAMS.filter { it.badge.contains("HD", true) || it.badge.contains("FILM", true) }
+                        "Action" -> VERIFIED_WORKING_HD_STREAMS.filter { it.badge.contains("SCI-FI", true) || it.badge.contains("RALLY", true) || it.badge.contains("FAST", true) }
+                        else -> VERIFIED_WORKING_HD_STREAMS
+                    }
+                }
+
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(bottom = 28.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    // 1. Direct Stream URL Box + Paste Link + Buffer & Mode Controls
+                    // 1. Sleek Stream URL Input + 1-Tap Paste + Video/Audio Toggle + Play Button
                     item {
                         LiquidGlassBox(
                             modifier = Modifier.fillMaxWidth(),
                             cornerRadius = 22.dp,
                             tintColor = HybridGold,
+                            glassAlpha = 0.16f,
                             isActive = true
                         ) {
                             Column(
@@ -2059,58 +2070,31 @@ fun MeToolkitScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
                                             imageVector = Icons.Default.LiveTv,
                                             contentDescription = null,
                                             tint = HybridGold,
-                                            modifier = Modifier.size(22.dp)
+                                            modifier = Modifier.size(20.dp)
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Column {
-                                            Text(
-                                                text = if (isHindi) "डायरेक्ट वीडियो / ऑडियो स्ट्रीम चलाएं" else "Direct Video & Live Stream Player",
-                                                color = Color.White,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                fontSize = 14.sp
-                                            )
-                                            Text(
-                                                text = "MP4 • MKV • WebM • HLS (.m3u8) • DASH • MP3",
-                                                color = HybridGold,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 10.5.sp
-                                            )
-                                        }
-                                    }
-
-                                    // 1-Tap Clipboard Paste Button
-                                    TextButton(
-                                        onClick = {
-                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                            val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim().orEmpty()
-                                            if (clipText.isNotEmpty()) {
-                                                streamUrlInput = clipText
-                                                Toast.makeText(
-                                                    context,
-                                                    if (isHindi) "क्लिपबोर्ड से लिंक पेस्ट हो गया!" else "Stream URL pasted from Clipboard!",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            } else {
-                                                Toast.makeText(
-                                                    context,
-                                                    if (isHindi) "क्लिपबोर्ड खाली है" else "Clipboard is empty",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            }
-                                        }
-                                    ) {
-                                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = accent, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
                                         Text(
-                                            text = if (isHindi) "पेस्ट करें" else "Paste URL",
-                                            color = accent,
+                                            text = if (isHindi) "लाइव स्ट्रीम / URL प्लेयर" else "Live Stream Player",
+                                            color = Color.White,
                                             fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 11.5.sp
+                                            fontSize = 15.sp
+                                        )
+                                    }
+                                    Surface(
+                                        color = HybridGold.copy(alpha = 0.16f),
+                                        shape = RoundedCornerShape(50)
+                                    ) {
+                                        Text(
+                                            text = "HLS • MP4 • MKV",
+                                            color = HybridGold,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                         )
                                     }
                                 }
@@ -2119,106 +2103,93 @@ fun MeToolkitScreen(
                                     value = streamUrlInput,
                                     onValueChange = { streamUrlInput = it },
                                     singleLine = true,
-                                    label = {
+                                    placeholder = {
                                         Text(
-                                            if (isHindi) "https://... (.mp4, .m3u8, .mkv, .mp3)" else "https://... (.mp4, .m3u8, .mkv, .mp3)"
+                                            if (isHindi) "स्ट्रीम लिंक पेस्ट करें (https://...)" else "Paste stream URL (https://...)",
+                                            color = Color.White.copy(alpha = 0.50f),
+                                            fontSize = 13.sp
                                         )
                                     },
                                     trailingIcon = {
-                                        if (streamUrlInput.isNotEmpty()) {
-                                            IconButton(onClick = { streamUrlInput = "" }) {
-                                                Icon(Icons.Default.Clear, contentDescription = "Clear", tint = Color.White.copy(alpha = 0.7f))
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (streamUrlInput.isNotEmpty()) {
+                                                IconButton(onClick = { streamUrlInput = "" }) {
+                                                    Icon(Icons.Default.Clear, contentDescription = "Clear", tint = Color.White.copy(alpha = 0.7f))
+                                                }
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                                    val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim().orEmpty()
+                                                    if (clipText.isNotEmpty()) {
+                                                        streamUrlInput = clipText
+                                                        Toast.makeText(
+                                                            context,
+                                                            if (isHindi) "लिंक पेस्ट हो गया!" else "URL pasted!",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    } else {
+                                                        Toast.makeText(
+                                                            context,
+                                                            if (isHindi) "क्लिपबोर्ड खाली है" else "Clipboard is empty",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste URL", tint = accent)
                                             }
                                         }
                                     },
+                                    shape = RoundedCornerShape(14.dp),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = HybridGold,
-                                        unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
+                                        unfocusedBorderColor = Color.White.copy(alpha = 0.24f),
                                         focusedTextColor = Color.White,
                                         unfocusedTextColor = Color.White
                                     ),
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
-                                OutlinedTextField(
-                                    value = streamTitleInput,
-                                    onValueChange = { streamTitleInput = it },
-                                    singleLine = true,
-                                    label = {
-                                        Text(
-                                            if (isHindi) "स्ट्रीम का नाम (वैकल्पिक)" else "Custom Stream Title (Optional)"
-                                        )
-                                    },
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = accent,
-                                        unfocusedBorderColor = Color.White.copy(alpha = 0.22f),
-                                        focusedTextColor = Color.White,
-                                        unfocusedTextColor = Color.White
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                // Buffer Profile Pills
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    listOf(
-                                        "Smooth 4K Buffer",
-                                        "Low-Latency Live",
-                                        "Turbo Pre-Load"
-                                    ).forEach { profile ->
-                                        val selected = streamBufferProfile == profile
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(if (selected) HybridGold else Color.White.copy(alpha = 0.12f))
-                                                .clickable { streamBufferProfile = profile }
-                                                .padding(horizontal = 10.dp, vertical = 5.dp)
-                                        ) {
-                                            Text(
-                                                text = profile,
-                                                color = if (selected) Color.Black else Color.White,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 10.5.sp
-                                            )
-                                        }
-                                    }
-                                }
-
-                                // Video vs Background Audio Mode + Play Button
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Box(
+                                    Surface(
+                                        onClick = { streamPlayAsAudioOnly = !streamPlayAsAudioOnly },
+                                        color = if (streamPlayAsAudioOnly) HybridCyan.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.08f),
+                                        shape = RoundedCornerShape(14.dp),
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .background(
-                                                if (streamPlayAsAudioOnly) HybridCyan.copy(alpha = 0.24f)
-                                                else Color.White.copy(alpha = 0.10f)
-                                            )
+                                            .height(48.dp)
                                             .border(
                                                 1.dp,
-                                                if (streamPlayAsAudioOnly) HybridCyan else Color.White.copy(alpha = 0.25f),
+                                                if (streamPlayAsAudioOnly) HybridCyan else Color.White.copy(alpha = 0.20f),
                                                 RoundedCornerShape(14.dp)
                                             )
-                                            .clickable { streamPlayAsAudioOnly = !streamPlayAsAudioOnly }
-                                            .padding(horizontal = 12.dp, vertical = 12.dp)
                                     ) {
-                                        Text(
-                                            text = if (streamPlayAsAudioOnly) {
-                                                if (isHindi) "🎵 ऑडियो मोड" else "🎵 Audio Mode"
-                                            } else {
-                                                if (isHindi) "🎬 वीडियो मोड" else "🎬 Video Mode"
-                                            },
-                                            color = Color.White,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 12.sp
-                                        )
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 14.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = if (streamPlayAsAudioOnly) Icons.Default.Headphones else Icons.Default.Videocam,
+                                                contentDescription = null,
+                                                tint = if (streamPlayAsAudioOnly) HybridCyan else Color.White,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = if (streamPlayAsAudioOnly) {
+                                                    if (isHindi) "ऑडियो" else "Audio"
+                                                } else {
+                                                    if (isHindi) "वीडियो" else "Video"
+                                                },
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.5.sp
+                                            )
+                                        }
                                     }
 
                                     Button(
@@ -2232,14 +2203,14 @@ fun MeToolkitScreen(
                                         shape = RoundedCornerShape(14.dp),
                                         modifier = Modifier
                                             .weight(1f)
-                                            .height(46.dp)
+                                            .height(48.dp)
                                     ) {
-                                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = if (isHindi) "अभी स्ट्रीम चलाएं" else "Play Stream Now",
+                                            text = if (isHindi) "स्ट्रीम चलाएं" else "Play Stream",
                                             fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 13.sp
+                                            fontSize = 13.5.sp
                                         )
                                     }
                                 }
@@ -2247,25 +2218,45 @@ fun MeToolkitScreen(
                         }
                     }
 
-                    // 2. 8 BUILT-IN 100% WORKING HD / 4K LIVE & CINEMA STREAMS (1-TAP PLAY)
+                    // 2. Clean Category Chips for Instant 1-Tap HD/4K Channels
                     item {
-                        Text(
-                            text = if (isHindi) {
-                                "🎬 1-टैप लाइव 4K/HD स्ट्रीम चैनल्स (तुरंत चलाएं)"
-                            } else {
-                                "🎬 1-Tap Working 4K / Full HD Stream Channels"
-                            },
-                            color = Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 14.sp
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            listOf("All", "4K", "Cinema", "Action").forEach { cat ->
+                                val selected = streamCategory == cat
+                                Surface(
+                                    onClick = { streamCategory = cat },
+                                    color = if (selected) accent else Color.White.copy(alpha = 0.08f),
+                                    shape = RoundedCornerShape(50),
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier.padding(horizontal = 14.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = cat,
+                                            color = if (selected) Color.Black else Color.White.copy(alpha = 0.85f),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    items(VERIFIED_WORKING_HD_STREAMS, key = { it.url }) { channel ->
+                    items(filteredStreams, key = { it.url }) { channel ->
                         LiquidGlassBox(
                             modifier = Modifier.fillMaxWidth(),
                             cornerRadius = 18.dp,
                             tintColor = channel.accentColor,
+                            glassAlpha = 0.14f,
                             onClick = {
                                 streamUrlInput = channel.url
                                 streamTitleInput = channel.title
@@ -2282,8 +2273,8 @@ fun MeToolkitScreen(
                                     modifier = Modifier
                                         .size(46.dp)
                                         .clip(RoundedCornerShape(13.dp))
-                                        .background(channel.accentColor.copy(alpha = 0.22f))
-                                        .border(1.dp, channel.accentColor, RoundedCornerShape(13.dp)),
+                                        .background(channel.accentColor.copy(alpha = 0.20f))
+                                        .border(1.dp, channel.accentColor.copy(alpha = 0.7f), RoundedCornerShape(13.dp)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
@@ -2298,38 +2289,38 @@ fun MeToolkitScreen(
                                     Text(
                                         text = channel.title,
                                         color = Color.White,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.5.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = channel.subtitle,
-                                        color = Color.White.copy(alpha = 0.70f),
-                                        fontSize = 10.5.sp,
+                                        color = Color.White.copy(alpha = 0.65f),
+                                        fontSize = 11.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .background(channel.accentColor)
-                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                Surface(
+                                    color = channel.accentColor.copy(alpha = 0.18f),
+                                    shape = RoundedCornerShape(50),
+                                    modifier = Modifier.border(1.dp, channel.accentColor.copy(alpha = 0.6f), RoundedCornerShape(50))
                                 ) {
                                     Text(
                                         text = channel.badge,
-                                        color = Color.Black,
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 10.sp
+                                        color = channel.accentColor,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 10.sp,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
                                     )
                                 }
                             }
                         }
                     }
 
-                    // 3. RECENT STREAM HISTORY & SAVED BOOKMARKS
+                    // 3. RECENT STREAM HISTORY
                     if (savedStreamHistory.isNotEmpty()) {
                         item {
                             Row(
@@ -2338,9 +2329,9 @@ fun MeToolkitScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = if (isHindi) "🕒 हाल ही में चलाए गए स्ट्रीम URL" else "🕒 Recent Stream History",
+                                    text = if (isHindi) "हाल की स्ट्रीम्स" else "Recent Streams",
                                     color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
+                                    fontWeight = FontWeight.Bold,
                                     fontSize = 13.5.sp
                                 )
                                 TextButton(

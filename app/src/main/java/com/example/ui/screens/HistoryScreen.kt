@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -7,7 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
@@ -36,6 +37,7 @@ fun HistoryScreen(
     accentColor: Color
 ) {
     val historyItems by viewModel.historyItems.collectAsState()
+    BackHandler(onBack = onBackClick)
 
     Scaffold(
         topBar = {
@@ -43,7 +45,7 @@ fun HistoryScreen(
                 title = { Text("Playback History & Resume", color = Color.White) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                 },
                 actions = {
@@ -130,15 +132,16 @@ fun HistoryScreen(
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 
-                                // Progress bar resume info
-                                val progressPct = (savedPosMs.toFloat() / item.duration.toFloat()).coerceIn(0f, 1f)
+                                // Progress bar resume info (guarded against 0 duration to prevent NaN crash)
+                                val safeDurationMs = item.duration.coerceAtLeast(1L)
+                                val progressPct = (savedPosMs.toFloat() / safeDurationMs.toFloat()).coerceIn(0f, 1f)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     LinearProgressIndicator(
-                                        progress = progressPct,
+                                        progress = { progressPct },
                                         color = accentColor,
                                         trackColor = Color.White.copy(alpha = 0.1f),
                                         modifier = Modifier
@@ -148,7 +151,7 @@ fun HistoryScreen(
                                     )
                                     
                                     val currentSecs = savedPosMs / 1000
-                                    val totalSecs = item.duration / 1000
+                                    val totalSecs = item.duration.coerceAtLeast(0L) / 1000
                                     Text(
                                         text = "${currentSecs / 60}:${String.format("%02d", currentSecs % 60)} / ${totalSecs / 60}:${String.format("%02d", totalSecs % 60)}",
                                         color = Color.Gray,

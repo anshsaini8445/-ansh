@@ -502,36 +502,6 @@ fun Modifier.detectVideoPlayerGestures(
                                 if (pulse != null) {
                                     VideoGestureHelper.triggerHapticPulse(context, hostView, pulse)
                                 }
-                                val diffSec = ((nextPos - seekOriginMs) / 1000L)
-                                val diffPrefix = if (diffSec >= 0) "+${diffSec}s" else "${diffSec}s"
-                                onHorizontalSeekChanged(
-                                    nextPos,
-                                    GestureHudState(
-                                        mode = LockedGestureMode.HORIZONTAL_SEEK,
-                                        titleText = "${VideoGestureHelper.formatTimestamp(nextPos)} / ${VideoGestureHelper.formatTimestamp(total)}",
-                                        subText = diffPrefix,
-                                        progressFraction = (nextPos.toFloat() / total.toFloat()).coerceIn(0f, 1f),
-                                        thresholdReached = pulse != null
-                                    )
-                                )
-                            }
-
-                            LockedGestureMode.HORIZONTAL_SEEK -> {
-                                val prevPos = getCurrentPositionMs()
-                                val total = getDurationMs().coerceAtLeast(1000L)
-                                // Smooth slow-or-fast horizontal finger scrubbing across video
-                                val maxScrubSpanMs = 120_000L.coerceAtMost((total * 0.85f).toLong().coerceAtLeast(15_000L))
-                                val deltaMs = ((totalDragDx / w) * maxScrubSpanMs).toLong()
-                                val nextPos = (seekOriginMs + deltaMs).coerceIn(0L, total)
-                                val pulse = when {
-                                    (nextPos == 0L && prevPos > 0L) ||
-                                        (nextPos == total && prevPos < total) -> HapticPulseType.BOUNDARY_LIMIT
-                                    (nextPos / VideoGestureHelper.SEEK_HAPTIC_STEP_MS) != (prevPos / VideoGestureHelper.SEEK_HAPTIC_STEP_MS) -> HapticPulseType.STEP_TICK
-                                    else -> null
-                                }
-                                if (pulse != null) {
-                                    VideoGestureHelper.triggerHapticPulse(context, hostView, pulse)
-                                }
                                 val diffMs = nextPos - seekOriginMs
                                 val sign = if (diffMs >= 0) "+" else "-"
                                 val absMs = abs(diffMs)

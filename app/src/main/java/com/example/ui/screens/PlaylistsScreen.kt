@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -8,6 +9,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.FeaturedPlayList
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -47,6 +52,14 @@ fun PlaylistsScreen(
 
     var showAddSongsDialog by remember { mutableStateOf(false) }
 
+    BackHandler {
+        if (selectedPlaylist != null) {
+            selectedPlaylist = null
+        } else {
+            onBackClick()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -64,7 +77,7 @@ fun PlaylistsScreen(
                             onBackClick()
                         }
                     }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                 },
                 actions = {
@@ -112,7 +125,7 @@ fun PlaylistsScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.FeaturedPlayList, contentDescription = "No Playlists", tint = Color.Gray, modifier = Modifier.size(64.dp))
+                            Icon(Icons.AutoMirrored.Filled.FeaturedPlayList, contentDescription = "No Playlists", tint = Color.Gray, modifier = Modifier.size(64.dp))
                             Spacer(modifier = Modifier.height(12.dp))
                             Text("No Playlists Created Yet", color = Color.Gray, fontSize = 14.sp)
                         }
@@ -133,7 +146,7 @@ fun PlaylistsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.PlaylistPlay, contentDescription = "Playlist", tint = accentColor, modifier = Modifier.size(28.dp))
+                                    Icon(Icons.AutoMirrored.Filled.PlaylistPlay, contentDescription = "Playlist", tint = accentColor, modifier = Modifier.size(28.dp))
                                     Spacer(modifier = Modifier.width(16.dp))
                                     Text(
                                         text = playlist.name,
@@ -142,7 +155,7 @@ fun PlaylistsScreen(
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
-                                Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Open", tint = Color.Gray)
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Open", tint = Color.Gray)
                             }
                         }
                     }
