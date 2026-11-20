@@ -107,7 +107,6 @@ fun MusicPlayerScreen(
     val videoItems by viewModel.videoItems.collectAsState()
     val favoriteItems by viewModel.favoriteItems.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
-    val playbackPosition by viewModel.playbackPosition.collectAsState()
     val playbackSpeed by viewModel.playbackSpeed.collectAsState()
     val activePitchPreset by viewModel.activePitchPreset.collectAsState()
     val audioVolumePercent by viewModel.audioVolumePercent.collectAsState()
@@ -129,7 +128,6 @@ fun MusicPlayerScreen(
     val syncedLyrics by viewModel.syncedLyrics.collectAsState()
     val active3DThemeName by viewModel.active3DMusicTheme.collectAsState()
     val visualizer3DEnabled by viewModel.visualizer3DEnabled.collectAsState()
-    val frequencies by viewModel.visualizerFrequencies.collectAsState()
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
     val companionBreedName by viewModel.companionBreed.collectAsState()
 
@@ -197,19 +195,7 @@ fun MusicPlayerScreen(
         }
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "vinyl_spin")
-    val discRotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 12000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "disc_rotation"
-    )
-
     val durationMs = (currentTrack?.duration?.takeIf { it > 0L } ?: 180_000L).coerceAtLeast(1L)
-    val progressFraction = (playbackPosition.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
 
     Box(
         modifier = Modifier
@@ -286,10 +272,10 @@ fun MusicPlayerScreen(
         // 1. When 3D Visualizer is ON, render the 15-theme 3D Animated Visualizer Backdrop;
         //    When OFF, render the user's Scenic Theme / Custom Gallery Wallpaper with zero 3D CPU overhead!
         if (visualizer3DEnabled) {
-            Music3DAnimatedBackdrop(
+            Music3DBackdropLiveHost(
+                viewModel = viewModel,
                 themeSpec = themeSpec,
                 isPlaying = isPlaying,
-                frequencies = frequencies,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -431,10 +417,10 @@ fun MusicPlayerScreen(
                                 else -> 240.dp
                             }
                             VinylTurntableCenterpiece(
+                                viewModel = viewModel,
                                 track = currentTrack,
                                 theme = themeSpec,
-                                rotationDegrees = if (isPlaying) discRotation else 0f,
-                                frequencies = frequencies,
+                                isPlaying = isPlaying,
                                 visualizerEnabled = visualizer3DEnabled,
                                 discSize = discSize
                             )
@@ -473,9 +459,9 @@ fun MusicPlayerScreen(
                             }
                         }
                         CenterDisplayMode.LYRICS -> {
-                            InteractiveSyncedLyricsStage(
+                            SyncedLyricsLiveHost(
+                                viewModel = viewModel,
                                 lyrics = syncedLyrics,
-                                positionMs = playbackPosition,
                                 accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else accentColor,
                                 onSeekToLine = { timestampMs -> viewModel.seekTo(timestampMs) },
                                 onOpenEditLyrics = { showEditLyricsDialog = true }
@@ -662,35 +648,13 @@ fun MusicPlayerScreen(
                         }
                     }
 
-                    // Precision Seekbar + Timestamps
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        VisualPrecisionSeekBar(
-                            progressFraction = progressFraction,
-                            onSeekFractionChanged = { frac: Float ->
-                                viewModel.seekTo((frac * durationMs.toFloat()).toLong())
-                            },
-                            accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else accentColor,
-                            secondaryAccent = if (visualizer3DEnabled) themeSpec.secondaryColor else HybridCyan,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = formatDurationMs(playbackPosition),
-                                color = HybridTextSecondary,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = formatDurationMs(durationMs),
-                                color = HybridTextSecondary,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
+                    // Precision Seekbar + Timestamps (isolated collector -> zero root recompositions)
+                    MusicSeekBarLiveSection(
+                        viewModel = viewModel,
+                        durationMs = durationMs,
+                        accentColor = if (visualizer3DEnabled) themeSpec.primaryColor else accentColor,
+                        secondaryAccent = if (visualizer3DEnabled) themeSpec.secondaryColor else HybridCyan
+                    )
 
                     // Bottom Transport Row:
                     // Left: Shuffle (🔀) vs Straight Line-by-Line Order (➡️ 1→2) | Center: Prev, Play/Pause, Next | Right: Repeat
@@ -2067,50 +2031,157 @@ fun MusicPlayerScreen(
 }
 
 @Composable
+private fun Music3DBackdropLiveHost(
+    viewModel: PlayerViewModel,
+    themeSpec: Music3DThemeSpec,
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val frequencies by viewModel.visualizerFrequencies.collectAsState()
+    Music3DAnimatedBackdrop(
+        themeSpec = themeSpec,
+        isPlaying = isPlaying,
+        frequencies = frequencies,
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun MusicSeekBarLiveSection(
+    viewModel: PlayerViewModel,
+    durationMs: Long,
+    accentColor: Color,
+    secondaryAccent: Color
+) {
+    val playbackPosition by viewModel.playbackPosition.collectAsState()
+    val progressFraction = (playbackPosition.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        VisualPrecisionSeekBar(
+            progressFraction = progressFraction,
+            onSeekFractionChanged = { frac: Float ->
+                viewModel.seekTo((frac * durationMs.toFloat()).toLong())
+            },
+            accentColor = accentColor,
+            secondaryAccent = secondaryAccent,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formatDurationMs(playbackPosition),
+                color = HybridTextSecondary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = formatDurationMs(durationMs),
+                color = HybridTextSecondary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun SyncedLyricsLiveHost(
+    viewModel: PlayerViewModel,
+    lyrics: List<SyncedLyricLine>,
+    accentColor: Color,
+    onSeekToLine: (Long) -> Unit,
+    onOpenEditLyrics: () -> Unit
+) {
+    val playbackPosition by viewModel.playbackPosition.collectAsState()
+    InteractiveSyncedLyricsStage(
+        lyrics = lyrics,
+        positionMs = playbackPosition,
+        accentColor = accentColor,
+        onSeekToLine = onSeekToLine,
+        onOpenEditLyrics = onOpenEditLyrics
+    )
+}
+
+@Composable
+private fun TurntableVisualizerRing(
+    viewModel: PlayerViewModel,
+    ringAccent: Color,
+    secondaryAccent: Color,
+    ringSize: Dp
+) {
+    val frequencies by viewModel.visualizerFrequencies.collectAsState()
+    Canvas(modifier = Modifier.size(ringSize)) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val baseRadius = size.minDimension * 0.40f
+        val bars = 40
+        val count = frequencies.size.coerceAtLeast(1)
+        for (i in 0 until bars) {
+            val angleRad = (i.toFloat() / bars) * 2f * Math.PI
+            val freqVal = frequencies.getOrElse(i % count) { 0.25f }
+            val barLen = 10.dp.toPx() + freqVal * 26.dp.toPx()
+            val start = Offset(
+                center.x + (baseRadius * cos(angleRad)).toFloat(),
+                center.y + (baseRadius * sin(angleRad)).toFloat()
+            )
+            val end = Offset(
+                center.x + ((baseRadius + barLen) * cos(angleRad)).toFloat(),
+                center.y + ((baseRadius + barLen) * sin(angleRad)).toFloat()
+            )
+            drawLine(
+                color = if (i % 2 == 0) ringAccent.copy(alpha = 0.72f) else secondaryAccent.copy(alpha = 0.65f),
+                start = start,
+                end = end,
+                strokeWidth = 3.5.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+@Composable
 private fun VinylTurntableCenterpiece(
+    viewModel: PlayerViewModel,
     track: MediaItem?,
     theme: Music3DThemeSpec,
-    rotationDegrees: Float,
-    frequencies: List<Float>,
+    isPlaying: Boolean,
     visualizerEnabled: Boolean,
     discSize: Dp
 ) {
     val ringAccent = if (visualizerEnabled) theme.primaryColor else HybridEmerald
     val secondaryAccent = if (visualizerEnabled) theme.secondaryColor else HybridCyan
 
+    // Zero-recomposition VSync vinyl rotation: rotates smoothly at 30°/sec ONLY while playing,
+    // freezes cleanly in place at its exact angle when paused with 0% CPU/GPU usage!
+    val discRotationState = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(isPlaying) {
+        if (!isPlaying) return@LaunchedEffect
+        var lastNanos = 0L
+        while (true) {
+            withFrameNanos { frameNanos ->
+                if (lastNanos != 0L) {
+                    val dt = ((frameNanos - lastNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
+                    discRotationState.floatValue = (discRotationState.floatValue + dt * 30f) % 360f
+                }
+                lastNanos = frameNanos
+            }
+        }
+    }
+
     Box(contentAlignment = Alignment.Center) {
         if (visualizerEnabled) {
-            Canvas(modifier = Modifier.size(discSize + 56.dp)) {
-                val center = Offset(size.width / 2f, size.height / 2f)
-                val baseRadius = size.minDimension * 0.40f
-                val bars = 40
-                for (i in 0 until bars) {
-                    val angleRad = (i.toFloat() / bars) * 2f * Math.PI
-                    val freqVal = frequencies[i % frequencies.size]
-                    val barLen = 10.dp.toPx() + freqVal * 26.dp.toPx()
-                    val start = Offset(
-                        center.x + (baseRadius * cos(angleRad)).toFloat(),
-                        center.y + (baseRadius * sin(angleRad)).toFloat()
-                    )
-                    val end = Offset(
-                        center.x + ((baseRadius + barLen) * cos(angleRad)).toFloat(),
-                        center.y + ((baseRadius + barLen) * sin(angleRad)).toFloat()
-                    )
-                    drawLine(
-                        color = if (i % 2 == 0) ringAccent.copy(alpha = 0.72f) else secondaryAccent.copy(alpha = 0.65f),
-                        start = start,
-                        end = end,
-                        strokeWidth = 3.5.dp.toPx(),
-                        cap = StrokeCap.Round
-                    )
-                }
-            }
+            TurntableVisualizerRing(
+                viewModel = viewModel,
+                ringAccent = ringAccent,
+                secondaryAccent = secondaryAccent,
+                ringSize = discSize + 56.dp
+            )
         }
 
         Box(
             modifier = Modifier
                 .size(discSize)
-                .graphicsLayer { rotationZ = rotationDegrees }
+                .graphicsLayer { rotationZ = discRotationState.floatValue }
                 .clip(CircleShape)
                 .border(4.dp, ringAccent, CircleShape),
             contentAlignment = Alignment.Center

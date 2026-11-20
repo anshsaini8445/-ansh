@@ -181,6 +181,7 @@ fun MeToolkitScreen(
     val companionAuraEffect by viewModel.companionAuraEffect.collectAsState()
     val companionAutoWalk by viewModel.companionAutoWalk.collectAsState()
     val companionAnimSpeed by viewModel.companionAnimSpeed.collectAsState()
+    val isMusicPlaying by viewModel.isPlaying.collectAsState()
 
     val meGalleryWallpaperLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -600,7 +601,8 @@ fun MeToolkitScreen(
                                             FluffyMascot3DStudioPortrait(
                                                 breed = activeBreed,
                                                 showStudioBackdrop = true,
-                                                animateReels = true,
+                                                animateReels = isMusicPlaying,
+                                                isMusicPlaying = isMusicPlaying,
                                                 modifier = Modifier.fillMaxSize()
                                             )
                                         }
@@ -825,7 +827,8 @@ fun MeToolkitScreen(
                                                     FluffyMascot3DStudioPortrait(
                                                         breed = breed,
                                                         showStudioBackdrop = true,
-                                                        animateReels = true,
+                                                        animateReels = isMusicPlaying,
+                                                        isMusicPlaying = isMusicPlaying,
                                                         modifier = Modifier.fillMaxSize()
                                                     )
                                                 }
@@ -1665,7 +1668,8 @@ fun MeToolkitScreen(
                                         FluffyMascot3DStudioPortrait(
                                             breed = breed,
                                             showStudioBackdrop = true,
-                                            animateReels = true,
+                                            animateReels = isMusicPlaying,
+                                            isMusicPlaying = isMusicPlaying,
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     }

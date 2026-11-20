@@ -27,6 +27,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -350,85 +351,82 @@ fun GlobalScenicThemeBackdrop(
     modifier: Modifier = Modifier
 ) {
     val spec = remember(presetName) { ScenicBackdropPresets.getByName(presetName) }
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .drawWithCache {
+                val w = size.width
+                val h = size.height
 
-        // 1. Multi-stop atmospheric sky gradient
-        drawRect(
-            brush = Brush.verticalGradient(
-                colors = listOf(spec.topColor, spec.midColor, spec.bottomColor)
-            )
-        )
-
-        // 2. Upper-left Aurora / Nebula Halo
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    spec.primaryGlow.copy(alpha = 0.24f),
-                    spec.secondaryGlow.copy(alpha = 0.08f),
-                    Color.Transparent
-                ),
-                center = Offset(w * 0.20f, h * 0.16f),
-                radius = w * 0.75f
-            ),
-            center = Offset(w * 0.20f, h * 0.16f),
-            radius = w * 0.75f
-        )
-
-        // 3. Center-right Prism Glow
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    spec.secondaryGlow.copy(alpha = 0.22f),
-                    accentColor.copy(alpha = 0.09f),
-                    Color.Transparent
-                ),
-                center = Offset(w * 0.85f, h * 0.48f),
-                radius = w * 0.70f
-            ),
-            center = Offset(w * 0.85f, h * 0.48f),
-            radius = w * 0.70f
-        )
-
-        // 4. Lower Scenic Horizon Glow
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    spec.primaryGlow.copy(alpha = 0.18f),
-                    Color.Transparent
-                ),
-                center = Offset(w * 0.45f, h * 0.86f),
-                radius = w * 0.65f
-            ),
-            center = Offset(w * 0.45f, h * 0.86f),
-            radius = w * 0.65f
-        )
-
-        // 5. Crisp Silk Aurora Ribbon Waves
-        for (wave in 0..2) {
-            val path = Path()
-            val baseY = h * (0.24f + wave * 0.25f)
-            path.moveTo(0f, baseY)
-            val steps = 20
-            for (s in 1..steps) {
-                val x = (s.toFloat() / steps) * w
-                val y = baseY + sin(s * 0.55f + wave * 1.4f) * (28.dp.toPx())
-                path.lineTo(x, y)
-            }
-            drawPath(
-                path = path,
-                brush = Brush.horizontalGradient(
+                val skyBrush = Brush.verticalGradient(
+                    colors = listOf(spec.topColor, spec.midColor, spec.bottomColor)
+                )
+                val halo1Center = Offset(w * 0.20f, h * 0.16f)
+                val halo1Radius = (w * 0.75f).coerceAtLeast(1f)
+                val halo1Brush = Brush.radialGradient(
                     colors = listOf(
-                        Color.Transparent,
-                        if (wave % 2 == 0) spec.primaryGlow.copy(alpha = 0.18f) else spec.secondaryGlow.copy(alpha = 0.16f),
+                        spec.primaryGlow.copy(alpha = 0.24f),
+                        spec.secondaryGlow.copy(alpha = 0.08f),
                         Color.Transparent
+                    ),
+                    center = halo1Center,
+                    radius = halo1Radius
+                )
+                val halo2Center = Offset(w * 0.85f, h * 0.48f)
+                val halo2Radius = (w * 0.70f).coerceAtLeast(1f)
+                val halo2Brush = Brush.radialGradient(
+                    colors = listOf(
+                        spec.secondaryGlow.copy(alpha = 0.22f),
+                        accentColor.copy(alpha = 0.09f),
+                        Color.Transparent
+                    ),
+                    center = halo2Center,
+                    radius = halo2Radius
+                )
+                val halo3Center = Offset(w * 0.45f, h * 0.86f)
+                val halo3Radius = (w * 0.65f).coerceAtLeast(1f)
+                val halo3Brush = Brush.radialGradient(
+                    colors = listOf(
+                        spec.primaryGlow.copy(alpha = 0.18f),
+                        Color.Transparent
+                    ),
+                    center = halo3Center,
+                    radius = halo3Radius
+                )
+
+                val waveAmp = 28.dp.toPx()
+                val waveStroke = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
+                val cachedWaves = (0..2).map { wave ->
+                    val path = Path()
+                    val baseY = h * (0.24f + wave * 0.25f)
+                    path.moveTo(0f, baseY)
+                    val steps = 20
+                    for (s in 1..steps) {
+                        val x = (s.toFloat() / steps) * w
+                        val y = baseY + sin(s * 0.55f + wave * 1.4f) * waveAmp
+                        path.lineTo(x, y)
+                    }
+                    val waveBrush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            if (wave % 2 == 0) spec.primaryGlow.copy(alpha = 0.18f) else spec.secondaryGlow.copy(alpha = 0.16f),
+                            Color.Transparent
+                        )
                     )
-                ),
-                style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
-            )
-        }
-    }
+                    Pair(path, waveBrush)
+                }
+
+                onDrawBehind {
+                    drawRect(brush = skyBrush)
+                    drawCircle(brush = halo1Brush, center = halo1Center, radius = halo1Radius)
+                    drawCircle(brush = halo2Brush, center = halo2Center, radius = halo2Radius)
+                    drawCircle(brush = halo3Brush, center = halo3Center, radius = halo3Radius)
+                    cachedWaves.forEach { (path, brush) ->
+                        drawPath(path = path, brush = brush, style = waveStroke)
+                    }
+                }
+            }
+    )
 }
 
 @Composable
@@ -438,23 +436,32 @@ fun Music3DAnimatedBackdrop(
     frequencies: List<Float>,
     modifier: Modifier = Modifier
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "music_3d_engine")
-    val phase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (isPlaying) 6400 else 20000, easing = LinearEasing)
-        ),
-        label = "3d_phase"
-    )
-    val depthPulse by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = if (isPlaying) 2200 else 8000, easing = LinearEasing)
-        ),
-        label = "3d_depth"
-    )
+    val phase: Float
+    val depthPulse: Float
+    if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "music_3d_engine")
+        val animatedPhase by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2f * PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 6400, easing = LinearEasing)
+            ),
+            label = "3d_phase"
+        )
+        val animatedDepth by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2200, easing = LinearEasing)
+            ),
+            label = "3d_depth"
+        )
+        phase = animatedPhase
+        depthPulse = animatedDepth
+    } else {
+        phase = 0.65f
+        depthPulse = 0.35f
+    }
 
     val bassEnergy = remember(frequencies, isPlaying) {
         if (!isPlaying || frequencies.isEmpty()) 0.18f

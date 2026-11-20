@@ -6,7 +6,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -154,10 +159,6 @@ class MainActivity : ComponentActivity() {
                 var selectedTab by remember { mutableStateOf(MainBottomTab.VIDEO) }
                 var preselectedShareItem by remember { mutableStateOf<MediaItem?>(null) }
 
-                val visualizerFrequencies by viewModel.visualizerFrequencies.collectAsState()
-                val liveBeatEnergy = remember(visualizerFrequencies) {
-                    if (visualizerFrequencies.isEmpty()) 0.45f else visualizerFrequencies.average().toFloat()
-                }
                 var activeVideoItem by remember { mutableStateOf<MediaItem?>(null) }
                 var activeVideoProgress by remember { mutableStateOf(0L) }
                 var activeVideoSpeed by remember { mutableStateOf(1.0f) }
@@ -258,7 +259,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    Crossfade(targetState = currentScreen, label = "hybrid_screen_router") { screen ->
+                    AnimatedContent(
+                        targetState = currentScreen,
+                        transitionSpec = {
+                            (fadeIn(animationSpec = tween(durationMillis = 140)) +
+                                slideInVertically(animationSpec = tween(durationMillis = 140)) { it / 28 })
+                                .togetherWith(fadeOut(animationSpec = tween(durationMillis = 100)))
+                        },
+                        contentKey = { it.name },
+                        label = "hybrid_screen_router"
+                    ) { screen ->
                         when (screen) {
                             ActiveScreen.MainTabs -> {
                                 Scaffold(
@@ -1379,7 +1389,7 @@ class MainActivity : ComponentActivity() {
                                             .heightIn(max = 360.dp),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        items(videos.size) { idx ->
+                                        items(count = videos.size, key = { idx -> videos[idx].id }) { idx ->
                                             val vid = videos[idx]
                                             val isCurrent = vid.id == bgVideoPlayingItem.id
                                             Row(
@@ -1605,7 +1615,7 @@ class MainActivity : ComponentActivity() {
                             auraEffectId = companionAuraEffect,
                             autoWalkEnabled = companionAutoWalk,
                             animSpeedMultiplier = companionAnimSpeed,
-                            beatEnergy = liveBeatEnergy,
+                            beatEnergy = 0.45f,
                             onQuickPlayTrigger = {
                                 if (currentScreen == ActiveScreen.VideoPlayer) {
                                     MediaNotificationHelper.getControlDelegate()?.onNotificationPlayPause()

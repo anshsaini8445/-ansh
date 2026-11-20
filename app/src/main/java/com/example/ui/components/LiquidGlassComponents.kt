@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,9 +57,9 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 private object AlbumArtBitmapCache {
-    private val cache = object : LruCache<String, ImageBitmap>(100) {}
+    private val cache = object : LruCache<String, ImageBitmap>(160) {}
     private val noArtPaths = Collections.synchronizedSet(HashSet<String>())
-    val extractionSemaphore = Semaphore(2)
+    val extractionSemaphore = Semaphore(3)
 
     fun get(key: String): ImageBitmap? = cache.get(key)
     fun isKnownEmpty(key: String): Boolean = noArtPaths.contains(key)
@@ -160,7 +161,7 @@ fun GuaranteedAlbumArt(
         }
     }
 
-    val shape = RoundedCornerShape(cornerRadius)
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     Box(
         modifier = modifier
             .clip(shape)
@@ -236,8 +237,8 @@ fun LiquidGlassBox(
         val interactionSource = remember { MutableInteractionSource() }
         val isPressed by interactionSource.collectIsPressedAsState()
         val animated by animateFloatAsState(
-            targetValue = if (isPressed) 0.97f else 1f,
-            animationSpec = tween(durationMillis = 80, easing = FastOutSlowInEasing),
+            targetValue = if (isPressed) 0.965f else 1f,
+            animationSpec = spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow),
             label = "liquid_glass_scale"
         )
         Pair(interactionSource, animated)
@@ -245,7 +246,7 @@ fun LiquidGlassBox(
         null
     }
 
-    val shape = RoundedCornerShape(cornerRadius)
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     val baseModifier = modifier
         .then(
             if (pressScale != null && pressScale.second != 1f) {
@@ -312,14 +313,19 @@ fun LiquidGlassBox(
         }
         .then(
             if (onClick != null) {
+                val clickRipple = ripple(bounded = true, color = primaryTint.copy(alpha = 0.24f))
                 if (pressScale != null) {
                     Modifier.clickable(
                         interactionSource = pressScale.first,
-                        indication = null,
+                        indication = clickRipple,
                         onClick = onClick
                     )
                 } else {
-                    Modifier.clickable(onClick = onClick)
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = clickRipple,
+                        onClick = onClick
+                    )
                 }
             } else Modifier
         )
@@ -354,8 +360,8 @@ fun LiquidGlassIconOrb(
     val scale = if (!simpleMode) {
         val isPressed by interactionSource.collectIsPressedAsState()
         val animated by animateFloatAsState(
-            targetValue = if (isPressed) 0.92f else 1f,
-            animationSpec = tween(durationMillis = 80, easing = FastOutSlowInEasing),
+            targetValue = if (isPressed) 0.91f else 1f,
+            animationSpec = spring(dampingRatio = 0.70f, stiffness = Spring.StiffnessMediumLow),
             label = "orb_scale"
         )
         animated
@@ -421,7 +427,7 @@ fun LiquidGlassIconOrb(
             }
             .clickable(
                 interactionSource = interactionSource,
-                indication = null,
+                indication = ripple(bounded = true, color = glowColor.copy(alpha = 0.28f)),
                 onClick = onClick
             ),
         contentAlignment = Alignment.Center
