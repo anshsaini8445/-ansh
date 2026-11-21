@@ -94,6 +94,10 @@ fun VideoSectionScreen(
     val activeTheme by viewModel.activeTheme.collectAsState()
     val customWallpaperUri by viewModel.customWallpaperUri.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
+    val whatsAppStatuses by viewModel.whatsAppStatusVideos.collectAsState()
+    val hasWaSafAccess by viewModel.hasWaSafAccess.collectAsState()
+    val hasWaBizSafAccess by viewModel.hasWaBizSafAccess.collectAsState()
+    val hasDownloadsSafAccess by viewModel.hasDownloadsSafAccess.collectAsState()
 
     val isHindi = remember(selectedLanguage) {
         com.example.ui.i18n.WorldLanguageEngine.isHindiActive(selectedLanguage)
@@ -142,7 +146,43 @@ fun VideoSectionScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        viewModel.loadMedia()
+        viewModel.loadMedia(forceRefresh = true)
+    }
+
+    var pendingSafTarget by remember { mutableStateOf<DeepMediaScanner.SafFolderTarget?>(null) }
+    val safFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val treeUri = result.data?.data
+        val target = pendingSafTarget
+        pendingSafTarget = null
+        if (result.resultCode == Activity.RESULT_OK && treeUri != null && target != null) {
+            viewModel.onSafFolderGranted(target, treeUri)
+            val label = when (target) {
+                DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS -> "WhatsApp Status"
+                DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS -> "WhatsApp Business Status"
+                DeepMediaScanner.SafFolderTarget.DOWNLOADS_PENDING -> "Pending Downloads"
+            }
+            Toast.makeText(
+                context,
+                if (isHindi) "✅ $label जुड़ गया — स्कैन हो रहा है!" else "✅ $label connected — scanning now!",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    fun requestSafFolder(target: DeepMediaScanner.SafFolderTarget) {
+        try {
+            pendingSafTarget = target
+            safFolderLauncher.launch(DeepMediaScanner.buildSafFolderPickerIntent(context, target))
+        } catch (_: Exception) {
+            pendingSafTarget = null
+            Toast.makeText(
+                context,
+                if (isHindi) "फ़ोल्डर पिकर नहीं खुल सका" else "Could not open folder picker",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     val selectedIds = remember { mutableStateListOf<String>() }
@@ -197,19 +237,21 @@ fun VideoSectionScreen(
         videos.filter { it.id in favIds }.distinctBy { it.id }
     }
 
-    // Short videos <= 100 seconds (100,000 ms) for Status Reels
-    val statusReelVideos = remember(videos) {
-        val under100s = videos.filter { !it.isPartialDownload && it.duration in 1L..100_000L }.distinctBy { it.id }
-        if (under100s.isNotEmpty()) under100s else videos.distinctBy { it.id }
+    // Real WhatsApp & WhatsApp Business statuses FIRST, followed by short videos <= 100s for Status Reels
+    val statusReelVideos = remember(whatsAppStatuses, videos) {
+        val under100s = videos.filter { !it.isPartialDownload && it.duration in 1L..100_000L }
+        val combined = (whatsAppStatuses + under100s).distinctBy { it.path }.distinctBy { it.id }
+        if (combined.isNotEmpty()) combined else videos.distinctBy { it.id }
     }
 
-    // Sort videos while ALWAYS keeping Pending / Half-Downloaded Chrome videos at the VERY TOP
-    val sortedVideos = remember(videos, favoriteVideos, sortCriteria, sortNewToOld, openedFolderName, isViewingFavouriteFolder) {
+    // Sort videos while ALWAYS keeping Pending / Half-Downloaded videos at #1 VERY TOP,
+    // followed by WhatsApp / WhatsApp Business Status videos right below Pending, then regular videos!
+    val sortedVideos = remember(videos, whatsAppStatuses, favoriteVideos, sortCriteria, sortNewToOld, openedFolderName, isViewingFavouriteFolder) {
         val base = when {
             isViewingFavouriteFolder -> favoriteVideos
             openedFolderName != null -> videos.filter { it.folderName == openedFolderName }
-            else -> videos
-        }.distinctBy { it.id }
+            else -> (videos + whatsAppStatuses)
+        }.distinctBy { it.path }.distinctBy { it.id }
 
         val comparator = when (sortCriteria) {
             "Name" -> compareBy<MediaItem> { it.cleanTitle.lowercase() }
@@ -218,10 +260,10 @@ fun VideoSectionScreen(
             else -> compareBy<MediaItem> { it.dateAdded } // "Date"
         }
         val sortedNormal = if (sortNewToOld) base.sortedWith(comparator.reversed()) else base.sortedWith(comparator)
-        val (pendingList, completeList) = sortedNormal.partition {
-            it.isPartialDownload
-        }
-        (pendingList + completeList).distinctBy { it.id }
+        val pendingList = sortedNormal.filter { it.isPartialDownload }
+        val statusTopList = sortedNormal.filter { !it.isPartialDownload && DeepMediaScanner.isWhatsAppStatusVideo(it) }
+        val regularList = sortedNormal.filter { !it.isPartialDownload && !DeepMediaScanner.isWhatsAppStatusVideo(it) }
+        (pendingList + statusTopList + regularList).distinctBy { it.id }
     }
 
     val historyVideos = remember(history) {
@@ -691,14 +733,32 @@ fun VideoSectionScreen(
                 val pageTab = subTabKeys[page]
                 when (pageTab) {
                     "Video" -> {
+                        val showTopStatusAndPendingHub = !isMultiSelectMode && openedFolderName == null && !isViewingFavouriteFolder
+                        val pendingCount = remember(sortedVideos) { sortedVideos.count { it.isPartialDownload } }
                         if (sortedVideos.isEmpty()) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(32.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                if (showTopStatusAndPendingHub) {
+                                    TopWhatsAppStatusAndPendingHub(
+                                        whatsAppStatuses = whatsAppStatuses,
+                                        pendingCount = pendingCount,
+                                        hasWaSafAccess = hasWaSafAccess,
+                                        hasWaBizSafAccess = hasWaBizSafAccess,
+                                        hasDownloadsSafAccess = hasDownloadsSafAccess,
+                                        isHindi = isHindi,
+                                        onPlayStatus = onPlayVideo,
+                                        onOpenAllStatuses = { switchSubTab("Status") },
+                                        onConnectWa = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS) },
+                                        onConnectWaBiz = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS) },
+                                        onConnectPendingDownloads = { requestSafFolder(DeepMediaScanner.SafFolderTarget.DOWNLOADS_PENDING) }
+                                    )
+                                    Spacer(modifier = Modifier.height(28.dp))
+                                }
                                 Icon(
                                     imageVector = Icons.Default.VideoLibrary,
                                     contentDescription = null,
@@ -753,6 +813,26 @@ fun VideoSectionScreen(
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
+                                if (showTopStatusAndPendingHub) {
+                                    item(
+                                        key = "top_wa_status_pending_hub_grid",
+                                        span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }
+                                    ) {
+                                        TopWhatsAppStatusAndPendingHub(
+                                            whatsAppStatuses = whatsAppStatuses,
+                                            pendingCount = pendingCount,
+                                            hasWaSafAccess = hasWaSafAccess,
+                                            hasWaBizSafAccess = hasWaBizSafAccess,
+                                            hasDownloadsSafAccess = hasDownloadsSafAccess,
+                                            isHindi = isHindi,
+                                            onPlayStatus = onPlayVideo,
+                                            onOpenAllStatuses = { switchSubTab("Status") },
+                                            onConnectWa = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS) },
+                                            onConnectWaBiz = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS) },
+                                            onConnectPendingDownloads = { requestSafFolder(DeepMediaScanner.SafFolderTarget.DOWNLOADS_PENDING) }
+                                        )
+                                    }
+                                }
                                 items(sortedVideos, key = { it.id }) { video ->
                                     val isSelected = video.id in selectedIds
                                     VideoGridCard(
@@ -784,6 +864,23 @@ fun VideoSectionScreen(
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
+                                if (showTopStatusAndPendingHub) {
+                                    item(key = "top_wa_status_pending_hub_list") {
+                                        TopWhatsAppStatusAndPendingHub(
+                                            whatsAppStatuses = whatsAppStatuses,
+                                            pendingCount = pendingCount,
+                                            hasWaSafAccess = hasWaSafAccess,
+                                            hasWaBizSafAccess = hasWaBizSafAccess,
+                                            hasDownloadsSafAccess = hasDownloadsSafAccess,
+                                            isHindi = isHindi,
+                                            onPlayStatus = onPlayVideo,
+                                            onOpenAllStatuses = { switchSubTab("Status") },
+                                            onConnectWa = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS) },
+                                            onConnectWaBiz = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS) },
+                                            onConnectPendingDownloads = { requestSafFolder(DeepMediaScanner.SafFolderTarget.DOWNLOADS_PENDING) }
+                                        )
+                                    }
+                                }
                                 items(sortedVideos, key = { it.id }) { video ->
                                     val isSelected = video.id in selectedIds
                                     VideoDetailedRowItem(
@@ -913,6 +1010,10 @@ fun VideoSectionScreen(
                             favorites = favorites,
                             initialIndex = initialStatusReelIndex,
                             isHindi = isHindi,
+                            hasWaSafAccess = hasWaSafAccess,
+                            hasWaBizSafAccess = hasWaBizSafAccess,
+                            onConnectWaFolder = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS) },
+                            onConnectWaBizFolder = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS) },
                             onToggleLike = { vid ->
                                 val alreadyFav = favorites.any { it.id == vid.id }
                                 viewModel.toggleFavorite(vid)
@@ -1159,6 +1260,10 @@ fun VideoSectionScreen(
                 favorites = favorites,
                 initialIndex = initialStatusReelIndex,
                 isHindi = isHindi,
+                hasWaSafAccess = hasWaSafAccess,
+                hasWaBizSafAccess = hasWaBizSafAccess,
+                onConnectWaFolder = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS) },
+                onConnectWaBizFolder = { requestSafFolder(DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS) },
                 onToggleLike = { vid ->
                     val alreadyFav = favorites.any { it.id == vid.id }
                     viewModel.toggleFavorite(vid)
@@ -1837,6 +1942,10 @@ private fun StatusReelsVerticalPagerView(
     favorites: List<MediaItem>,
     initialIndex: Int,
     isHindi: Boolean,
+    hasWaSafAccess: Boolean = false,
+    hasWaBizSafAccess: Boolean = false,
+    onConnectWaFolder: () -> Unit = {},
+    onConnectWaBizFolder: () -> Unit = {},
     onToggleLike: (MediaItem) -> Unit,
     onShareVideo: (MediaItem) -> Unit,
     onOpenInFullPlayer: (MediaItem) -> Unit,
@@ -1854,17 +1963,12 @@ private fun StatusReelsVerticalPagerView(
 
     val filteredReelVideos = remember(reelVideos, statusSourceFilter) {
         when (statusSourceFilter) {
-            "WA" -> reelVideos.filter {
-                val p = "${it.path} ${it.folderName}".lowercase(Locale.ROOT)
-                p.contains("whatsapp") && !p.contains("business") && !p.contains("w4b")
-            }
-            "WA_BIZ" -> reelVideos.filter {
-                val p = "${it.path} ${it.folderName}".lowercase(Locale.ROOT)
-                p.contains("business") || p.contains("w4b")
-            }
+            "WA" -> reelVideos.filter { DeepMediaScanner.statusSourceLabel(it) == "WhatsApp" }
+            "WA_BIZ" -> reelVideos.filter { DeepMediaScanner.statusSourceLabel(it) == "WhatsApp Business" }
             else -> reelVideos
         }
     }
+    val isFilterEmptyForWaSource = statusSourceFilter != "ALL" && filteredReelVideos.isEmpty()
     val displayReels = if (filteredReelVideos.isNotEmpty()) filteredReelVideos else reelVideos
 
     if (reelVideos.isEmpty()) {
@@ -1874,7 +1978,10 @@ private fun StatusReelsVerticalPagerView(
                 .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(horizontal = 24.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Default.SlowMotionVideo,
                     contentDescription = null,
@@ -1888,7 +1995,29 @@ private fun StatusReelsVerticalPagerView(
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
                 )
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = if (isHindi) "नीचे टैप करके WhatsApp या WhatsApp Business स्टेटस फ़ोल्डर जोड़ें।" else "Tap below to connect WhatsApp or WhatsApp Business Status folder.",
+                    color = HybridTextSecondary,
+                    fontSize = 12.5.sp,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = onConnectWaFolder,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366))
+                    ) {
+                        Text("WhatsApp", color = Color.Black, fontWeight = FontWeight.ExtraBold)
+                    }
+                    Button(
+                        onClick = onConnectWaBizFolder,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00BFA5))
+                    ) {
+                        Text("WhatsApp Business", color = Color.Black, fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
                 OutlinedButton(onClick = onClose) {
                     Text(if (isHindi) "वापस जाएं" else "Go Back", color = Color.White)
                 }
@@ -2975,51 +3104,91 @@ private fun StatusReelsVerticalPagerView(
                 }
             }
 
-            // WhatsApp / Business / All Quick Filter Chips
+            // WhatsApp / WhatsApp Business / All Quick Filter Chips + 1-Tap Folder Connect
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.horizontalScroll(rememberScrollState())
             ) {
+                val waCount = remember(reelVideos) { reelVideos.count { DeepMediaScanner.statusSourceLabel(it) == "WhatsApp" } }
+                val waBizCount = remember(reelVideos) { reelVideos.count { DeepMediaScanner.statusSourceLabel(it) == "WhatsApp Business" } }
                 listOf(
                     "ALL" to (if (isHindi) "सभी (${reelVideos.size})" else "All (${reelVideos.size})"),
-                    "WA" to "WhatsApp",
-                    "WA_BIZ" to "Business"
+                    "WA" to "WhatsApp ($waCount)",
+                    "WA_BIZ" to "WhatsApp Business ($waBizCount)"
                 ).forEach { (key, label) ->
                     val isSelected = statusSourceFilter == key
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .background(
-                                if (isSelected) HybridEmerald.copy(alpha = 0.88f)
-                                else Color(0x99000000)
+                                when {
+                                    isSelected && key == "WA_BIZ" -> Color(0xFF00BFA5)
+                                    isSelected && key == "WA" -> Color(0xFF25D366)
+                                    isSelected -> HybridEmerald.copy(alpha = 0.88f)
+                                    else -> Color(0x99000000)
+                                }
                             )
                             .border(
                                 1.dp,
-                                if (isSelected) HybridEmerald else Color.White.copy(alpha = 0.28f),
+                                if (isSelected) Color.White.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.28f),
                                 RoundedCornerShape(50)
                             )
                             .clickable {
                                 statusSourceFilter = key
-                                if (key != "ALL") {
-                                    val count = reelVideos.count {
-                                        val p = "${it.path} ${it.folderName}".lowercase(Locale.ROOT)
-                                        if (key == "WA") p.contains("whatsapp") && !p.contains("business") && !p.contains("w4b")
-                                        else p.contains("business") || p.contains("w4b")
-                                    }
-                                    if (count == 0) {
-                                        Toast.makeText(
-                                            context,
-                                            if (isHindi) "$label स्टेटस नहीं मिले — सभी दिखा रहे हैं" else "No $label statuses found — showing All",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
                             }
-                            .padding(horizontal = 11.dp, vertical = 4.dp)
+                            .padding(horizontal = 11.dp, vertical = 5.dp)
                     ) {
                         Text(
                             text = label,
                             color = if (isSelected) Color.Black else Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+            }
+
+            // If user selected WhatsApp or WhatsApp Business and no statuses are loaded yet, offer instant 1-tap SAF folder allow!
+            if (isFilterEmptyForWaSource) {
+                val isBizSelected = statusSourceFilter == "WA_BIZ"
+                val labelName = if (isBizSelected) "WhatsApp Business" else "WhatsApp"
+                val accent = if (isBizSelected) Color(0xFF00BFA5) else Color(0xFF25D366)
+                val alreadyGranted = if (isBizSelected) hasWaBizSafAccess else hasWaSafAccess
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xDD0D1624))
+                        .border(1.dp, accent.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = if (alreadyGranted) {
+                            if (isHindi) "$labelName में पहले कोई स्टेटस देखें, फिर यहाँ दिखेगा" else "View a status in $labelName first, then refresh here"
+                        } else {
+                            if (isHindi) "$labelName के स्टेटस देखने के लिए फ़ोल्डर अनुमति दें" else "Allow $labelName .Statuses folder to load statuses"
+                        },
+                        color = Color.White,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(accent)
+                            .clickable {
+                                if (isBizSelected) onConnectWaBizFolder() else onConnectWaFolder()
+                            }
+                            .padding(horizontal = 11.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = if (isHindi) "जोड़ें" else "Allow",
+                            color = Color.Black,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -3518,28 +3687,49 @@ private fun VideoDetailedRowItem(
                 fontSize = personaMode.metaFontSize
             )
             Spacer(modifier = Modifier.height(5.dp))
+            val waSourceTag = remember(video.id, video.folderName, video.path) {
+                DeepMediaScanner.statusSourceLabel(video)
+            }
+            val isWaStatusItem = remember(video.id, video.folderName, video.path) {
+                DeepMediaScanner.isWhatsAppStatusVideo(video)
+            }
+            val badgeAccent = when (waSourceTag) {
+                "WhatsApp Business" -> Color(0xFF00BFA5)
+                "WhatsApp" -> Color(0xFF25D366)
+                else -> if (video.isPartialDownload) Color(0xFFFF9100) else personaMode.primaryAccent
+            }
+            val badgeLabel = when {
+                waSourceTag != null && isWaStatusItem -> "$waSourceTag • Status"
+                waSourceTag != null -> waSourceTag
+                else -> video.folderName
+            }
             Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(personaMode.primaryAccent.copy(alpha = 0.14f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Folder,
-                    contentDescription = null,
-                    tint = personaMode.primaryAccent,
-                    modifier = Modifier.size(12.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = video.folderName,
-                    color = personaMode.primaryAccent,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(badgeAccent.copy(alpha = 0.16f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (waSourceTag != null) Icons.Default.SlowMotionVideo else Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = badgeAccent,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = badgeLabel,
+                        color = badgeAccent,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 
@@ -3715,10 +3905,27 @@ private fun VideoGridCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+                val gridWaTag = remember(video.id, video.folderName, video.path) {
+                    DeepMediaScanner.statusSourceLabel(video)
+                }
+                val gridSubLabel = when {
+                    video.isPartialDownload && gridWaTag != null -> "$gridWaTag • ${video.formattedSize}"
+                    video.isPartialDownload -> (if (isHindi) "पेंडिंग" else "Pending") + " • ${video.formattedSize}"
+                    gridWaTag != null -> "$gridWaTag • ${video.formattedSize}"
+                    else -> video.formattedSize
+                }
+                val gridSubColor = when (gridWaTag) {
+                    "WhatsApp Business" -> Color(0xFF00BFA5)
+                    "WhatsApp" -> Color(0xFF25D366)
+                    else -> if (video.isPartialDownload) Color(0xFFFFAB40) else HybridTextSecondary
+                }
                 Text(
-                    text = video.formattedSize,
-                    color = HybridTextSecondary,
-                    fontSize = 11.sp
+                    text = gridSubLabel,
+                    color = gridSubColor,
+                    fontSize = 11.sp,
+                    fontWeight = if (gridWaTag != null || video.isPartialDownload) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             IconButton(
@@ -3733,6 +3940,272 @@ private fun VideoGridCard(
                     tint = HybridTextSecondary,
                     modifier = Modifier.size(18.dp)
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopWhatsAppStatusAndPendingHub(
+    whatsAppStatuses: List<MediaItem>,
+    pendingCount: Int,
+    hasWaSafAccess: Boolean,
+    hasWaBizSafAccess: Boolean,
+    hasDownloadsSafAccess: Boolean,
+    isHindi: Boolean,
+    onPlayStatus: (MediaItem) -> Unit,
+    onOpenAllStatuses: () -> Unit,
+    onConnectWa: () -> Unit,
+    onConnectWaBiz: () -> Unit,
+    onConnectPendingDownloads: () -> Unit
+) {
+    val isAndroid11Plus = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R
+    val needsWaConnect = isAndroid11Plus && !hasWaSafAccess && whatsAppStatuses.none { DeepMediaScanner.statusSourceLabel(it) == "WhatsApp" }
+    val needsWaBizConnect = isAndroid11Plus && !hasWaBizSafAccess && whatsAppStatuses.none { DeepMediaScanner.statusSourceLabel(it) == "WhatsApp Business" }
+    val needsPendingDownloadsConnect = isAndroid11Plus && !hasDownloadsSafAccess && pendingCount == 0
+
+    if (whatsAppStatuses.isEmpty() && pendingCount == 0 && !needsWaConnect && !needsWaBizConnect && !needsPendingDownloadsConnect) {
+        return
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Active Pending Banner (when partial/half-downloaded videos are found at top)
+        if (pendingCount > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0x28FF9100))
+                    .border(1.dp, Color(0x88FF9100), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Downloading,
+                    contentDescription = null,
+                    tint = Color(0xFFFFAB40),
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = if (isHindi) {
+                        "पेंडिंग वीडियो ($pendingCount) — आधी डाउनलोड वीडियो सबसे ऊपर"
+                    } else {
+                        "Pending Videos ($pendingCount) — Half-Downloaded Pinned First"
+                    },
+                    color = Color(0xFFFFD180),
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        // Top WhatsApp & WhatsApp Business Status Section
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(HybridCardBg)
+                .border(1.dp, HybridCardBorder, RoundedCornerShape(14.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SlowMotionVideo,
+                        contentDescription = null,
+                        tint = Color(0xFF25D366),
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Text(
+                        text = if (isHindi) {
+                            "WhatsApp & Business स्टेटस (${whatsAppStatuses.size})"
+                        } else {
+                            "WhatsApp & Business Status (${whatsAppStatuses.size})"
+                        },
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (whatsAppStatuses.isNotEmpty()) {
+                    Text(
+                        text = if (isHindi) "सभी देखें" else "View All",
+                        color = HybridEmerald,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onOpenAllStatuses() }
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .testTag("top_status_view_all_btn")
+                    )
+                }
+            }
+
+            // Real WhatsApp & WhatsApp Business Status video strip with clear badge underneath each video
+            if (whatsAppStatuses.isNotEmpty()) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(whatsAppStatuses.take(20), key = { "top_wa_${it.id}" }) { statusVideo ->
+                        val sourceLabel = DeepMediaScanner.statusSourceLabel(statusVideo) ?: "WhatsApp"
+                        val isBiz = sourceLabel == "WhatsApp Business"
+                        val tagColor = if (isBiz) Color(0xFF00BFA5) else Color(0xFF25D366)
+                        Column(
+                            modifier = Modifier
+                                .width(112.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF0C1422))
+                                .border(1.dp, tagColor.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                .clickable { onPlayStatus(statusVideo) }
+                                .padding(bottom = 6.dp)
+                                .testTag("top_wa_status_card_${statusVideo.id}")
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(74.dp)
+                                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                            ) {
+                                GuaranteedVideoThumbnail(video = statusVideo, modifier = Modifier.fillMaxSize())
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .size(26.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0x99000000)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Play Status",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(4.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(Color(0xB3000000))
+                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        text = statusVideo.formattedDuration,
+                                        color = Color.White,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(5.dp))
+                            Text(
+                                text = sourceLabel,
+                                color = tagColor,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 6.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Clean 1-tap connect chips (auto-hide as soon as each folder is connected on Android 11+)
+            if (needsWaConnect || needsWaBizConnect || needsPendingDownloadsConnect) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (needsWaConnect) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Color(0xFF25D366).copy(alpha = 0.18f))
+                                .border(1.dp, Color(0xFF25D366).copy(alpha = 0.7f), RoundedCornerShape(50))
+                                .clickable { onConnectWa() }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .testTag("connect_wa_status_btn"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.AddCircleOutline, contentDescription = null, tint = Color(0xFF25D366), modifier = Modifier.size(14.dp))
+                            Text(
+                                text = "WhatsApp Status",
+                                color = Color(0xFF25D366),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+                    if (needsWaBizConnect) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Color(0xFF00BFA5).copy(alpha = 0.18f))
+                                .border(1.dp, Color(0xFF00BFA5).copy(alpha = 0.7f), RoundedCornerShape(50))
+                                .clickable { onConnectWaBiz() }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .testTag("connect_wa_biz_status_btn"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.AddCircleOutline, contentDescription = null, tint = Color(0xFF00BFA5), modifier = Modifier.size(14.dp))
+                            Text(
+                                text = "WhatsApp Business",
+                                color = Color(0xFF00BFA5),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+                    if (needsPendingDownloadsConnect) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Color(0xFFFF9100).copy(alpha = 0.16f))
+                                .border(1.dp, Color(0xFFFF9100).copy(alpha = 0.7f), RoundedCornerShape(50))
+                                .clickable { onConnectPendingDownloads() }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .testTag("connect_pending_downloads_btn"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.Downloading, contentDescription = null, tint = Color(0xFFFFAB40), modifier = Modifier.size(14.dp))
+                            Text(
+                                text = if (isHindi) "पेंडिंग डाउनलोड स्कैन" else "Pending Downloads",
+                                color = Color(0xFFFFAB40),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+                }
             }
         }
     }

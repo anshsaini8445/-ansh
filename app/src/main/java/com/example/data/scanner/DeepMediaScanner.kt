@@ -3,13 +3,16 @@ package com.example.data.scanner
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.media.ThumbnailUtils
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.LruCache
@@ -26,11 +29,36 @@ import java.util.Locale
 /**
  * High-Speed Real Android Device Media Scanner.
  * - Scans all videos from 144p tiny clips up to 2K / 4K / 8K large files.
- * - Detects partially downloaded / in-progress Chrome & browser videos (.crdownload, .part, .partial,
- *   .download, .tmp, IS_PENDING=1) and pins them at the top with `isPartialDownload = true` ("Pending").
- * - Uses non-blocking metadata scanning for instant list loading and semaphore-throttled thumbnail extraction.
+ * - Detects partially downloaded / in-progress Chrome, Samsung Internet, Opera, Firefox, 1DM, ADM,
+ *   Telegram & DownloadManager videos (.crdownload, .part, .partial, .download, .tmp, .opdownload,
+ *   .sdownload, .pending-*, IS_PENDING=1) via MediaStore.Video, MediaStore.Downloads, MediaStore.Files,
+ *   Direct Directories, and optional SAF Downloads folder.
+ * - Scans WhatsApp & WhatsApp Business .Statuses across Android 6-17 using both Direct Filesystem
+ *   and persisted Storage Access Framework (SAF) folder permissions.
  */
 object DeepMediaScanner {
+
+    enum class SafFolderTarget(
+        val prefKey: String,
+        val modernRelativePath: String,
+        val legacyRelativePath: String
+    ) {
+        WHATSAPP_STATUS(
+            prefKey = "saf_wa_status_tree_uri_v1",
+            modernRelativePath = "Android/media/com.whatsapp/WhatsApp/Media/.Statuses",
+            legacyRelativePath = "WhatsApp/Media/.Statuses"
+        ),
+        WHATSAPP_BUSINESS_STATUS(
+            prefKey = "saf_wa_biz_status_tree_uri_v1",
+            modernRelativePath = "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses",
+            legacyRelativePath = "WhatsApp Business/Media/.Statuses"
+        ),
+        DOWNLOADS_PENDING(
+            prefKey = "saf_downloads_pending_tree_uri_v1",
+            modernRelativePath = "Download",
+            legacyRelativePath = "Download"
+        )
+    }
 
     private const val LEGACY_DUMMY_PREFS = "HYBRID_INSTANT_VIDEO_SNAPSHOT"
     private const val SNAPSHOT_PREFS = "HYBRID_REAL_MEDIA_SNAPSHOT_V4"
@@ -40,7 +68,8 @@ object DeepMediaScanner {
     private const val KEY_PICKED_AUDIOS = "user_picked_audio_uris_v4"
 
     val PARTIAL_DOWNLOAD_EXTENSIONS = setOf(
-        "crdownload", "part", "partial", "temp", "tmp", "download", "dl", "1dm", "ucd", "idm", "adm", "td", "bin"
+        "crdownload", "part", "partial", "temp", "tmp", "download", "dl", "dltemp", "incomplete",
+        "1dm", "ucd", "idm", "adm", "td", "bin", "opdownload", "sdownload", "fbdownload", "aria2", "bc!", "!ut"
     )
 
     private val NON_VIDEO_BASE_EXTENSIONS = setOf(
@@ -355,7 +384,19 @@ object DeepMediaScanner {
             }
         }
 
-        // 4. User-Picked Persistent Document URIs
+        // 4. Persisted SAF Folders (WhatsApp .Statuses, WhatsApp Business .Statuses, Pending Downloads)
+        if (isVideo) {
+            val safItems = scanAllPersistedSafVideos(context)
+            for (item in safItems) {
+                if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
+                val existing = discoveredMap[item.path]
+                if (existing == null || (item.isPartialDownload && !existing.isPartialDownload)) {
+                    discoveredMap[item.path] = item
+                }
+            }
+        }
+
+        // 5. User-Picked Persistent Document URIs
         val pickedItems = loadUserPickedUris(context, isVideo)
         for (item in pickedItems) {
             if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) continue
@@ -380,6 +421,319 @@ object DeepMediaScanner {
         }
         saveSnapshot(context, isVideo, finalList)
         return@withContext finalList
+    }
+
+    /**
+     * Builds an Android SAF OpenDocumentTree intent pre-opened directly to the exact
+     * WhatsApp .Statuses, WhatsApp Business .Statuses, or Download folder (1-tap "Use this folder").
+     */
+    fun buildSafFolderPickerIntent(context: Context, target: SafFolderTarget): Intent {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            )
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val chosenRelPath = try {
+                val root = Environment.getExternalStorageDirectory()
+                val modernDir = if (root != null) File(root, target.modernRelativePath) else null
+                val legacyDir = if (root != null) File(root, target.legacyRelativePath) else null
+                when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> target.modernRelativePath
+                    modernDir != null && modernDir.exists() -> target.modernRelativePath
+                    legacyDir != null && legacyDir.exists() -> target.legacyRelativePath
+                    else -> target.modernRelativePath
+                }
+            } catch (_: Exception) {
+                target.modernRelativePath
+            }
+            val encodedPath = Uri.encode(chosenRelPath)
+            val initialUri = Uri.parse("content://com.android.externalstorage.documents/document/primary%3A$encodedPath")
+            intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, initialUri)
+        }
+        return intent
+    }
+
+    fun saveSafFolderTreeUri(context: Context, target: SafFolderTarget, treeUri: Uri) {
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                treeUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: Exception) {
+        }
+        context.getSharedPreferences(SNAPSHOT_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(target.prefKey, treeUri.toString())
+            .apply()
+        invalidateMemoryCache()
+    }
+
+    fun getSavedSafTreeUri(context: Context, target: SafFolderTarget): Uri? {
+        val raw = context.getSharedPreferences(SNAPSHOT_PREFS, Context.MODE_PRIVATE)
+            .getString(target.prefKey, null)
+            ?.takeIf { it.isNotBlank() } ?: return null
+        return try {
+            val uri = Uri.parse(raw)
+            val hasPerm = context.contentResolver.persistedUriPermissions.any {
+                it.uri == uri && it.isReadPermission
+            }
+            if (hasPerm) uri else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun hasSafFolderPermission(context: Context, target: SafFolderTarget): Boolean {
+        return getSavedSafTreeUri(context, target) != null
+    }
+
+    /**
+     * Exact status source badge label ("WhatsApp Business" or "WhatsApp") or null if regular video.
+     */
+    fun statusSourceLabel(item: MediaItem): String? {
+        val combined = "${item.id} ${item.folderName} ${item.artist} ${Uri.decode(item.path)}".lowercase(Locale.US)
+        return when {
+            combined.contains("wa_biz") ||
+                combined.contains("com.whatsapp.w4b") ||
+                combined.contains("whatsapp business") ||
+                combined.contains("wa business") -> "WhatsApp Business"
+            combined.contains("wa_status") ||
+                combined.contains("wa_saf") ||
+                combined.contains("com.whatsapp") ||
+                combined.contains("whatsapp") ||
+                combined.contains(".statuses") -> "WhatsApp"
+            else -> null
+        }
+    }
+
+    fun isWhatsAppStatusVideo(item: MediaItem): Boolean {
+        val combined = "${item.id} ${item.folderName} ${item.artist} ${Uri.decode(item.path)}".lowercase(Locale.US)
+        return combined.contains(".statuses") ||
+            combined.contains("wa_status") ||
+            combined.contains("wa_biz_status") ||
+            combined.contains("wa_saf") ||
+            combined.contains("wa_biz_saf") ||
+            combined.contains("whatsapp status") ||
+            combined.contains("whatsapp business status")
+    }
+
+    /**
+     * Dedicated real-time WhatsApp & WhatsApp Business Status scanner:
+     * 1. Persisted SAF trees (works on Android 11 - Android 17 Scoped Storage)
+     * 2. Direct filesystem .Statuses folders (Android 6-10 + direct-access OEMs + Dual/Clone)
+     * 3. MediaStore .Statuses / WhatsApp Status records
+     */
+    suspend fun scanWhatsAppStatusesNow(context: Context): List<MediaItem> = withContext(Dispatchers.IO) {
+        val collected = LinkedHashMap<String, MediaItem>()
+        val dedupSignature = HashSet<String>()
+
+        fun addUnique(item: MediaItem) {
+            if (PermanentDeleteHelper.isHiddenByTrash(context, item.id, item.path)) return
+            val sig = "${item.cleanTitle.lowercase(Locale.US)}_${item.size}"
+            if (!collected.containsKey(item.path) && dedupSignature.add(sig)) {
+                collected[item.path] = item
+            }
+        }
+
+        // 1. Persisted SAF Trees for WhatsApp & WhatsApp Business
+        getSavedSafTreeUri(context, SafFolderTarget.WHATSAPP_STATUS)?.let { uri ->
+            querySafTreeVideos(context, uri, SafFolderTarget.WHATSAPP_STATUS, depth = 0).forEach(::addUnique)
+        }
+        getSavedSafTreeUri(context, SafFolderTarget.WHATSAPP_BUSINESS_STATUS)?.let { uri ->
+            querySafTreeVideos(context, uri, SafFolderTarget.WHATSAPP_BUSINESS_STATUS, depth = 0).forEach(::addUnique)
+        }
+
+        // 2. Direct Filesystem .Statuses folders (Android 6-10 & Dual/Parallel apps)
+        try {
+            val extRoot = Environment.getExternalStorageDirectory()
+            if (extRoot != null && extRoot.exists()) {
+                val waDirs = listOf(
+                    File(extRoot, "Android/media/com.whatsapp/WhatsApp/Media/.Statuses") to "WhatsApp",
+                    File(extRoot, "WhatsApp/Media/.Statuses") to "WhatsApp",
+                    File(extRoot, "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses") to "WhatsApp Business",
+                    File(extRoot, "WhatsApp Business/Media/.Statuses") to "WhatsApp Business",
+                    File(extRoot, "DualApp/Android/media/com.whatsapp/WhatsApp/Media/.Statuses") to "WhatsApp",
+                    File(extRoot, "DualApp/Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses") to "WhatsApp Business"
+                )
+                for ((dir, sourceLabel) in waDirs) {
+                    if (!dir.exists() || !dir.isDirectory || !dir.canRead()) continue
+                    val files = try { dir.listFiles() } catch (_: Exception) { null } ?: continue
+                    val isBiz = sourceLabel == "WhatsApp Business"
+                    for (file in files) {
+                        if (!file.isFile || file.length() < 1024L) continue
+                        val ext = file.extension.lowercase(Locale.US)
+                        if (ext !in VIDEO_EXTENSIONS) continue
+                        addUnique(
+                            MediaItem(
+                                id = "${if (isBiz) "wa_biz_status" else "wa_status"}_${file.absolutePath.hashCode()}",
+                                title = file.nameWithoutExtension.ifBlank { "$sourceLabel Status" },
+                                artist = "$sourceLabel Status",
+                                duration = estimatePartialDurationMs(file.length()).coerceIn(5_000L, 60_000L),
+                                size = file.length(),
+                                path = file.absolutePath,
+                                isVideo = true,
+                                folderName = sourceLabel,
+                                albumName = "$sourceLabel Status",
+                                resolution = estimateResolutionLabel(0, 0, file.length()),
+                                format = ext.uppercase(Locale.US),
+                                isPartialDownload = false,
+                                dateAdded = file.lastModified()
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        // 3. MediaStore fallback for any indexed .Statuses clips
+        try {
+            val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            val proj = arrayOf(
+                MediaStore.Video.Media._ID,
+                MediaStore.Video.Media.DISPLAY_NAME,
+                MediaStore.Video.Media.SIZE,
+                MediaStore.Video.Media.DATA,
+                MediaStore.Video.Media.DATE_ADDED,
+                MediaStore.Video.Media.DURATION
+            )
+            val sel = "${MediaStore.Video.Media.DATA} LIKE '%.Statuses%'"
+            context.contentResolver.query(uri, proj, sel, null, "${MediaStore.Video.Media.DATE_ADDED} DESC")?.use { c ->
+                val idCol = c.getColumnIndex(MediaStore.Video.Media._ID)
+                val nameCol = c.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                val sizeCol = c.getColumnIndex(MediaStore.Video.Media.SIZE)
+                val dataCol = c.getColumnIndex(MediaStore.Video.Media.DATA)
+                val dateCol = c.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
+                val durCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
+                while (c.moveToNext()) {
+                    val id = if (idCol >= 0) c.getLong(idCol) else continue
+                    val name = if (nameCol >= 0) c.getString(nameCol) ?: "Status" else "Status"
+                    val rawPath = if (dataCol >= 0) c.getString(dataCol) ?: "" else ""
+                    val size = if (sizeCol >= 0) c.getLong(sizeCol).coerceAtLeast(1024L) else 1024L
+                    val dur = if (durCol >= 0) c.getLong(durCol).coerceAtLeast(5_000L) else 15_000L
+                    val dateMs = (if (dateCol >= 0) c.getLong(dateCol) else 0L) * 1000L
+                    val isBiz = rawPath.contains("w4b", ignoreCase = true) || rawPath.contains("WhatsApp Business", ignoreCase = true)
+                    val sourceLabel = if (isBiz) "WhatsApp Business" else "WhatsApp"
+                    val contentUri = ContentUris.withAppendedId(uri, id)
+                    val file = if (rawPath.isNotBlank()) File(rawPath) else null
+                    val playablePath = if (file != null && file.exists() && file.canRead()) file.absolutePath else contentUri.toString()
+                    addUnique(
+                        MediaItem(
+                            id = "${if (isBiz) "wa_biz_status" else "wa_status"}_ms_$id",
+                            title = name.substringBeforeLast('.').ifBlank { "$sourceLabel Status" },
+                            artist = "$sourceLabel Status",
+                            duration = dur,
+                            size = size,
+                            path = playablePath,
+                            isVideo = true,
+                            folderName = sourceLabel,
+                            albumName = "$sourceLabel Status",
+                            resolution = estimateResolutionLabel(0, 0, size),
+                            format = name.substringAfterLast('.', "MP4").uppercase(Locale.US),
+                            isPartialDownload = false,
+                            dateAdded = if (dateMs > 0L) dateMs else System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        collected.values.sortedByDescending { it.dateAdded }
+    }
+
+    private fun scanAllPersistedSafVideos(context: Context): List<MediaItem> {
+        val out = mutableListOf<MediaItem>()
+        for (target in SafFolderTarget.entries) {
+            val treeUri = getSavedSafTreeUri(context, target) ?: continue
+            out.addAll(querySafTreeVideos(context, treeUri, target, depth = 0))
+        }
+        return out
+    }
+
+    private fun querySafTreeVideos(
+        context: Context,
+        treeUri: Uri,
+        target: SafFolderTarget,
+        depth: Int,
+        parentDocId: String? = null
+    ): List<MediaItem> {
+        if (depth > 2) return emptyList()
+        val results = mutableListOf<MediaItem>()
+        try {
+            val docId = parentDocId ?: DocumentsContract.getTreeDocumentId(treeUri)
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+            val projection = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED
+            )
+            context.contentResolver.query(childrenUri, projection, null, null, null)?.use { c ->
+                val idCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                val modCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+
+                while (c.moveToNext()) {
+                    val childId = if (idCol >= 0) c.getString(idCol) ?: continue else continue
+                    val name = if (nameCol >= 0) c.getString(nameCol) ?: "" else ""
+                    val mime = if (mimeCol >= 0) c.getString(mimeCol) ?: "" else ""
+                    val size = if (sizeCol >= 0) c.getLong(sizeCol).coerceAtLeast(0L) else 0L
+                    val lastMod = if (modCol >= 0) c.getLong(modCol).coerceAtLeast(0L) else System.currentTimeMillis()
+
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        if (target == SafFolderTarget.DOWNLOADS_PENDING && depth < 1 && !name.startsWith(".trashed")) {
+                            results.addAll(querySafTreeVideos(context, treeUri, target, depth + 1, childId))
+                        }
+                        continue
+                    }
+
+                    if (name.isBlank() || name == ".nomedia") continue
+                    val ext = name.substringAfterLast('.', "").lowercase(Locale.US)
+                    val isPartial = isFileNamePartialDownload(name, null)
+                    val isVideoFile = mime.startsWith("video/", ignoreCase = true) || ext in VIDEO_EXTENSIONS
+                    if (!isVideoFile && !isPartial) continue
+                    if (size < 512L && !isPartial) continue
+
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
+                    val (idPrefix, folderLabel, artistLabel) = when (target) {
+                        SafFolderTarget.WHATSAPP_STATUS -> Triple("wa_saf", "WhatsApp", "WhatsApp Status")
+                        SafFolderTarget.WHATSAPP_BUSINESS_STATUS -> Triple("wa_biz_saf", "WhatsApp Business", "WhatsApp Business Status")
+                        SafFolderTarget.DOWNLOADS_PENDING -> Triple(
+                            if (isPartial) "pending_saf" else "dl_saf",
+                            "Download",
+                            if (isPartial) "Pending Download" else "Download"
+                        )
+                    }
+
+                    results.add(
+                        MediaItem(
+                            id = "${idPrefix}_${childId.hashCode()}",
+                            title = if (isPartial) cleanPartialFileName(name) else name.substringBeforeLast('.').ifBlank { name },
+                            artist = artistLabel,
+                            duration = if (isPartial) estimatePartialDurationMs(size) else estimatePartialDurationMs(size).coerceIn(5_000L, 60_000L),
+                            size = size.coerceAtLeast(512L),
+                            path = docUri.toString(),
+                            isVideo = true,
+                            folderName = folderLabel,
+                            albumName = artistLabel,
+                            resolution = estimateResolutionLabel(0, 0, size),
+                            format = if (isPartial) "PENDING" else ext.ifBlank { "MP4" }.uppercase(Locale.US),
+                            isPartialDownload = isPartial,
+                            dateAdded = if (lastMod > 0L) lastMod else System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return results
     }
 
     fun addPickedMediaUris(context: Context, uris: List<Uri>, isVideo: Boolean) {
@@ -428,7 +782,8 @@ object DeepMediaScanner {
     }
 
     fun isFileNamePartialDownload(nameOrPath: String, file: File? = null): Boolean {
-        val fileName = nameOrPath.substringAfterLast('/').lowercase(Locale.US)
+        val decoded = try { Uri.decode(nameOrPath) } catch (_: Exception) { nameOrPath }
+        val fileName = decoded.substringAfterLast('/').substringAfterLast(':').lowercase(Locale.US)
         if (fileName.isBlank()) return false
         val ext = fileName.substringAfterLast('.', "")
         val isPartialSuffix = ext in PARTIAL_DOWNLOAD_EXTENSIONS ||
@@ -436,6 +791,11 @@ object DeepMediaScanner {
             fileName.endsWith(".part") ||
             fileName.endsWith(".partial") ||
             fileName.endsWith(".download") ||
+            fileName.endsWith(".opdownload") ||
+            fileName.endsWith(".sdownload") ||
+            fileName.endsWith(".fbdownload") ||
+            fileName.endsWith(".dltemp") ||
+            fileName.endsWith(".incomplete") ||
             fileName.endsWith(".1dm") ||
             fileName.endsWith(".adm") ||
             fileName.endsWith(".idm") ||
@@ -448,7 +808,7 @@ object DeepMediaScanner {
         val stripped = fileName
             .removePrefix(".pending-")
             .replace(Regex("^\\d+-"), "")
-            .replace(Regex("\\.(crdownload|part|partial|download|tmp|temp|1dm|ucd|idm|adm|td|dl|bin)$"), "")
+            .replace(Regex("\\.(crdownload|part|partial|download|opdownload|sdownload|fbdownload|dltemp|incomplete|tmp|temp|1dm|ucd|idm|adm|td|dl|bin|aria2|bc!|!ut)$"), "")
             .replace(Regex("\\s*\\(\\d+\\)$"), "")
 
         if (stripped.contains('.')) {
@@ -466,13 +826,16 @@ object DeepMediaScanner {
     }
 
     private fun cleanPartialFileName(rawName: String): String {
-        var cleaned = rawName
+        val decoded = try { Uri.decode(rawName) } catch (_: Exception) { rawName }
+        var cleaned = decoded
+            .substringAfterLast('/')
+            .substringAfterLast(':')
             .removePrefix(".pending-")
             .replace(Regex("^\\d+-"), "")
-            .replace(Regex("(?i)\\.(crdownload|part|partial|download|tmp|temp|1dm|ucd|idm|adm|td|dl|bin)$"), "")
+            .replace(Regex("(?i)\\.(crdownload|part|partial|download|opdownload|sdownload|fbdownload|dltemp|incomplete|tmp|temp|1dm|ucd|idm|adm|td|dl|bin|aria2|bc!|!ut)$"), "")
             .substringBeforeLast('.')
             .trim()
-        if (cleaned.isBlank()) cleaned = rawName
+        if (cleaned.isBlank()) cleaned = decoded
         return cleaned
     }
 
@@ -619,24 +982,39 @@ object DeepMediaScanner {
 
         for (baseUri in urisToQuery.distinct()) {
             try {
-                // On Android 10+, also include pending files if possible
-                val queryUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    try {
+                // On Android 11+ (API 30+), use QUERY_ARG_MATCH_PENDING = MATCH_INCLUDE so half-downloaded videos are ALWAYS returned!
+                val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val queryArgs = Bundle().apply {
+                        putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                        putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.MediaColumns.DATE_ADDED))
+                        putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                    }
+                    resolver.query(baseUri, baseProjection.toTypedArray(), queryArgs, null)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val queryUri = try {
+                        @Suppress("DEPRECATION")
                         MediaStore.setIncludePending(baseUri)
                     } catch (_: Exception) {
                         baseUri
                     }
+                    resolver.query(
+                        queryUri,
+                        baseProjection.toTypedArray(),
+                        null,
+                        null,
+                        "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+                    )
                 } else {
-                    baseUri
+                    resolver.query(
+                        baseUri,
+                        baseProjection.toTypedArray(),
+                        null,
+                        null,
+                        "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+                    )
                 }
 
-                resolver.query(
-                    queryUri,
-                    baseProjection.toTypedArray(),
-                    null,
-                    null,
-                    "${MediaStore.MediaColumns.DATE_ADDED} DESC"
-                )?.use { c ->
+                cursor?.use { c ->
                     val idCol = c.getColumnIndex(MediaStore.MediaColumns._ID)
                     val titleCol = c.getColumnIndex(MediaStore.MediaColumns.TITLE)
                     val displayCol = c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
@@ -680,8 +1058,6 @@ object DeepMediaScanner {
                         val displayName = (if (displayCol >= 0) c.getString(displayCol) else null) ?: ""
                         val duration = if (durCol >= 0) c.getLong(durCol).coerceAtLeast(0L) else 0L
                         val size = if (sizeCol >= 0) c.getLong(sizeCol).coerceAtLeast(0L) else (dataFile?.length() ?: 0L)
-                        if (size <= 0L && dataFile != null && !dataFile.exists()) continue
-
                         val isPendingFlag = (if (pendingCol >= 0) c.getInt(pendingCol) else 0) == 1
                         val isUnfinalizedDownloadVideo = isVideo && duration == 0L && (
                             bucketName.contains("Download", ignoreCase = true) ||
@@ -697,6 +1073,7 @@ object DeepMediaScanner {
                                 isFileNamePartialDownload(displayName, dataFile) ||
                                 isFileNamePartialDownload(rawDataPath, dataFile)
                             )
+                        if (!isPartial && size <= 0L && dataFile != null && !dataFile.exists()) continue
 
                         val rawTitle = if (isPartial) {
                             cleanPartialFileName(displayName.ifBlank { dataFile?.name ?: "Pending Video" })
@@ -757,108 +1134,162 @@ object DeepMediaScanner {
     }
 
     /**
-     * Queries MediaStore.Files for all partially downloaded or pending browser/downloader video files
-     * (.crdownload, .part, .partial, .download, .1dm, .adm, .idm, .ucd, .tmp, IS_PENDING=1) even if only 1 second (512B+) is downloaded.
+     * Queries BOTH MediaStore.Files AND MediaStore.Downloads (Android 10+) for all partially downloaded
+     * or pending browser/downloader video files (.crdownload, .part, .partial, .download, .opdownload,
+     * .sdownload, .tmp, .1dm, .adm, .idm, .ucd, .pending-*, IS_PENDING=1) even if only 1 second is downloaded.
      */
     private fun queryPendingAndPartialVideoFiles(context: Context): List<MediaItem> {
         val list = mutableListOf<MediaItem>()
-        try {
-            val filesUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    MediaStore.setIncludePending(MediaStore.Files.getContentUri("external"))
-                } catch (_: Exception) {
-                    MediaStore.Files.getContentUri("external")
-                }
-            } else {
-                MediaStore.Files.getContentUri("external")
-            }
-            val projection = arrayOf(
-                MediaStore.Files.FileColumns._ID,
-                MediaStore.Files.FileColumns.DISPLAY_NAME,
-                MediaStore.Files.FileColumns.SIZE,
-                MediaStore.Files.FileColumns.DATA,
-                MediaStore.Files.FileColumns.DATE_ADDED,
-                MediaStore.Files.FileColumns.MIME_TYPE
-            )
-            val selection = "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.crdownload' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.part' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.partial' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.download' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.1dm' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.adm' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.idm' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.ucd' OR " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '.pending-%'"
+        val seenIds = HashSet<String>()
 
-            context.contentResolver.query(
-                filesUri,
-                projection,
-                selection,
-                null,
-                "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
-            )?.use { c ->
-                val idCol = c.getColumnIndex(MediaStore.Files.FileColumns._ID)
-                val nameCol = c.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
-                val sizeCol = c.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
-                val dataCol = c.getColumnIndex(MediaStore.Files.FileColumns.DATA)
-                val dateCol = c.getColumnIndex(MediaStore.Files.FileColumns.DATE_ADDED)
-                val mimeCol = c.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE)
+        val targetUris = mutableListOf<Uri>()
+        targetUris.add(MediaStore.Files.getContentUri("external"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            targetUris.add(MediaStore.Downloads.EXTERNAL_CONTENT_URI)
+        }
 
-                while (c.moveToNext()) {
-                    val id = if (idCol >= 0) c.getLong(idCol) else continue
-                    val name = if (nameCol >= 0) c.getString(nameCol) ?: "" else ""
-                    val rawPath = if (dataCol >= 0) c.getString(dataCol) ?: "" else ""
-                    val mime = if (mimeCol >= 0) c.getString(mimeCol) ?: "" else ""
-                    val file = if (rawPath.isNotBlank()) File(rawPath) else null
-                    if (file != null && !file.exists()) continue
+        val baseProjection = mutableListOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATA,
+            MediaStore.MediaColumns.DATE_ADDED,
+            MediaStore.MediaColumns.MIME_TYPE
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            baseProjection.add(MediaStore.MediaColumns.IS_PENDING)
+        }
 
-                    val size = maxOf(
-                        if (sizeCol >= 0) c.getLong(sizeCol) else 0L,
-                        file?.length() ?: 0L
+        val nameSelection = "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.crdownload' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.part' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.partial' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.download' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.opdownload' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.sdownload' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.dltemp' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.incomplete' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.tmp' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.1dm' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.adm' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.idm' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '%.ucd' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE '.pending-%' OR " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE 'Unconfirmed %'"
+
+        val fullSelection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "($nameSelection) OR ${MediaStore.MediaColumns.IS_PENDING} = 1"
+        } else {
+            nameSelection
+        }
+
+        for (baseUri in targetUris) {
+            try {
+                val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val args = Bundle().apply {
+                        putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                        putString(ContentResolver.QUERY_ARG_SQL_SELECTION, fullSelection)
+                        putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.MediaColumns.DATE_ADDED))
+                        putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                    }
+                    context.contentResolver.query(baseUri, baseProjection.toTypedArray(), args, null)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val queryUri = try {
+                        @Suppress("DEPRECATION")
+                        MediaStore.setIncludePending(baseUri)
+                    } catch (_: Exception) {
+                        baseUri
+                    }
+                    context.contentResolver.query(
+                        queryUri,
+                        baseProjection.toTypedArray(),
+                        fullSelection,
+                        null,
+                        "${MediaStore.MediaColumns.DATE_ADDED} DESC"
                     )
-                    // Even 1 second of partial video (512 bytes+) is playable
-                    if (size < 512L) continue
+                } else {
+                    context.contentResolver.query(
+                        baseUri,
+                        baseProjection.toTypedArray(),
+                        fullSelection,
+                        null,
+                        "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+                    )
+                }
 
-                    val isVideoPartial = mime.startsWith("video/", ignoreCase = true) ||
-                        isFileNamePartialDownload(name.ifBlank { rawPath }, file)
-                    if (!isVideoPartial) continue
+                cursor?.use { c ->
+                    val idCol = c.getColumnIndex(MediaStore.MediaColumns._ID)
+                    val nameCol = c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val sizeCol = c.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                    val dataCol = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    val dateCol = c.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
+                    val mimeCol = c.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
+                    val pendingCol = c.getColumnIndex("is_pending")
 
-                    val dateSec = if (dateCol >= 0) c.getLong(dateCol) else 0L
-                    val dateMs = if (file != null && file.exists()) {
-                        file.lastModified()
-                    } else if (dateSec > 0L) {
-                        dateSec * 1000L
-                    } else {
-                        System.currentTimeMillis()
-                    }
+                    while (c.moveToNext()) {
+                        val id = if (idCol >= 0) c.getLong(idCol) else continue
+                        val name = if (nameCol >= 0) c.getString(nameCol) ?: "" else ""
+                        val rawPath = if (dataCol >= 0) c.getString(dataCol) ?: "" else ""
+                        val mime = if (mimeCol >= 0) c.getString(mimeCol) ?: "" else ""
+                        val isPendingFlag = (if (pendingCol >= 0) c.getInt(pendingCol) else 0) == 1
+                        val file = if (rawPath.isNotBlank()) File(rawPath) else null
 
-                    val contentUri = ContentUris.withAppendedId(filesUri, id)
-                    val playablePath = if (file != null && file.exists() && file.canRead()) {
-                        file.absolutePath
-                    } else {
-                        contentUri.toString()
-                    }
-
-                    list.add(
-                        MediaItem(
-                            id = "pending_file_$id",
-                            title = cleanPartialFileName(name.ifBlank { file?.name ?: "Downloading Video" }),
-                            artist = "Pending Download",
-                            duration = estimatePartialDurationMs(size),
-                            size = size,
-                            path = playablePath,
-                            isVideo = true,
-                            folderName = file?.parentFile?.name ?: "Download",
-                            albumName = "Download",
-                            resolution = estimateResolutionLabel(0, 0, size),
-                            format = "PENDING",
-                            isPartialDownload = true,
-                            dateAdded = dateMs
+                        val size = maxOf(
+                            if (sizeCol >= 0) c.getLong(sizeCol) else 0L,
+                            if (file != null && file.exists()) file.length() else 0L
                         )
-                    )
+                        // Allow even brand-new pending downloads (size == 0 while actively downloading) or 512B+
+                        if (size < 512L && !isPendingFlag) continue
+
+                        val isVideoPartial = mime.startsWith("video/", ignoreCase = true) ||
+                            isFileNamePartialDownload(name.ifBlank { rawPath }, file)
+                        if (!isVideoPartial) continue
+
+                        val dateSec = if (dateCol >= 0) c.getLong(dateCol) else 0L
+                        val dateMs = if (file != null && file.exists()) {
+                            file.lastModified()
+                        } else if (dateSec > 0L) {
+                            dateSec * 1000L
+                        } else {
+                            System.currentTimeMillis()
+                        }
+
+                        val contentUri = ContentUris.withAppendedId(baseUri, id)
+                        val playablePath = if (file != null && file.exists() && file.canRead()) {
+                            file.absolutePath
+                        } else {
+                            contentUri.toString()
+                        }
+                        if (!seenIds.add(playablePath)) continue
+
+                        val isWaBiz = rawPath.contains("WhatsApp Business", ignoreCase = true) || rawPath.contains("w4b", ignoreCase = true)
+                        val isWa = !isWaBiz && rawPath.contains("WhatsApp", ignoreCase = true)
+                        val folderLabel = when {
+                            isWaBiz -> "WhatsApp Business"
+                            isWa -> "WhatsApp"
+                            else -> file?.parentFile?.name?.takeIf { it.isNotBlank() } ?: "Download"
+                        }
+
+                        list.add(
+                            MediaItem(
+                                id = "pending_file_${baseUri.hashCode()}_$id",
+                                title = cleanPartialFileName(name.ifBlank { file?.name ?: "Downloading Video" }),
+                                artist = "Pending Download",
+                                duration = estimatePartialDurationMs(size.coerceAtLeast(1024L)),
+                                size = size.coerceAtLeast(512L),
+                                path = playablePath,
+                                isVideo = true,
+                                folderName = folderLabel,
+                                albumName = folderLabel,
+                                resolution = estimateResolutionLabel(0, 0, size),
+                                format = "PENDING",
+                                isPartialDownload = true,
+                                dateAdded = dateMs
+                            )
+                        )
+                    }
                 }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
         return list
     }
@@ -875,11 +1306,15 @@ object DeepMediaScanner {
             if (externalRoot != null && externalRoot.exists()) {
                 targetDirs.add(File(externalRoot, "Download"))
                 targetDirs.add(File(externalRoot, "Downloads"))
+                targetDirs.add(File(externalRoot, "Download/Chrome"))
                 targetDirs.add(File(externalRoot, "Download/1DM"))
                 targetDirs.add(File(externalRoot, "Download/ADM"))
+                targetDirs.add(File(externalRoot, "Download/Telegram"))
                 targetDirs.add(File(externalRoot, "1DM"))
                 targetDirs.add(File(externalRoot, "ADM"))
                 targetDirs.add(File(externalRoot, "UCDownloads"))
+                targetDirs.add(File(externalRoot, "Opera"))
+                targetDirs.add(File(externalRoot, "Browser"))
                 targetDirs.add(File(externalRoot, "Movies"))
                 targetDirs.add(File(externalRoot, "DCIM"))
                 targetDirs.add(File(externalRoot, "DCIM/Camera"))
@@ -892,11 +1327,15 @@ object DeepMediaScanner {
                 targetDirs.add(File(externalRoot, "WhatsApp/Media/WhatsApp Video"))
                 targetDirs.add(File(externalRoot, "WhatsApp/Media/WhatsApp Audio"))
                 targetDirs.add(File(externalRoot, "WhatsApp/Media/.Statuses"))
+                targetDirs.add(File(externalRoot, "WhatsApp Business/Media/WhatsApp Business Video"))
                 targetDirs.add(File(externalRoot, "WhatsApp Business/Media/.Statuses"))
                 targetDirs.add(File(externalRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video"))
                 targetDirs.add(File(externalRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio"))
                 targetDirs.add(File(externalRoot, "Android/media/com.whatsapp/WhatsApp/Media/.Statuses"))
+                targetDirs.add(File(externalRoot, "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Business Video"))
                 targetDirs.add(File(externalRoot, "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses"))
+                targetDirs.add(File(externalRoot, "DualApp/Android/media/com.whatsapp/WhatsApp/Media/.Statuses"))
+                targetDirs.add(File(externalRoot, "DualApp/Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses"))
                 targetDirs.add(File(externalRoot, "Telegram/Telegram Video"))
                 targetDirs.add(File(externalRoot, "Telegram/Telegram Audio"))
                 targetDirs.add(File(externalRoot, "Snaptube"))
@@ -944,29 +1383,47 @@ object DeepMediaScanner {
                 val ext = file.extension.lowercase(Locale.US)
                 val isPartial = isVideo && isFileNamePartialDownload(file.name, file)
                 if (ext in validExtensions || isPartial) {
-                    val folderLabel = if (dir.name == ".Statuses" || dir.absolutePath.contains(".Statuses")) {
-                        "Status"
-                    } else {
-                        dir.name.ifBlank { "Storage" }
+                    val pathLower = dir.absolutePath.lowercase(Locale.US)
+                    val isStatusDir = dir.name == ".Statuses" || pathLower.contains(".statuses")
+                    val isWaBizDir = pathLower.contains("com.whatsapp.w4b") || pathLower.contains("whatsapp business")
+                    val isWaDir = !isWaBizDir && (pathLower.contains("com.whatsapp") || pathLower.contains("/whatsapp/"))
+
+                    val folderLabel = when {
+                        isStatusDir && isWaBizDir -> "WhatsApp Business"
+                        isStatusDir -> "WhatsApp"
+                        isWaBizDir -> "WhatsApp Business"
+                        isWaDir -> "WhatsApp"
+                        else -> dir.name.ifBlank { "Storage" }
+                    }
+                    val artistLabel = when {
+                        isPartial -> "Pending Download"
+                        isStatusDir && isWaBizDir -> "WhatsApp Business Status"
+                        isStatusDir -> "WhatsApp Status"
+                        else -> folderLabel
+                    }
+                    val idPrefix = when {
+                        isStatusDir && isWaBizDir -> "wa_biz_status"
+                        isStatusDir -> "wa_status"
+                        else -> "file"
                     }
                     // Estimate duration lightweightly or set to <=100s for Status clips
                     val estimatedDuration = when {
                         isPartial -> estimatePartialDurationMs(file.length())
-                        folderLabel == "Status" -> 30_000L
+                        isStatusDir -> 30_000L
                         file.length() < 8_000_000L -> 45_000L
                         else -> 120_000L
                     }
                     out.add(
                         MediaItem(
-                            id = "file_${file.absolutePath.hashCode()}",
+                            id = "${idPrefix}_${file.absolutePath.hashCode()}",
                             title = if (isPartial) cleanPartialFileName(file.name) else file.nameWithoutExtension,
-                            artist = if (isPartial) "Pending Download" else folderLabel,
+                            artist = artistLabel,
                             duration = estimatedDuration,
                             size = file.length(),
                             path = file.absolutePath,
                             isVideo = isVideo,
                             folderName = folderLabel,
-                            albumName = folderLabel,
+                            albumName = artistLabel,
                             resolution = if (isVideo) estimateResolutionLabel(0, 0, file.length()) else "Hi-Res",
                             format = if (isPartial) "PENDING" else ext.uppercase(Locale.US),
                             isPartialDownload = isPartial,

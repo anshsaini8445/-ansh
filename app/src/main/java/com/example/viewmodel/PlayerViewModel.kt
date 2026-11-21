@@ -109,6 +109,39 @@ class PlayerViewModel(application: Application) :
     private val _allMediaItems = MutableStateFlow(_videoItems.value + _musicItems.value)
     val allMediaItems: StateFlow<List<MediaItem>> = _allMediaItems.asStateFlow()
 
+    // --- Real WhatsApp & WhatsApp Business Status Videos + SAF Access State ---
+    private val _whatsAppStatusVideos = MutableStateFlow<List<MediaItem>>(emptyList())
+    val whatsAppStatusVideos: StateFlow<List<MediaItem>> = _whatsAppStatusVideos.asStateFlow()
+
+    private val _hasWaSafAccess = MutableStateFlow(
+        DeepMediaScanner.hasSafFolderPermission(application, DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS)
+    )
+    val hasWaSafAccess: StateFlow<Boolean> = _hasWaSafAccess.asStateFlow()
+
+    private val _hasWaBizSafAccess = MutableStateFlow(
+        DeepMediaScanner.hasSafFolderPermission(application, DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS)
+    )
+    val hasWaBizSafAccess: StateFlow<Boolean> = _hasWaBizSafAccess.asStateFlow()
+
+    private val _hasDownloadsSafAccess = MutableStateFlow(
+        DeepMediaScanner.hasSafFolderPermission(application, DeepMediaScanner.SafFolderTarget.DOWNLOADS_PENDING)
+    )
+    val hasDownloadsSafAccess: StateFlow<Boolean> = _hasDownloadsSafAccess.asStateFlow()
+
+    fun refreshSafAccessFlags() {
+        val ctx = getApplication<Application>()
+        _hasWaSafAccess.value = DeepMediaScanner.hasSafFolderPermission(ctx, DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS)
+        _hasWaBizSafAccess.value = DeepMediaScanner.hasSafFolderPermission(ctx, DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS)
+        _hasDownloadsSafAccess.value = DeepMediaScanner.hasSafFolderPermission(ctx, DeepMediaScanner.SafFolderTarget.DOWNLOADS_PENDING)
+    }
+
+    fun onSafFolderGranted(target: DeepMediaScanner.SafFolderTarget, treeUri: Uri) {
+        val ctx = getApplication<Application>()
+        DeepMediaScanner.saveSafFolderTreeUri(ctx, target, treeUri)
+        refreshSafAccessFlags()
+        loadMedia(forceRefresh = true)
+    }
+
     // --- Video Sort & View Mode ---
     private val _sortCriteria = MutableStateFlow("Date") // "Date", "Name", "Size", "Length"
     val sortCriteria: StateFlow<String> = _sortCriteria.asStateFlow()
@@ -867,13 +900,14 @@ class PlayerViewModel(application: Application) :
     @Volatile
     private var lastMediaScanMs = 0L
 
-    fun loadMedia() {
+    fun loadMedia(forceRefresh: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (isMediaScanInFlight || (now - lastMediaScanMs < 1800L && _videoItems.value.isNotEmpty())) {
+        if (!forceRefresh && (isMediaScanInFlight || (now - lastMediaScanMs < 1800L && _videoItems.value.isNotEmpty()))) {
             return
         }
         isMediaScanInFlight = true
         lastMediaScanMs = now
+        refreshSafAccessFlags()
         viewModelScope.launch {
             try {
                 // Stage 1: Emit fast MediaStore results (<80ms) so videos/songs appear immediately after permission grant
@@ -891,12 +925,22 @@ class PlayerViewModel(application: Application) :
             }
 
             try {
-                // Stage 2: Full deep directory + WhatsApp Status + partial download scan
-                val videos = repository.getAvailableMedia(isVideo = true).distinctBy { it.id }
+                // Stage 2: Full deep directory + WhatsApp/Business Status (SAF + Direct) + Pending Downloads scan
+                val statusVideos = DeepMediaScanner.scanWhatsAppStatusesNow(getApplication()).distinctBy { it.id }
+                _whatsAppStatusVideos.value = statusVideos
+
+                val scannedVideos = repository.getAvailableMedia(isVideo = true)
+                val mergedVideos = (scannedVideos + statusVideos)
+                    .distinctBy { it.path }
+                    .distinctBy { it.id }
+                    .sortedWith(
+                        compareByDescending<MediaItem> { it.isPartialDownload }
+                            .thenByDescending { it.dateAdded }
+                    )
                 val music = repository.getAvailableMedia(isVideo = false).distinctBy { it.id }
-                _videoItems.value = videos
+                _videoItems.value = mergedVideos
                 _musicItems.value = music
-                val combined = (videos + music).distinctBy { it.id }
+                val combined = (mergedVideos + music).distinctBy { it.id }
                 _allMediaItems.value = combined
                 restoreLastPlayedMusicSessionIfIdle(combined)
                 if (_syncedLyrics.value.isEmpty()) {

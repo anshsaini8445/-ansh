@@ -868,8 +868,32 @@ fun StatusSaverScreen(
     var selectedSource by remember { mutableStateOf("WhatsApp") }
     val savedIds = remember { mutableStateListOf<String>() }
     var discoveredStatuses by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var refreshNonce by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(selectedSource, allVideos) {
+    val safTarget = remember(selectedSource) {
+        if (selectedSource.contains("Business", ignoreCase = true)) {
+            com.example.data.scanner.DeepMediaScanner.SafFolderTarget.WHATSAPP_BUSINESS_STATUS
+        } else {
+            com.example.data.scanner.DeepMediaScanner.SafFolderTarget.WHATSAPP_STATUS
+        }
+    }
+    var hasSafAccess by remember(selectedSource, refreshNonce) {
+        mutableStateOf(com.example.data.scanner.DeepMediaScanner.hasSafFolderPermission(context, safTarget))
+    }
+
+    val safLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val treeUri = result.data?.data
+        if (result.resultCode == android.app.Activity.RESULT_OK && treeUri != null) {
+            com.example.data.scanner.DeepMediaScanner.saveSafFolderTreeUri(context, safTarget, treeUri)
+            hasSafAccess = true
+            refreshNonce++
+            Toast.makeText(context, "$selectedSource Status folder connected!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(selectedSource, allVideos, refreshNonce) {
         discoveredStatuses = withContext(Dispatchers.IO) {
             scanRealStatusVideos(context, selectedSource, allVideos)
         }
@@ -898,22 +922,24 @@ fun StatusSaverScreen(
         ) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    listOf("WhatsApp", "WA Business").forEach { tab ->
+                    listOf("WhatsApp", "WhatsApp Business").forEach { tab ->
                         val active = selectedSource == tab
+                        val accent = if (tab.contains("Business")) Color(0xFF00BFA5) else Color(0xFF25D366)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (active) HybridEmerald.copy(alpha = 0.2f) else HybridCardBg)
-                                .border(1.dp, if (active) HybridEmerald else HybridCardBorder, RoundedCornerShape(12.dp))
+                                .background(if (active) accent.copy(alpha = 0.2f) else HybridCardBg)
+                                .border(1.dp, if (active) accent else HybridCardBorder, RoundedCornerShape(12.dp))
                                 .clickable { selectedSource = tab }
                                 .padding(vertical = 10.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = tab,
-                                color = if (active) HybridEmerald else Color.White,
-                                fontWeight = FontWeight.Bold
+                                color = if (active) accent else Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
                             )
                         }
                     }
@@ -922,31 +948,63 @@ fun StatusSaverScreen(
 
             if (discoveredStatuses.isEmpty()) {
                 item {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
                             .background(HybridCardBg)
                             .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
-                            .padding(24.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Text(
-                            text = "No $selectedSource Status videos found yet. View statuses in $selectedSource first, then reopen here.",
+                            text = if (hasSafAccess) {
+                                "No $selectedSource Status videos found yet. Open $selectedSource and view a status first, then tap Refresh."
+                            } else {
+                                "On Android 11+, grant 1-tap access to the $selectedSource .Statuses folder so Hybrid Player can load all status videos automatically."
+                            },
                             color = HybridTextSecondary,
                             fontSize = 13.sp
                         )
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(
+                                onClick = {
+                                    try {
+                                        safLauncher.launch(
+                                            com.example.data.scanner.DeepMediaScanner.buildSafFolderPickerIntent(context, safTarget)
+                                        )
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "Could not open folder picker", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (selectedSource.contains("Business")) Color(0xFF00BFA5) else Color(0xFF25D366)
+                                )
+                            ) {
+                                Text(
+                                    text = if (hasSafAccess) "Reconnect Folder" else "Allow $selectedSource Folder",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                            OutlinedButton(onClick = { refreshNonce++ }) {
+                                Text("Refresh", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
                 }
             } else {
                 items(discoveredStatuses, key = { it.id }) { statusVideo ->
                     val isSaved = statusVideo.id in savedIds
+                    val sourceLabel = com.example.data.scanner.DeepMediaScanner.statusSourceLabel(statusVideo) ?: selectedSource
+                    val accent = if (sourceLabel == "WhatsApp Business") Color(0xFF00BFA5) else Color(0xFF25D366)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
                             .background(HybridCardBg)
-                            .border(1.dp, HybridCardBorder, RoundedCornerShape(16.dp))
+                            .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
                             .clickable { onPlayVideo(statusVideo) }
                             .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -955,10 +1013,10 @@ fun StatusSaverScreen(
                             modifier = Modifier
                                 .size(44.dp)
                                 .clip(CircleShape)
-                                .background(HybridEmerald.copy(alpha = 0.16f)),
+                                .background(accent.copy(alpha = 0.16f)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = HybridEmerald)
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = accent)
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
@@ -970,9 +1028,10 @@ fun StatusSaverScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "$selectedSource Status • ${statusVideo.formattedSize}",
-                                color = HybridTextSecondary,
-                                fontSize = 12.sp
+                                text = "$sourceLabel • ${statusVideo.formattedSize}",
+                                color = accent,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                         Button(
@@ -990,12 +1049,12 @@ fun StatusSaverScreen(
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSaved) HybridCardAlt else HybridEmerald
+                                containerColor = if (isSaved) HybridCardAlt else accent
                             )
                         ) {
                             Text(
                                 text = if (isSaved) "Saved ✓" else "Save",
-                                color = if (isSaved) HybridEmerald else Color.Black,
+                                color = if (isSaved) accent else Color.Black,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -1006,71 +1065,22 @@ fun StatusSaverScreen(
     }
 }
 
-private fun scanRealStatusVideos(
+private suspend fun scanRealStatusVideos(
     context: Context,
     sourceTab: String,
     allVideos: List<MediaItem>
 ): List<MediaItem> {
-    val extRoot = Environment.getExternalStorageDirectory()
     val isBusiness = sourceTab.contains("Business", ignoreCase = true)
-    val dirs = if (isBusiness) {
-        listOf(
-            File(extRoot, "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/.Statuses"),
-            File(extRoot, "WhatsApp Business/Media/.Statuses")
-        )
-    } else {
-        listOf(
-            File(extRoot, "Android/media/com.whatsapp/WhatsApp/Media/.Statuses"),
-            File(extRoot, "WhatsApp/Media/.Statuses")
-        )
-    }
+    val expectedLabel = if (isBusiness) "WhatsApp Business" else "WhatsApp"
+    val realStatuses = com.example.data.scanner.DeepMediaScanner.scanWhatsAppStatusesNow(context)
+        .filter { com.example.data.scanner.DeepMediaScanner.statusSourceLabel(it) == expectedLabel }
+    if (realStatuses.isNotEmpty()) return realStatuses.sortedByDescending { it.dateAdded }
 
-    val results = mutableListOf<MediaItem>()
-    val seen = mutableSetOf<String>()
-    dirs.forEach { dir ->
-        try {
-            if (dir.exists() && dir.isDirectory) {
-                dir.listFiles()?.forEach { f ->
-                    val nameLower = f.name.lowercase(java.util.Locale.ROOT)
-                    if (f.isFile && f.length() > 1024L &&
-                        (nameLower.endsWith(".mp4") || nameLower.endsWith(".mkv") || nameLower.endsWith(".3gp")) &&
-                        seen.add(f.absolutePath)
-                    ) {
-                        results.add(
-                            MediaItem(
-                                id = "wa_status_${f.absolutePath.hashCode()}",
-                                title = f.name,
-                                artist = "$sourceTab Status",
-                                duration = 15_000L,
-                                size = f.length(),
-                                path = f.absolutePath,
-                                isVideo = true,
-                                folderName = "$sourceTab Statuses",
-                                format = "MP4",
-                                dateAdded = f.lastModified()
-                            )
-                        )
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    if (results.isNotEmpty()) return results.sortedByDescending { it.dateAdded }
-
-    // Fallback to matching short status/reel videos tagged by source
-    val folderFiltered = allVideos.filter { vid ->
-        val p = vid.path.lowercase(java.util.Locale.ROOT)
-        val f = vid.folderName.lowercase(java.util.Locale.ROOT)
-        if (isBusiness) {
-            p.contains("whatsapp business") || p.contains("w4b") || f.contains("business")
-        } else {
-            (p.contains("whatsapp") || f.contains("status")) && !p.contains("w4b") && !f.contains("business")
-        }
-    }
-    if (folderFiltered.isNotEmpty()) return folderFiltered
-    return if (!isBusiness) allVideos.filter { it.duration in 1000L..65_000L }.take(20) else emptyList()
+    // Fallback to matching status videos already in allVideos for the selected WhatsApp app
+    return allVideos.filter { vid ->
+        com.example.data.scanner.DeepMediaScanner.isWhatsAppStatusVideo(vid) &&
+            com.example.data.scanner.DeepMediaScanner.statusSourceLabel(vid) == expectedLabel
+    }.sortedByDescending { it.dateAdded }
 }
 
 private fun copyStatusVideoToGallery(context: Context, video: MediaItem): Boolean {
